@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check --all-targets
+
+      - name: Cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Cargo test
+        run: |
+          cargo test --all-targets -- --skip integration:: --skip stress::
+
+  build-and-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package binary
+        run: |
+          test -f target/release/enclave
+          cp target/release/enclave enclave-linux-x86_64
+          tar -czf enclave-linux-x86_64.tar.gz enclave-linux-x86_64
+          sha256sum enclave-linux-x86_64.tar.gz > enclave-linux-x86_64.tar.gz.sha256
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            enclave-linux-x86_64.tar.gz
+            enclave-linux-x86_64.tar.gz.sha256
+          generate_release_notes: true
