@@ -31,9 +31,6 @@ pub fn provision_etc_hosts(rootfs: &Path) -> Result<()> {
     validate_rootfs_path(rootfs)?;
     let target_etc = ensure_rootfs_etc(rootfs)?;
     let target = target_etc.join("hosts");
-    if target.exists() {
-        return Ok(());
-    }
     let content = format!("{ENCLAVE_HOSTS_HEADER}\n{DEFAULT_HOSTS_CONTENT}");
     fs::write(&target, content).with_context(|| format!("failed to write {}", target.display()))?;
     Ok(())

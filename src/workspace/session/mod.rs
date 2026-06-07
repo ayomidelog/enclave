@@ -32,6 +32,8 @@ const START_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const SESSION_HELPER_BASENAME: &str = "session-helper";
 const SELF_EXE_PATH: &str = "/proc/self/exe";
+const HELPER_OVERRIDE_ENV: &str = "ENCLAVE_SELF_EXE";
+const TEST_BINARY_ENV: &str = "CARGO_BIN_EXE_enclave";
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -225,14 +227,15 @@ fn session_helper_path(workspace: &WorkspaceMetadata) -> PathBuf {
 fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
     let helper_path = session_helper_path(workspace);
     let temp_path = runtime_dir(workspace).join(format!("{SESSION_HELPER_BASENAME}.tmp"));
+    let source_exe = resolve_session_helper_source();
     if temp_path.exists() {
         fs::remove_file(&temp_path)
             .with_context(|| format!("failed to remove stale {}", temp_path.display()))?;
     }
-    fs::copy(SELF_EXE_PATH, &temp_path).with_context(|| {
+    fs::copy(&source_exe, &temp_path).with_context(|| {
         format!(
             "failed to copy session helper from {} to {}",
-            SELF_EXE_PATH,
+            source_exe.display(),
             temp_path.display()
         )
     })?;
@@ -250,6 +253,32 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
         )
     })?;
     Ok(helper_path)
+}
+
+fn resolve_session_helper_source() -> PathBuf {
+    for candidate in [HELPER_OVERRIDE_ENV, TEST_BINARY_ENV] {
+        if let Some(path) = std::env::var_os(candidate).map(PathBuf::from) {
+            if path.is_file() {
+                return path;
+            }
+        }
+    }
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(inferred) = infer_workspace_helper_from_current_exe(&current_exe) {
+            return inferred;
+        }
+    }
+    PathBuf::from(SELF_EXE_PATH)
+}
+
+fn infer_workspace_helper_from_current_exe(current_exe: &Path) -> Option<PathBuf> {
+    let deps_dir = current_exe.parent()?;
+    if deps_dir.file_name()? != "deps" {
+        return None;
+    }
+    let profile_dir = deps_dir.parent()?;
+    let candidate = profile_dir.join("enclave");
+    candidate.is_file().then_some(candidate)
 }
 
 fn setgroups_args(userns: &userns::UserNamespacePlan) -> Vec<&'static str> {

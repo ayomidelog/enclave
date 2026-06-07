@@ -86,17 +86,21 @@ fn repair_recovers_from_corrupted_registry_file() {
 }
 
 #[test]
-fn partial_write_is_replaced_by_subsequent_atomic_update() {
+fn partial_write_requires_explicit_repair_before_mutation() {
     let state = state_dir("enclave-registry-partial");
     ensure_registry(&state).expect("registry init");
 
     fs::write(state.join("registry.json"), "{\"version\":").expect("write partial content");
 
-    with_registry_mut(&state, |registry| {
+    let err = with_registry_mut(&state, |registry| {
         registry.version = 1;
         Ok(())
     })
-    .expect("atomic write should repair partial registry contents");
+    .expect_err("mutating invalid registry should fail");
+    assert!(err.to_string().contains("invalid registry"));
+
+    let report = repair_registry(&state, false).expect("repair should recover from corruption");
+    assert!(report.added_sandboxes == 0);
 
     let version = with_registry(&state, |registry| Ok(registry.version)).expect("registry read");
     assert_eq!(version, 1);

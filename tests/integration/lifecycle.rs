@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
@@ -79,7 +80,32 @@ fn workspace_lifecycle_create_start_stop_destroy() {
 
     let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
         .expect("create workspace");
-    start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let runtime_pid = started.runtime_pid.expect("runtime pid should be set");
+    let route_table = Command::new("nsenter")
+        .arg("--net")
+        .arg("--target")
+        .arg(runtime_pid.to_string())
+        .arg("--")
+        .arg("ip")
+        .arg("route")
+        .arg("show")
+        .arg("default")
+        .output()
+        .expect("inspect workspace default route");
+    assert!(
+        route_table.status.success(),
+        "nsenter ip route show default failed: {}",
+        String::from_utf8_lossy(&route_table.stderr)
+    );
+    let route_stdout = String::from_utf8_lossy(&route_table.stdout);
+    assert!(
+        route_stdout
+            .lines()
+            .any(|line| line.contains("default") && line.contains("dev eth0")),
+        "workspace must have a default route on eth0; got:\n{}",
+        route_stdout
+    );
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");

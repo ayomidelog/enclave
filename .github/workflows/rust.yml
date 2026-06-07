@@ -16,6 +16,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.85.0
           components: clippy, rustfmt
 
       - name: Cargo fmt
