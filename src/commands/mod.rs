@@ -23,12 +23,14 @@ use crate::config::FileConfig;
 pub fn run() -> Result<()> {
     let args: Vec<_> = std::env::args_os().collect();
     let first_arg_is_help = args.get(1).is_some_and(|a| a == "help");
+    let first_arg_is_init = args.get(1).is_some_and(|a| a == "init");
     let has_help_or_version_flag = args
         .iter()
         .skip(1)
         .take_while(|a| *a != "--")
         .any(|a| a == "--help" || a == "-h" || a == "--version" || a == "-V");
-    let is_help_or_version = first_arg_is_help || has_help_or_version_flag;
+    let bypass_root_check = first_arg_is_help || first_arg_is_init;
+    let is_help_or_version = bypass_root_check || has_help_or_version_flag;
     if !is_help_or_version {
         ensure_root_execution()?;
     }
@@ -37,6 +39,7 @@ pub fn run() -> Result<()> {
     let mut cli = Cli::from_arg_matches(&matches)?;
     let file_config = crate::config::load_config(cli.config.as_deref())?;
     apply_config_defaults(&mut cli, &matches, &file_config);
+    daemon::configure_automatic_start_defaults(&file_config);
     match cli.command {
         Commands::Internal { command } => match *command {
             InternalCommands::WorkspaceSessionLaunch(args) => {

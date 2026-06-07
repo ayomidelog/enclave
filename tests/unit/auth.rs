@@ -28,10 +28,6 @@ fn token_storage_rejects_invalid_provider_path_values() {
 
 #[test]
 fn token_load_rejects_insecure_permissions() {
-    if unsafe { libc::geteuid() } != 0 {
-        return;
-    }
-
     let state_dir = temp_state_dir("bad-perms");
     let auth_dir = state_dir.join("auth");
     fs::create_dir_all(&auth_dir).expect("create auth dir");
@@ -43,6 +39,40 @@ fn token_load_rejects_insecure_permissions() {
     let manager = AuthManager::new(&state_dir);
     let result = manager.load_token("github");
     assert!(result.is_err());
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+#[test]
+fn token_load_accepts_current_user_owned_file_with_strict_mode() {
+    let state_dir = temp_state_dir("good-owner");
+    let manager = AuthManager::new(&state_dir);
+    manager
+        .store_token("github", "secret")
+        .expect("store token for current user");
+
+    let loaded = manager.load_token("github").expect("load token");
+    assert_eq!(loaded.as_deref(), Some("secret"));
+
+    let configured = manager.list_providers().expect("list configured providers");
+    assert_eq!(configured, vec!["github".to_string()]);
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+#[test]
+fn list_providers_ignores_insecure_token_files() {
+    let state_dir = temp_state_dir("list-insecure");
+    let auth_dir = state_dir.join("auth");
+    fs::create_dir_all(&auth_dir).expect("create auth dir");
+    fs::set_permissions(&auth_dir, fs::Permissions::from_mode(0o700)).expect("set auth perms");
+    let token_path = auth_dir.join("github.token");
+    fs::write(&token_path, "secret").expect("write token");
+    fs::set_permissions(&token_path, fs::Permissions::from_mode(0o644)).expect("set bad perms");
+
+    let manager = AuthManager::new(&state_dir);
+    let providers = manager.list_providers().expect("list providers");
+    assert!(providers.is_empty(), "insecure tokens must not be reported");
 
     let _ = fs::remove_dir_all(state_dir);
 }

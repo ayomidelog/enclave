@@ -17,7 +17,11 @@ pub fn ensure_host_networking() -> Result<()> {
     Ok(())
 }
 
-pub fn setup_workspace_network(pid: u32, used_ips: &BTreeSet<u8>, rootfs: &Path) -> Result<String> {
+pub fn setup_workspace_network(
+    pid: u32,
+    used_ips: &BTreeSet<u8>,
+    workspace_rootfs: &Path,
+) -> Result<String> {
     ensure_host_networking()?;
 
     let ip = ipam::allocate_ip(used_ips)?;
@@ -30,11 +34,11 @@ pub fn setup_workspace_network(pid: u32, used_ips: &BTreeSet<u8>, rootfs: &Path)
         nat::ensure_workspace_anti_spoofing(&veth_host, &ip)
             .with_context(|| format!("failed to install anti-spoofing rules for {}", veth_host))?;
 
-        dns::provision_resolv_conf(rootfs)
+        dns::provision_resolv_conf(workspace_rootfs)
             .with_context(|| "failed to provision DNS for workspace")?;
-        dns::provision_etc_hosts(rootfs)
+        dns::provision_etc_hosts(workspace_rootfs)
             .with_context(|| "failed to provision /etc/hosts for workspace")?;
-        dns::provision_apt_sandbox_override(rootfs)
+        dns::provision_apt_sandbox_override(workspace_rootfs)
             .with_context(|| "failed to provision apt sandbox override for workspace")?;
         Ok(())
     })();

@@ -1,9 +1,14 @@
 use std::process::Command;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
 use super::bridge::BRIDGE_NAME;
 use super::ipam;
+
+const ROUTE_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const ROUTE_READY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub fn setup_workspace_networking(
     pid: u32,
@@ -97,10 +102,62 @@ fn configure_netns(pid: u32, iface: &str, workspace_ip: &str) -> Result<()> {
 
     run_nsenter_ip(
         &pid_str,
-        &["route", "add", "default", "via", ipam::GATEWAY_IP],
+        &[
+            "route",
+            "replace",
+            "default",
+            "via",
+            ipam::GATEWAY_IP,
+            "dev",
+            iface,
+        ],
     )?;
+    wait_for_default_route(&pid_str, iface, ipam::GATEWAY_IP)?;
 
     Ok(())
+}
+
+fn wait_for_default_route(pid: &str, iface: &str, gateway_ip: &str) -> Result<()> {
+    let started = Instant::now();
+    while started.elapsed() < ROUTE_READY_TIMEOUT {
+        if default_route_present(pid, iface, gateway_ip)? {
+            return Ok(());
+        }
+        thread::sleep(ROUTE_READY_POLL_INTERVAL);
+    }
+
+    let route_dump = dump_nsenter_output(pid, &["route", "show"])
+        .unwrap_or_else(|err| format!("failed to inspect route table: {err:#}"));
+    let addr_dump = dump_nsenter_output(pid, &["addr", "show", "dev", iface])
+        .unwrap_or_else(|err| format!("failed to inspect interface state for {iface}: {err:#}"));
+
+    bail!(
+        "workspace network namespace did not gain default route via {} dev {} within {} ms\nroute table:\n{}\ninterface state:\n{}",
+        gateway_ip,
+        iface,
+        ROUTE_READY_TIMEOUT.as_millis(),
+        route_dump.trim(),
+        addr_dump.trim()
+    );
+}
+
+fn default_route_present(pid: &str, iface: &str, gateway_ip: &str) -> Result<bool> {
+    let output = run_nsenter_capture(
+        pid,
+        &["route", "show", "default"],
+        &format!("failed to inspect default route inside netns of pid {pid}"),
+    )?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(default_route_output_has_route(&stdout, iface, gateway_ip))
+}
+
+fn default_route_output_has_route(stdout: &str, iface: &str, gateway_ip: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| line.contains("default") && line.contains(gateway_ip) && line.contains(iface))
 }
 
 fn disable_ipv6_in_netns(pid: u32, iface: &str) -> Result<()> {
@@ -153,15 +210,14 @@ fn run_ip(args: &[&str]) -> Result<()> {
 }
 
 fn run_nsenter_ip(pid: &str, args: &[&str]) -> Result<()> {
-    let mut cmd = Command::new("nsenter");
-    cmd.arg("--net").arg("--target").arg(pid).arg("--");
-    cmd.arg("ip").args(args);
-    let output = cmd.output().with_context(|| {
-        format!(
+    let output = run_nsenter_capture(
+        pid,
+        args,
+        &format!(
             "failed to run: nsenter --net -t {pid} -- ip {}",
             args.join(" ")
-        )
-    })?;
+        ),
+    )?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
@@ -172,6 +228,30 @@ fn run_nsenter_ip(pid: &str, args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn run_nsenter_capture(pid: &str, args: &[&str], context: &str) -> Result<std::process::Output> {
+    let mut cmd = Command::new("nsenter");
+    cmd.arg("--net").arg("--target").arg(pid).arg("--");
+    cmd.arg("ip").args(args);
+    cmd.output().with_context(|| context.to_string())
+}
+
+fn dump_nsenter_output(pid: &str, args: &[&str]) -> Result<String> {
+    let output = run_nsenter_capture(
+        pid,
+        args,
+        &format!(
+            "failed to run diagnostic nsenter command: ip {}",
+            args.join(" ")
+        ),
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(format!(
+        "status: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status, stdout, stderr
+    ))
 }
 
 #[cfg(test)]

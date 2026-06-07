@@ -1,5 +1,6 @@
 use super::{
-    launch_userns_args, session_helper_path, setgroups_args,
+    infer_workspace_helper_from_current_exe, launch_userns_args, resolve_session_helper_source,
+    session_helper_path, setgroups_args,
     userns::{IdMapRange, UserNamespaceMode, UserNamespacePlan},
 };
 
@@ -100,4 +101,34 @@ fn session_helper_path_uses_procfs_exe_reference() {
         session_helper_path(&workspace),
         std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/runtime/session-helper")
     );
+}
+
+#[test]
+fn resolve_session_helper_source_prefers_override_env() {
+    let exe = std::env::current_exe().expect("current exe");
+    std::env::set_var("ENCLAVE_SELF_EXE", &exe);
+    std::env::remove_var("CARGO_BIN_EXE_enclave");
+    assert_eq!(resolve_session_helper_source(), exe);
+    std::env::remove_var("ENCLAVE_SELF_EXE");
+}
+
+#[test]
+fn infer_workspace_helper_from_current_exe_detects_target_debug_binary() {
+    let temp = std::env::temp_dir().join(format!(
+        "enclave-helper-infer-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let deps = temp.join("target/debug/deps");
+    std::fs::create_dir_all(&deps).expect("create deps dir");
+    let current_exe = deps.join("integration_suite-abcdef");
+    let expected = temp.join("target/debug/enclave");
+    std::fs::write(&expected, b"#!/bin/sh\n").expect("write enclave binary placeholder");
+
+    assert_eq!(
+        infer_workspace_helper_from_current_exe(&current_exe),
+        Some(expected.clone())
+    );
+
+    let _ = std::fs::remove_dir_all(temp);
 }

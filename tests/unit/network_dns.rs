@@ -40,8 +40,8 @@ fn provision_etc_hosts_creates_missing_hosts_file() {
 }
 
 #[test]
-fn provision_etc_hosts_preserves_existing_hosts_file() {
-    let rootfs = temp_rootfs("hosts-preserve");
+fn provision_etc_hosts_overwrites_existing_hosts_file() {
+    let rootfs = temp_rootfs("hosts-overwrite");
     let hosts_path = rootfs.join("etc").join("hosts");
     fs::create_dir_all(hosts_path.parent().expect("hosts parent")).expect("create etc dir");
     fs::write(&hosts_path, "custom-host-entry\n").expect("write custom hosts");
@@ -49,7 +49,8 @@ fn provision_etc_hosts_preserves_existing_hosts_file() {
     dns_impl::provision_etc_hosts(&rootfs).expect("provision /etc/hosts");
 
     let hosts = fs::read_to_string(&hosts_path).expect("read hosts");
-    assert_eq!(hosts, "custom-host-entry\n");
+    assert!(hosts.starts_with("# Provisioned by Enclave"));
+    assert!(hosts.contains("127.0.0.1 localhost"));
 }
 
 #[test]

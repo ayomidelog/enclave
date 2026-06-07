@@ -102,7 +102,7 @@ pub fn list_configured_providers(state_dir: &Path) -> Result<Vec<String>> {
         let Some(provider) = name.strip_suffix(".token") else {
             continue;
         };
-        if provider_env_var(provider).is_some() {
+        if provider_env_var(provider).is_some() && validate_token_permissions(&path).is_ok() {
             providers.push(provider.to_string());
         }
     }
@@ -120,10 +120,12 @@ pub fn validate_token_permissions(path: &Path) -> Result<()> {
     if !metadata.is_file() {
         bail!("token path {} is not a regular file", path.display());
     }
-    if metadata.uid() != 0 {
+    let expected_uid = unsafe { libc::geteuid() as u32 };
+    if metadata.uid() != expected_uid {
         bail!(
-            "token file {} must be owned by root (uid 0), found uid {}",
+            "token file {} must be owned by uid {}, found uid {}",
             path.display(),
+            expected_uid,
             metadata.uid()
         );
     }

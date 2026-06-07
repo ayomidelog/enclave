@@ -66,7 +66,18 @@ pub fn registry_path(state_dir: &Path) -> PathBuf {
 }
 
 pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
-    with_registry_mut(state_dir, |registry| {
+    ensure_registry(state_dir)?;
+    let lock_path = registry_lock_path(state_dir);
+    crate::fsutil::with_file_lock(&lock_path, || {
+        let mut registry = match load_registry_unlocked(state_dir) {
+            Ok(registry) => registry,
+            Err(err) => {
+                tracing::warn!(
+                    "registry repair is rebuilding in-memory state after registry load failure: {err:#}"
+                );
+                Registry::default()
+            }
+        };
         let mut report = RepairReport::default();
 
         let sandboxes_root = state_dir.join("sandboxes");
@@ -127,6 +138,7 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
             }
         }
 
+        save_registry_unlocked(state_dir, &registry)?;
         Ok(report)
     })
 }
@@ -150,19 +162,7 @@ where
     ensure_registry(state_dir)?;
     let lock_path = registry_lock_path(state_dir);
     crate::fsutil::with_file_lock(&lock_path, || {
-        let path = registry_path(state_dir);
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read registry {}", path.display()))?;
-        let mut registry = match serde_json::from_str::<Registry>(&raw) {
-            Ok(registry) => registry,
-            Err(err) => {
-                tracing::warn!(
-                    "registry parse failed; recovering with empty registry at {}: {err:#}",
-                    path.display()
-                );
-                Registry::default()
-            }
-        };
+        let mut registry = load_registry_unlocked(state_dir)?;
         let out = operation(&mut registry)?;
         save_registry_unlocked(state_dir, &registry)?;
         Ok(out)

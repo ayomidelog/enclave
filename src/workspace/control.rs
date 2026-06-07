@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -244,10 +244,10 @@ pub fn start_workspace_with_security(
             }
             return Err(err).context("failed to apply workspace cgroup limits");
         }
-        let workspace_rootfs = format!("/proc/{}/root", session_info.pid);
+        let workspace_rootfs_path = format!("/proc/{}/root", session_info.pid);
         let auth_manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
         if let Err(err) = auth_manager.sync_workspace_auth(
-            &workspace_rootfs,
+            &workspace_rootfs_path,
             &workspace_snapshot.auth_providers,
             &workspace_snapshot.env_tokens,
         ) {
@@ -265,18 +265,28 @@ pub fn start_workspace_with_security(
         }
 
         let used_ips = collect_all_used_ip_octets(registry);
-        let rootfs_path = Path::new(&workspace_snapshot.sandbox_rootfs_path);
-        let assigned_ip =
-            match network::setup_workspace_network(session_info.pid, &used_ips, rootfs_path) {
-                Ok(ip) => Some(ip),
-                Err(err) => {
+        let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
+        let assigned_ip = match network::setup_workspace_network(
+            session_info.pid,
+            &used_ips,
+            &workspace_rootfs,
+        ) {
+            Ok(ip) => Some(ip),
+            Err(err) => {
+                remove_workspace_cgroups(&sandbox_snapshot, session_info.pid);
+                if let Err(stop_err) =
+                    session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
+                {
                     tracing::warn!(
-                        "workspace networking setup failed \
-                         (workspace will have no network connectivity): {err:#}"
+                        "failed to stop workspace session {} after network setup failure: {stop_err:#}",
+                        session_info.pid
                     );
-                    None
                 }
-            };
+                return Err(err).context(
+                    "failed to attach or validate workspace networking; aborted workspace startup",
+                );
+            }
+        };
 
         let sandbox = registry
             .sandboxes
