@@ -76,6 +76,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: RegistryCommands,
     },
+    Rootfs {
+        #[command(subcommand)]
+        command: RootfsCommands,
+    },
     Auth {
         #[command(subcommand)]
         command: AuthCommands,
@@ -144,6 +148,13 @@ pub enum SnapshotCommands {
 #[derive(Subcommand, Debug)]
 pub enum RegistryCommands {
     Repair(RegistryRepairArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RootfsCommands {
+    Export(RootfsExportArgs),
+    Import(RootfsImportArgs),
+    Fetch(RootfsFetchArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -518,6 +529,46 @@ pub struct WorkspaceSnapshotGcArgs {
 pub struct RegistryRepairArgs {
     #[arg(long)]
     pub strict: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct RootfsExportArgs {
+    #[arg(long, value_name = "PATH", default_value_os_t = default_state_dir_arg())]
+    pub state_dir: PathBuf,
+    #[arg(long)]
+    pub suite: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub base: bool,
+    #[arg(long, value_name = "PATH")]
+    pub output: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct RootfsImportArgs {
+    #[arg(long, value_name = "PATH", default_value_os_t = default_state_dir_arg())]
+    pub state_dir: PathBuf,
+    #[arg(long)]
+    pub suite: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub base: bool,
+    #[arg(long, default_value_t = false)]
+    pub replace: bool,
+    #[arg(value_name = "ARCHIVE")]
+    pub archive: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct RootfsFetchArgs {
+    #[arg(long, value_name = "PATH", default_value_os_t = default_state_dir_arg())]
+    pub state_dir: PathBuf,
+    #[arg(long)]
+    pub suite: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub base: bool,
+    #[arg(long, default_value_t = false)]
+    pub replace: bool,
+    #[arg(value_name = "URL")]
+    pub url: String,
 }
 
 #[derive(Args, Debug)]

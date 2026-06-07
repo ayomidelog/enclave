@@ -1,5 +1,5 @@
 use clap::Parser;
-use enclave::cli::{Cli, Commands, WorkspaceCommands, WorkspacePortCommands};
+use enclave::cli::{Cli, Commands, RootfsCommands, WorkspaceCommands, WorkspacePortCommands};
 
 #[test]
 fn workspace_enter_default_cwd_is_home() {
@@ -151,4 +151,50 @@ fn sandbox_create_parses_limit_flags() {
     assert_eq!(args.cpu_percent, Some(40.0));
     assert_eq!(args.memory_mb, Some(8192));
     assert_eq!(args.max_procs, Some(1024));
+}
+
+#[test]
+fn rootfs_export_parses_suite_and_output() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "rootfs",
+        "export",
+        "--suite",
+        "bookworm",
+        "--output",
+        "/tmp/bookworm-rootfs.tar.gz",
+    ]);
+    let Commands::Rootfs { command } = cli.command else {
+        panic!("expected rootfs command");
+    };
+    let RootfsCommands::Export(args) = command else {
+        panic!("expected rootfs export command");
+    };
+    assert_eq!(args.suite.as_deref(), Some("bookworm"));
+    assert!(!args.base);
+    assert_eq!(
+        args.output,
+        std::path::PathBuf::from("/tmp/bookworm-rootfs.tar.gz")
+    );
+}
+
+#[test]
+fn rootfs_fetch_parses_base_url_and_replace() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "rootfs",
+        "fetch",
+        "--base",
+        "--replace",
+        "https://example.com/rootfs.tar.gz",
+    ]);
+    let Commands::Rootfs { command } = cli.command else {
+        panic!("expected rootfs command");
+    };
+    let RootfsCommands::Fetch(args) = command else {
+        panic!("expected rootfs fetch command");
+    };
+    assert!(args.base);
+    assert!(args.replace);
+    assert_eq!(args.url, "https://example.com/rootfs.tar.gz");
 }

@@ -194,7 +194,7 @@ fn cache_rootfs_suite(rootfs_dir: &Path, state_dir: &Path, suite: &str) -> Resul
     Ok(())
 }
 
-fn has_rootfs_content(dir: &Path) -> bool {
+pub(crate) fn has_rootfs_content(dir: &Path) -> bool {
     ["bin", "etc", "usr"]
         .iter()
         .all(|required| dir.join(required).is_dir())

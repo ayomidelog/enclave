@@ -96,6 +96,35 @@ name = "devbox"
 bootstrap_method = "cached_rootfs"
 ```
 
+### Sharing a prebuilt rootfs
+
+If you want Docker-like first-run speed, build the rootfs once, package it, host the archive somewhere like GitHub Releases, then fetch it into Enclave's cache:
+
+```bash
+enclave rootfs export --suite bookworm --output ./bookworm-rootfs.tar.gz
+```
+
+Publish `bookworm-rootfs.tar.gz`, then on another machine import it directly:
+
+```bash
+enclave rootfs fetch --suite bookworm https://github.com/<owner>/<repo>/releases/download/<tag>/bookworm-rootfs.tar.gz
+```
+
+You can also import a local archive without an extra `curl` step:
+
+```bash
+enclave rootfs import --suite bookworm ./bookworm-rootfs.tar.gz
+```
+
+After that, set:
+
+```toml
+[sandbox]
+bootstrap_method = "cached_rootfs"
+```
+
+and first-time `enclave up` will copy the prebuilt rootfs instead of constructing one from `debootstrap`.
+
 ## Install
 
 ```bash

@@ -5,6 +5,7 @@ mod internal;
 mod policy;
 mod ps;
 mod registry;
+mod rootfs;
 mod sandbox;
 mod stats;
 mod workspace;
@@ -86,6 +87,7 @@ pub fn run() -> Result<()> {
         Commands::Workspace { command } => workspace::run_workspace_command(&cli.socket, command),
         Commands::Snapshot { command } => workspace::run_snapshot_command(&cli.socket, command),
         Commands::Registry { command } => registry::run_registry_command(&cli.socket, command),
+        Commands::Rootfs { command } => rootfs::run_rootfs_command(command),
         Commands::Auth { command } => auth::run_auth_command(command),
         Commands::Policy { command } => policy::run_policy_command(&cli.socket, command),
     }
@@ -149,7 +151,33 @@ fn apply_config_defaults(cli: &mut Cli, matches: &ArgMatches, file_config: &File
                 }
             }
         }
+        Commands::Rootfs { command } => match command {
+            crate::cli::RootfsCommands::Export(args) => {
+                let export_matches = nested_subcommand_matches(matches, &["rootfs", "export"]);
+                apply_state_dir_default(args, export_matches, file_config);
+            }
+            crate::cli::RootfsCommands::Import(args) => {
+                let import_matches = nested_subcommand_matches(matches, &["rootfs", "import"]);
+                apply_state_dir_default(args, import_matches, file_config);
+            }
+            crate::cli::RootfsCommands::Fetch(args) => {
+                let fetch_matches = nested_subcommand_matches(matches, &["rootfs", "fetch"]);
+                apply_state_dir_default(args, fetch_matches, file_config);
+            }
+        },
         _ => {}
+    }
+}
+
+fn apply_state_dir_default(
+    args: &mut impl StateDirDefault,
+    matches: Option<&ArgMatches>,
+    file_config: &FileConfig,
+) {
+    if arg_uses_default_opt(matches, "state_dir") {
+        if let Some(state_dir) = file_config.state_dir.as_ref() {
+            args.state_dir_mut().clone_from(state_dir);
+        }
     }
 }
 
@@ -193,6 +221,10 @@ trait DaemonDefaults {
     fn workspace_selinux_label_mut(&mut self) -> &mut Option<String>;
 }
 
+trait StateDirDefault {
+    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf;
+}
+
 impl DaemonDefaults for crate::cli::RunArgs {
     fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
         &mut self.state_dir
@@ -226,6 +258,24 @@ impl DaemonDefaults for crate::cli::StartArgs {
     }
     fn workspace_selinux_label_mut(&mut self) -> &mut Option<String> {
         &mut self.workspace_selinux_label
+    }
+}
+
+impl StateDirDefault for crate::cli::RootfsExportArgs {
+    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
+        &mut self.state_dir
+    }
+}
+
+impl StateDirDefault for crate::cli::RootfsImportArgs {
+    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
+        &mut self.state_dir
+    }
+}
+
+impl StateDirDefault for crate::cli::RootfsFetchArgs {
+    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
+        &mut self.state_dir
     }
 }
 
