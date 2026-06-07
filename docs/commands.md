@@ -57,6 +57,12 @@ enclave rootfs fetch  [--state-dir PATH] (--suite SUITE | --base) [--replace] UR
 | `rootfs import` | Import a rootfs archive into Enclave's cached-rootfs store for later `cached_rootfs` startup. |
 | `rootfs fetch` | Download a published rootfs archive with `curl` and import it directly into the cache. |
 
+Example published asset:
+
+```bash
+enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/releases/download/rootfs-bookworm-2026-06-07/bookworm-rootfs-clean-2026-06-07.tar.gz
+```
+
 ## Sandbox
 
 ```bash

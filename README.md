@@ -104,10 +104,10 @@ If you want Docker-like first-run speed, build the rootfs once, package it, host
 enclave rootfs export --suite bookworm --output ./bookworm-rootfs.tar.gz
 ```
 
-Publish `bookworm-rootfs.tar.gz`, then on another machine import it directly:
+Publish `bookworm-rootfs.tar.gz`, then on another machine fetch it directly:
 
 ```bash
-enclave rootfs fetch --suite bookworm https://github.com/<owner>/<repo>/releases/download/<tag>/bookworm-rootfs.tar.gz
+enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/releases/download/rootfs-bookworm-2026-06-07/bookworm-rootfs-clean-2026-06-07.tar.gz
 ```
 
 You can also import a local archive without an extra `curl` step:
@@ -115,6 +115,11 @@ You can also import a local archive without an extra `curl` step:
 ```bash
 enclave rootfs import --suite bookworm ./bookworm-rootfs.tar.gz
 ```
+
+Current published example asset:
+
+- Release page: `https://github.com/ayomidelog/enclave/releases/tag/rootfs-bookworm-2026-06-07`
+- Asset: `bookworm-rootfs-clean-2026-06-07.tar.gz`
 
 After that, set:
 
