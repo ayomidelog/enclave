@@ -7,6 +7,7 @@ mod mounts;
 mod types;
 mod util;
 
+pub(crate) use bootstrap::{ensure_rootfs_cache, has_rootfs_content};
 pub use lifecycle::{
     create_sandbox, create_sandbox_with_options, destroy_sandbox, exec_setup_command, init_storage,
     list_sandbox_items, sandbox_status, start_sandbox, stop_sandbox, update_sandbox_limits,

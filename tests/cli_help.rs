@@ -21,6 +21,7 @@ fn top_level_help_includes_core_commands() {
     assert!(stdout.contains("daemon"));
     assert!(stdout.contains("health"));
     assert!(stdout.contains("auth"));
+    assert!(stdout.contains("rootfs"));
     assert!(stdout.contains("stats"));
 }
 

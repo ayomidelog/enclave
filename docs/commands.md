@@ -29,6 +29,9 @@ enclave init
 enclave up        [--rebuild]
 enclave down
 enclave restart   [--rebuild]
+enclave rootfs export [--state-dir PATH] (--suite SUITE | --base) --output ARCHIVE
+enclave rootfs import [--state-dir PATH] (--suite SUITE | --base) [--replace] ARCHIVE
+enclave rootfs fetch  [--state-dir PATH] (--suite SUITE | --base) [--replace] URL
 ```
 
 | Command | Description |
@@ -39,6 +42,26 @@ enclave restart   [--rebuild]
 | `down` | Stop all workspaces and the sandbox. |
 | `restart` | Stop and restart the entire environment. |
 | `restart --rebuild` | Rebuild the sandbox from scratch on restart. |
+
+## Rootfs Cache
+
+```bash
+enclave rootfs export [--state-dir PATH] (--suite SUITE | --base) --output ARCHIVE
+enclave rootfs import [--state-dir PATH] (--suite SUITE | --base) [--replace] ARCHIVE
+enclave rootfs fetch  [--state-dir PATH] (--suite SUITE | --base) [--replace] URL
+```
+
+| Command | Description |
+|---------|-------------|
+| `rootfs export` | Package an existing cached rootfs into a tar or tar.gz archive suitable for sharing or publishing. |
+| `rootfs import` | Import a rootfs archive into Enclave's cached-rootfs store for later `cached_rootfs` startup. |
+| `rootfs fetch` | Download a published rootfs archive with `curl` and import it directly into the cache. |
+
+Example published asset:
+
+```bash
+enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/releases/download/rootfs-bookworm-2026-06-07/bookworm-rootfs-clean-2026-06-07.tar.gz
+```
 
 ## Sandbox
 
