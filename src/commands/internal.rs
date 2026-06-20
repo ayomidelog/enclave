@@ -448,6 +448,7 @@ fn mount_post_pivot_filesystems(old_root: &Path) -> Result<()> {
     mount_proc_if_needed()?;
     mount_devpts_if_needed()?;
     bind_sys_if_needed(old_root)?;
+    mount_workspace_tmp_if_needed(Path::new("/tmp"))?;
     mount_runtime_tmpfs_if_needed(Path::new("/run/enclave/auth"))?;
     mount_runtime_tmpfs_if_needed(Path::new("/run/enclave/env"))?;
     Ok(())
@@ -529,8 +530,34 @@ fn mount_runtime_tmpfs_if_needed(target: &Path) -> Result<()> {
     .with_context(|| format!("failed to mount tmpfs at {}", target.display()))
 }
 
+fn mount_workspace_tmp_if_needed(target: &Path) -> Result<()> {
+    fs::create_dir_all(target).with_context(|| format!("failed to create {}", target.display()))?;
+    if is_mountpoint(target)? {
+        return Ok(());
+    }
+    mount(
+        Some("tmpfs"),
+        target,
+        Some("tmpfs"),
+        workspace_tmp_mount_flags(),
+        Some(WORKSPACE_TMP_DATA),
+    )
+    .with_context(|| {
+        format!(
+            "failed to mount private workspace tmpfs at {}",
+            target.display()
+        )
+    })
+}
+
 fn runtime_tmpfs_mount_flags() -> MsFlags {
     MsFlags::MS_NODEV | MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC
+}
+
+const WORKSPACE_TMP_DATA: &str = "mode=1777";
+
+fn workspace_tmp_mount_flags() -> MsFlags {
+    MsFlags::MS_NODEV | MsFlags::MS_NOSUID
 }
 
 fn is_mountpoint(path: &Path) -> Result<bool> {
