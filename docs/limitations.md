@@ -20,7 +20,7 @@ Enclave is intentionally scoped to local Linux development workflows. These are 
 - **Copy-based snapshots**: snapshots are full directory copies. Use `enclave workspace snapshot-gc` to enforce retention and reclaim disk space.
 - **Modern mount support required**: workspace `/home` mounts now rely on idmapped bind mounts. Hosts must provide a kernel and `mount` implementation with `X-mount.idmap` support.
 - **Mixed-ownership host trees are less predictable**: host-backed `workspace_dir` mounts work best when the project tree has a consistent owner/group at the root. Files owned by unrelated host IDs may appear as overflow IDs inside the workspace.
-- **No per-workspace disk quota yet**: Enclave does not currently enforce filesystem quotas for workspace storage. A large workspace can still consume host disk space until normal filesystem capacity limits are reached.
+- **Per-workspace disk quota is limited to Enclave-managed `/home` storage**: disk quota is supported only when Enclave manages the workspace filesystem itself. Host-backed `workspace_dir` / `path` mounts do not support enforced disk quotas.
 - **Linux only**: Enclave depends on Linux namespace, mount, and networking primitives. macOS and Windows are not supported.
 
 See [Roadmap](roadmap.md) for the features planned to address some of these gaps.

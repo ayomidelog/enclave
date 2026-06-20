@@ -72,20 +72,21 @@ pub fn exec_workspace_command(
     })?;
 
     let effective_cwd = sanitize_workspace_cwd(cwd);
-    let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let mut cmd = Command::new(&current_exe);
-    cmd.args(runtime_exec_command_args(
-        runtime_pid,
-        runtime_starttime_ticks,
-        workspace.sandbox_id.as_str(),
-        workspace.id.as_str(),
-        &effective_cwd,
-        command,
-    ));
+    let output = crate::workspace::with_workspace_storage_mounted(&workspace, || {
+        let current_exe = crate::workspace::session::resolve_session_helper_source();
+        let mut cmd = Command::new(&current_exe);
+        cmd.args(runtime_exec_command_args(
+            runtime_pid,
+            runtime_starttime_ticks,
+            workspace.sandbox_id.as_str(),
+            workspace.id.as_str(),
+            &effective_cwd,
+            command,
+        ));
 
-    let output = cmd
-        .output()
-        .context("failed to execute workspace command via internal helper")?;
+        cmd.output()
+            .context("failed to execute workspace command via internal helper")
+    })?;
 
     let exit_code = output
         .status

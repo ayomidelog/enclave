@@ -144,3 +144,21 @@ workspace_dir = "./project"
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn parses_workspace_disk_mb_field() {
+    let enclavefile = parse_enclavefile(
+        r#"
+[sandbox]
+name = "devbox"
+
+[workspace.api]
+name = "api"
+disk_mb = 512
+"#,
+    )
+    .expect("enclavefile should parse");
+
+    let workspace = enclavefile.workspace.get("api").expect("workspace exists");
+    assert_eq!(workspace.disk_mb, Some(512));
+}

@@ -28,6 +28,7 @@ pub struct WorkspaceLimits {
     pub memory_bytes: Option<u64>,
     pub max_processes: Option<u64>,
     pub max_open_files: Option<u64>,
+    pub disk_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -37,6 +38,7 @@ pub struct WorkspaceLimitsUpdate {
     pub memory_bytes: Option<Option<u64>>,
     pub max_processes: Option<Option<u64>>,
     pub max_open_files: Option<Option<u64>>,
+    pub disk_bytes: Option<Option<u64>>,
 }
 
 impl WorkspaceLimits {
@@ -80,6 +82,10 @@ impl WorkspaceLimits {
             changed |= self.max_open_files != max_open_files;
             self.max_open_files = max_open_files;
         }
+        if let Some(disk_bytes) = update.disk_bytes {
+            changed |= self.disk_bytes != disk_bytes;
+            self.disk_bytes = disk_bytes;
+        }
         self.validate()?;
         Ok(changed)
     }
@@ -92,6 +98,7 @@ impl WorkspaceLimitsUpdate {
             && self.memory_bytes.is_none()
             && self.max_processes.is_none()
             && self.max_open_files.is_none()
+            && self.disk_bytes.is_none()
     }
 }
 

@@ -96,7 +96,7 @@ enclave wipe
 ## Workspace
 
 ```bash
-enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N]
+enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>
 enclave workspace destroy <sandbox> <workspace>
@@ -176,6 +176,7 @@ When creating a workspace, you can set per-workspace resource limits:
 | `--memory-mb N` | Maximum virtual memory in megabytes (`RLIMIT_AS`). |
 | `--max-procs N` | Maximum number of processes (`RLIMIT_NPROC` via `prlimit`). |
 | `--max-open-files N` | Maximum number of open file descriptors (`RLIMIT_NOFILE`). |
+| `--disk-mb N` | Maximum disk space for Enclave-managed workspace `/home` storage. Not supported with host-mounted `workspace_dir` / `path`. |
 
 Sandbox limits are aggregate caps across all running workspaces in that sandbox. Workspace limits apply to the individual workspace process tree.
 

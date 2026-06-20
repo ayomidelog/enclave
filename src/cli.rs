@@ -312,6 +312,8 @@ pub struct WorkspaceCreateArgs {
     pub max_procs: Option<u64>,
     #[arg(long)]
     pub max_open_files: Option<u64>,
+    #[arg(long)]
+    pub disk_mb: Option<u64>,
 }
 
 #[derive(Args, Debug)]

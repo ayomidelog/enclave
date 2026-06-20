@@ -41,6 +41,7 @@ pub struct WorkspaceSection {
     pub memory_mb: Option<u64>,
     pub max_procs: Option<u64>,
     pub max_open_files: Option<u64>,
+    pub disk_mb: Option<u64>,
     #[serde(default)]
     pub auth: Vec<String>,
     #[serde(default)]

@@ -84,6 +84,7 @@ fn run_workspace_create(
             "memory_mb": args.memory_mb,
             "max_procs": args.max_procs,
             "max_open_files": args.max_open_files,
+            "disk_mb": args.disk_mb,
         }),
     ) {
         Ok(response) => response,

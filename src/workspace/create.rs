@@ -56,6 +56,10 @@ pub fn create_workspace_with_options(
     let auth_providers = normalize_auth_providers(auth_providers)?;
     let env_tokens = normalize_env_tokens(env_tokens)?;
     crate::workspace::validate_published_ports(&published_ports)?;
+    crate::workspace::validate_workspace_storage_limits(
+        home_mount_source.as_deref(),
+        limits.disk_bytes,
+    )?;
 
     with_registry_mut(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
@@ -181,6 +185,7 @@ pub fn create_workspace_with_options(
                     metadata_path.display()
                 )
             })?;
+        crate::workspace::create_workspace_storage(&metadata)?;
 
         sandbox_entry
             .workspaces

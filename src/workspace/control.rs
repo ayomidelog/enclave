@@ -147,8 +147,13 @@ pub fn update_workspace_definition(
             }
         }
         changed |= workspace.limits.apply_update(&limits_update)?;
+        crate::workspace::validate_workspace_storage_limits(
+            workspace.home_mount_source_path.as_deref(),
+            workspace.limits.disk_bytes,
+        )?;
 
         if changed {
+            crate::workspace::create_workspace_storage(workspace)?;
             persist_workspace_metadata(workspace)?;
         }
 
@@ -227,6 +232,7 @@ pub fn start_workspace_with_security(
             (workspace_id, sandbox.metadata.clone(), workspace_snapshot)
         };
 
+        crate::workspace::ensure_workspace_storage_ready(&workspace_snapshot)?;
         let session_info =
             session::start_session(&workspace_snapshot, apparmor_profile, selinux_label)?;
         if let Err(err) = apply_workspace_runtime_constraints(
@@ -502,6 +508,12 @@ pub(crate) fn set_workspace_stopped(
 
     if let Some(ref ip) = workspace.assigned_ip {
         network::teardown_workspace_network(ip);
+    }
+    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted(workspace) {
+        tracing::warn!(
+            "failed to unmount quota-backed workspace storage for {}: {err:#}",
+            workspace.id
+        );
     }
 
     workspace.status = WorkspaceStatus::Stopped;

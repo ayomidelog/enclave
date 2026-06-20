@@ -290,7 +290,7 @@ fn workspace_status_label(status: &WorkspaceStatus) -> &'static str {
 
 fn print_workspace_limits(label: &str, limits: &crate::workspace::WorkspaceLimits) {
     println!(
-        "{label}: cpu_seconds={}, cpu_percent={}, memory_bytes={}, max_processes={}, max_open_files={}",
+        "{label}: cpu_seconds={}, cpu_percent={}, memory_bytes={}, max_processes={}, max_open_files={}, disk_bytes={}",
         limits
             .cpu_seconds
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
@@ -306,6 +306,9 @@ fn print_workspace_limits(label: &str, limits: &crate::workspace::WorkspaceLimit
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
         limits
             .max_open_files
+            .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
+        limits
+            .disk_bytes
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
     );
 }

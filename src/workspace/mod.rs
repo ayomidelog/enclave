@@ -9,6 +9,7 @@ mod runtime;
 pub(crate) mod session;
 mod snapshot;
 mod stats;
+mod storage;
 mod types;
 
 pub const DEFAULT_WORKSPACE_PATH: &str =
@@ -49,3 +50,7 @@ pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) 
 }
 
 pub(crate) use cwd::sanitize_workspace_cwd;
+pub(crate) use storage::{
+    create_workspace_storage, ensure_workspace_storage_ready, ensure_workspace_storage_unmounted,
+    validate_workspace_storage_limits, with_workspace_storage_mounted,
+};

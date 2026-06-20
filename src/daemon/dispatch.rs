@@ -70,12 +70,14 @@ fn parse_workspace_limits_create(params: &Value) -> Result<workspace::WorkspaceL
     let memory_mb = params.get("memory_mb").and_then(Value::as_u64);
     let max_procs = params.get("max_procs").and_then(Value::as_u64);
     let max_open_files = params.get("max_open_files").and_then(Value::as_u64);
+    let disk_mb = params.get("disk_mb").and_then(Value::as_u64);
     let limits = workspace::WorkspaceLimits {
         cpu_seconds,
         cpu_percent,
         memory_bytes: memory_mb.map(|v| v.saturating_mul(1024 * 1024)),
         max_processes: max_procs,
         max_open_files,
+        disk_bytes: disk_mb.map(|v| v.saturating_mul(1024 * 1024)),
     };
     limits.validate()?;
     Ok(limits)
@@ -89,6 +91,8 @@ fn parse_workspace_limits_update(params: &Value) -> Result<workspace::WorkspaceL
             .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
         max_processes: parse_optional_u64_field(params, "max_procs")?,
         max_open_files: parse_optional_u64_field(params, "max_open_files")?,
+        disk_bytes: parse_optional_u64_field(params, "disk_mb")?
+            .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
     })
 }
 
@@ -935,6 +939,7 @@ fn rollback_workspace_definition_update(
             memory_bytes: Some(previous.limits.memory_bytes),
             max_processes: Some(previous.limits.max_processes),
             max_open_files: Some(previous.limits.max_open_files),
+            disk_bytes: Some(previous.limits.disk_bytes),
         },
     ) {
         tracing::warn!(

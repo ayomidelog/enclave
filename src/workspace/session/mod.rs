@@ -255,7 +255,7 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
     Ok(helper_path)
 }
 
-fn resolve_session_helper_source() -> PathBuf {
+pub(crate) fn resolve_session_helper_source() -> PathBuf {
     for candidate in [HELPER_OVERRIDE_ENV, TEST_BINARY_ENV] {
         if let Some(path) = std::env::var_os(candidate).map(PathBuf::from) {
             if path.is_file() {
