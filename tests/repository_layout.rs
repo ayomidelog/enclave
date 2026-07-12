@@ -95,8 +95,9 @@ fn rust_and_script_files_have_no_unresolved_todo_markers() {
                 } else {
                     trimmed.starts_with('#') && !trimmed.starts_with("#!")
                 };
-                let has_unresolved_marker =
-                    trimmed.contains("TODO") || trimmed.contains("FIXME") || trimmed.contains("XXX");
+                let has_unresolved_marker = trimmed.contains("TODO")
+                    || trimmed.contains("FIXME")
+                    || trimmed.contains("XXX");
                 assert!(
                     !(is_comment && has_unresolved_marker),
                     "unresolved marker left in {}:{}",
