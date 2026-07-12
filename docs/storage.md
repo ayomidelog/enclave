@@ -19,6 +19,7 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
     └── <sandbox-id>/
         ├── rootfs/              # Sandbox root filesystem on disk
         ├── runtime/rootfs.mnt/  # Active mount point used while running
+        ├── runtime/session-helper # Cached sandbox-local copy of the internal session helper
         ├── home-base/           # Shared lower layer for workspace home overlays
         └── workspaces/<workspace-id>/
             ├── fs/              # Default workspace source directory mounted at /home via idmapped bind mount
@@ -38,6 +39,7 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
   - `cached_rootfs` can copy from either a suite-specific cache or the generic `base/` cache.
 - `sandboxes/<sandbox-id>/rootfs/` is the sandbox's on-disk root filesystem.
 - `sandboxes/<sandbox-id>/runtime/rootfs.mnt/` is the active mount point used while the sandbox is running.
+- `sandboxes/<sandbox-id>/runtime/session-helper` caches the internal helper binary once per sandbox so workspace starts do not recopy it for every workspace.
 
 ## Workspace writable data
 

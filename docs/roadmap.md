@@ -37,3 +37,6 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
 - **Host-to-workspace port publishing**
   - Explicit, opt-in TCP publishing from `127.0.0.1:HOST_PORT` on the host to a selected workspace port.
   - Supported through both `Enclavefile` `ports = [...]` declarations and `enclave workspace port ...` commands.
+- **Large sandbox lifecycle performance**
+  - Batch sandbox shutdown with parallel per-workspace cleanup.
+  - Sandbox-local session-helper caching, user-namespace mode caching, host-network readiness caching, and collapsed veth/DNS setup for faster large-sandbox startup.

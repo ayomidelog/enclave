@@ -66,6 +66,13 @@ Rough ballpark on a 4-core x86_64 host (NVMe):
 
 Numbers vary by host hardware, suite, and setup commands. The key tradeoff: one shared rootfs means the bootstrap cost is paid once regardless of workspace count.
 
+On the validated 26-workspace sandbox, current best-known lifecycle timings are:
+
+- `enclave up` / existing-sandbox workspace start path: `6.93s`
+- `enclave down` / sandbox stop path: `4.20s`
+
+Those measurements are host-dependent, but they reflect the current build after the workspace-helper cache, host-network cache, user-namespace cache, collapsed veth setup, and unchanged-DNS-write optimizations.
+
 ## Stability Guarantees
 
 - **Crash recovery**: On daemon startup, Enclave reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. This handles daemon crashes, host reboots, and OOM-killed sessions without manual cleanup.

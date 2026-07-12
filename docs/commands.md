@@ -39,7 +39,7 @@ enclave rootfs fetch  [--state-dir PATH] (--suite SUITE | --base) [--replace] UR
 | `init` | Scaffold a blank `Enclavefile` in the current directory. |
 | `up` | Read the Enclavefile, create sandbox, run setup, create and start all workspaces. |
 | `up --rebuild` | Force sandbox recreation and rerun setup commands. |
-| `down` | Stop all workspaces and the sandbox. |
+| `down` | Stop all workspaces in the sandbox as a coordinated batch, then stop the sandbox. |
 | `restart` | Stop and restart the entire environment. |
 | `restart --rebuild` | Rebuild the sandbox from scratch on restart. |
 

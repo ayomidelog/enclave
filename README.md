@@ -44,6 +44,15 @@ That didn't exist. So I built it.
 
 > **Linux only.** Enclave depends on Linux kernel features (`unshare`, user namespaces, idmapped mounts, OverlayFS, `/proc` namespaces), not on any specific distribution. macOS and Windows are not supported.
 
+## Latest Verified Lifecycle Timing
+
+On the validated 26-workspace sandbox:
+
+- `enclave up`/workspace start path: `6.93s`
+- `enclave down`/sandbox stop path: `4.20s`
+
+These numbers are host-dependent, but they reflect the current best-known build.
+
 ## Requirements
 
 - Any modern Linux distribution with kernel 5.12+ recommended for idmapped mounts

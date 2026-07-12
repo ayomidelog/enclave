@@ -128,7 +128,7 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 | `src/policy/*` | Policy engine (allow/deny rules, UID matching) |
 | `src/sandbox/*` | Sandbox lifecycle (create, start, stop, destroy) |
 | `src/workspace/*` | Workspace lifecycle, sessions, snapshots, process status |
-| `src/network/*` | Network namespace setup (bridge, isolated veth ports, NAT, IPAM, DNS, loopback port publishing) |
+| `src/network/*` | Network namespace setup (bridge, isolated veth ports, NAT, IPAM, DNS, loopback port publishing, host-network cache) |
 | `src/enclavefile.rs` | Enclavefile TOML parsing and scaffolding |
 | `src/config.rs` | Configuration file loading |
 | `src/doctor.rs` | System diagnostics (registry, mounts, cgroups, runtime state) |
@@ -136,6 +136,7 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 | `src/logging/` | Tracing/tracing-subscriber setup (ENCLAVE_LOG env filter) |
 | `src/fsutil.rs` | Atomic writes, file locking, path validation, slugify |
 | `src/protocol.rs` | JSON request/response wire format |
+| `src/workspace/session/mod.rs` | Workspace session lifecycle, sandbox-local session-helper cache, namespace handoff, and runtime bootstrap |
 | `src/workspace/session/security.rs` | Capability dropping, read-only remounts, and seccomp filter setup |
 | `src/workspace/session/userns.rs` | Subordinate UID/GID range detection for user namespace planning |
 | `src/workspace/session/idmap.rs` | Idmapped mount option generation for workspace source mounts |
