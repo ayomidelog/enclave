@@ -160,7 +160,7 @@ fn stop_sessions_batch_stops_multiple_term_resistant_processes_with_one_shared_t
     assert_eq!(
         result.stopped_pids.len() + result.failed_pids.len(),
         2,
-        "every target pid should be accounted for in the batch result even if CI observes a transient post-signal state"
+        "every target pid should be accounted for in the batch result"
     );
     for child in &mut children {
         let _ = child.kill();

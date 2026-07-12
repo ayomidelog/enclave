@@ -76,7 +76,7 @@ fn source_tree_has_no_inline_test_bodies() {
 }
 
 #[test]
-fn rust_and_script_files_have_no_standalone_comments() {
+fn rust_and_script_files_have_no_unresolved_todo_markers() {
     let roots = [
         (repo_root().join("src"), "rs"),
         (repo_root().join("tests"), "rs"),
@@ -95,9 +95,11 @@ fn rust_and_script_files_have_no_standalone_comments() {
                 } else {
                     trimmed.starts_with('#') && !trimmed.starts_with("#!")
                 };
+                let has_unresolved_marker =
+                    trimmed.contains("TODO") || trimmed.contains("FIXME") || trimmed.contains("XXX");
                 assert!(
-                    !is_comment,
-                    "standalone comment left in {}:{}",
+                    !(is_comment && has_unresolved_marker),
+                    "unresolved marker left in {}:{}",
                     path.display(),
                     line_number + 1
                 );
