@@ -3,6 +3,7 @@ name = "enclave"
 version = "1.0.0"
 edition = "2021"
 description = "Enclave Linux workspace isolation platform"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0"

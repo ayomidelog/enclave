@@ -3,6 +3,7 @@ use std::env;
 use std::ffi::CStr;
 use std::fs;
 use std::mem::MaybeUninit;
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 
@@ -11,6 +12,7 @@ const SUBGID_PATH: &str = "/etc/subgid";
 const REQUIRED_SUBID_COUNT: u32 = 65_536;
 const OWNER_OVERRIDE_ENV: &str = "ENCLAVE_SUBID_OWNER";
 const DEFAULT_PASSWD_BUFFER_SIZE: usize = 1024;
+static USER_NAMESPACE_MODE_CACHE: OnceLock<UserNamespaceMode> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdMapRange {
@@ -33,6 +35,16 @@ pub enum UserNamespaceMode {
 }
 
 pub fn detect_user_namespace_mode() -> Result<UserNamespaceMode> {
+    if let Some(mode) = USER_NAMESPACE_MODE_CACHE.get() {
+        return Ok(mode.clone());
+    }
+
+    let mode = detect_user_namespace_mode_uncached()?;
+    let _ = USER_NAMESPACE_MODE_CACHE.set(mode.clone());
+    Ok(mode)
+}
+
+fn detect_user_namespace_mode_uncached() -> Result<UserNamespaceMode> {
     let effective_uid = unsafe { libc::geteuid() as u32 };
     if effective_uid == 0 {
         return match subordinate_user_namespace_plan() {

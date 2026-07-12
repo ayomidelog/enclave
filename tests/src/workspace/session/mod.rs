@@ -1,8 +1,10 @@
 use super::{
     infer_workspace_helper_from_current_exe, launch_userns_args, resolve_session_helper_source,
-    session_helper_path, setgroups_args,
+    session_helper_path, setgroups_args, stop_sessions_batch,
     userns::{IdMapRange, UserNamespaceMode, UserNamespacePlan},
 };
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
 
 fn workspace_fixture() -> super::super::types::WorkspaceMetadata {
     super::super::types::WorkspaceMetadata {
@@ -10,15 +12,18 @@ fn workspace_fixture() -> super::super::types::WorkspaceMetadata {
         sandbox_id: "sb-123".to_string(),
         name: "dev".to_string(),
         created_at: "2026-03-11T00:00:00Z".to_string(),
-        workspace_path: "/tmp/enclave-test/workspaces/ws-123".to_string(),
-        filesystem_path: "/tmp/enclave-test/workspaces/ws-123/fs".to_string(),
+        workspace_path: "/tmp/enclave-test/sandboxes/sb-123/workspaces/ws-123".to_string(),
+        filesystem_path: "/tmp/enclave-test/sandboxes/sb-123/workspaces/ws-123/fs".to_string(),
         filesystem_mount_target: "/home".to_string(),
         home_mount_source_path: None,
         sandbox_rootfs_path: "/tmp/enclave-test/rootfs".to_string(),
         overlay_home_base_path: "/tmp/enclave-test/home-base".to_string(),
-        overlay_home_upper_path: "/tmp/enclave-test/workspaces/ws-123/home-upper".to_string(),
-        overlay_home_work_path: "/tmp/enclave-test/workspaces/ws-123/home-work".to_string(),
-        overlay_home_merged_path: "/tmp/enclave-test/workspaces/ws-123/home-merged".to_string(),
+        overlay_home_upper_path: "/tmp/enclave-test/sandboxes/sb-123/workspaces/ws-123/home-upper"
+            .to_string(),
+        overlay_home_work_path: "/tmp/enclave-test/sandboxes/sb-123/workspaces/ws-123/home-work"
+            .to_string(),
+        overlay_home_merged_path:
+            "/tmp/enclave-test/sandboxes/sb-123/workspaces/ws-123/home-merged".to_string(),
         auth_providers: Vec::new(),
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
@@ -99,7 +104,7 @@ fn session_helper_path_uses_procfs_exe_reference() {
     let workspace = workspace_fixture();
     assert_eq!(
         session_helper_path(&workspace),
-        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/runtime/session-helper")
+        std::path::PathBuf::from("/tmp/enclave-test/sandboxes/sb-123/runtime/session-helper")
     );
 }
 
@@ -131,4 +136,50 @@ fn infer_workspace_helper_from_current_exe_detects_target_debug_binary() {
     );
 
     let _ = std::fs::remove_dir_all(temp);
+}
+
+#[test]
+fn stop_sessions_batch_stops_multiple_term_resistant_processes_with_one_shared_timeout() {
+    let mut children = vec![
+        spawn_term_resistant_enclave_process(),
+        spawn_term_resistant_enclave_process(),
+    ];
+    let targets = children
+        .iter()
+        .map(|child| {
+            let pid = child.id();
+            let starttime = super::process_starttime_ticks(pid).expect("process starttime");
+            (pid, Some(starttime))
+        })
+        .collect::<Vec<_>>();
+
+    let started = Instant::now();
+    let result = stop_sessions_batch(&targets).expect("batch stop should succeed");
+    let elapsed = started.elapsed();
+
+    for child in &mut children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    assert_eq!(result.failed_pids.len(), 0, "no pid should remain running");
+    assert_eq!(result.stopped_pids.len(), 2, "both pids should be stopped");
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "batch stop took too long: {:?}; expected one shared timeout window, not serial waits",
+        elapsed
+    );
+}
+
+fn spawn_term_resistant_enclave_process() -> Child {
+    Command::new("bash")
+        .args([
+            "-lc",
+            "exec -a enclave-workspace-session bash -lc 'trap \"\" TERM; while :; do sleep 1; done'",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn enclave-like process")
 }

@@ -4,9 +4,9 @@ mod script;
 mod security;
 mod userns;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
-use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -228,13 +228,20 @@ pub fn start_session(
 }
 
 fn session_helper_path(workspace: &WorkspaceMetadata) -> PathBuf {
-    runtime_dir(workspace).join(SESSION_HELPER_BASENAME)
+    sandbox_runtime_dir(workspace).join(SESSION_HELPER_BASENAME)
 }
 
 fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
     let helper_path = session_helper_path(workspace);
-    let temp_path = runtime_dir(workspace).join(format!("{SESSION_HELPER_BASENAME}.tmp"));
     let source_exe = resolve_session_helper_source();
+    if helper_is_fresh(&source_exe, &helper_path)? {
+        return Ok(helper_path);
+    }
+    if let Some(parent) = helper_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let temp_path = helper_path.with_extension("tmp");
     if temp_path.exists() {
         fs::remove_file(&temp_path)
             .with_context(|| format!("failed to remove stale {}", temp_path.display()))?;
@@ -260,6 +267,19 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
         )
     })?;
     Ok(helper_path)
+}
+
+fn helper_is_fresh(source_exe: &Path, helper_path: &Path) -> Result<bool> {
+    if !helper_path.is_file() {
+        return Ok(false);
+    }
+    let source_meta = fs::metadata(source_exe)
+        .with_context(|| format!("failed to stat {}", source_exe.display()))?;
+    let helper_meta = fs::metadata(helper_path)
+        .with_context(|| format!("failed to stat {}", helper_path.display()))?;
+    let source_mtime = source_meta.modified().ok();
+    let helper_mtime = helper_meta.modified().ok();
+    Ok(source_meta.len() == helper_meta.len() && source_mtime == helper_mtime)
 }
 
 pub(crate) fn resolve_session_helper_source() -> PathBuf {
@@ -394,10 +414,9 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
 fn wait_for_targets_to_exit(targets: &[(u32, Option<u64>)], timeout: Duration) {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if targets
-            .iter()
-            .all(|(pid, expected_starttime_ticks)| !process_matches(*pid, *expected_starttime_ticks))
-        {
+        if targets.iter().all(|(pid, expected_starttime_ticks)| {
+            !process_matches(*pid, *expected_starttime_ticks)
+        }) {
             return;
         }
         thread::sleep(Duration::from_millis(50));
@@ -461,6 +480,15 @@ fn runtime_dir(workspace: &WorkspaceMetadata) -> PathBuf {
     PathBuf::from(&workspace.workspace_path).join("runtime")
 }
 
+fn sandbox_runtime_dir(workspace: &WorkspaceMetadata) -> PathBuf {
+    PathBuf::from(&workspace.workspace_path)
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .map(|sandbox_dir| sandbox_dir.join("runtime"))
+        .unwrap_or_else(|| runtime_dir(workspace))
+}
+
 fn ensure_runtime_layout(workspace: &WorkspaceMetadata) -> Result<()> {
     for path in [
         &workspace.workspace_path,
@@ -483,6 +511,12 @@ fn ensure_runtime_layout(workspace: &WorkspaceMetadata) -> Result<()> {
     }
     fs::create_dir_all(runtime_dir(workspace))
         .with_context(|| format!("failed to create runtime dir for {}", workspace.id))?;
+    fs::create_dir_all(sandbox_runtime_dir(workspace)).with_context(|| {
+        format!(
+            "failed to create sandbox runtime dir for {}",
+            workspace.sandbox_id
+        )
+    })?;
     if workspace.home_mount_source_path.is_some() {
         return Ok(());
     }

@@ -10,8 +10,11 @@
 - Workspace startup now fails closed if networking is not actually ready, including missing default-route validation.
 - `enclave up`/`enclave down` auto-start paths now respect project configuration more consistently and are less dependent on manual runtime-dir ownership fixes.
 - Runtime workspace files are written against the live workspace root instead of the shared sandbox rootfs.
+- Sandbox shutdown now stops workspace runtimes as a coordinated batch and cleans up per-workspace resources in parallel instead of waiting through serial per-workspace stop windows.
+- Existing-workspace startup is substantially faster on large sandboxes by reusing the session helper at the sandbox level, caching host networking readiness, caching user-namespace mode detection, collapsing repeated host/netns veth setup commands, and skipping unchanged DNS file rewrites.
 
 ### Fixed
 - Registry mutation no longer silently replaces invalid registry data with an empty registry.
 - Session helper resolution now works correctly for library/test-driven startup flows.
 - Auth provider visibility now reflects only usable configured tokens.
+- Large sandbox stop/start paths no longer scale as poorly with workspace count during normal lifecycle operations.

@@ -1,6 +1,7 @@
-use std::fs;
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::PathBuf;
+use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -14,6 +15,18 @@ use super::types::{
     WorkspaceLimitsUpdate, WorkspaceListItem, WorkspaceMetadata, WorkspaceStatus,
     WorkspaceStatusReport,
 };
+
+struct WorkspaceRuntimeStart {
+    pid: u32,
+    starttime_ticks: u64,
+    mount_ns: String,
+    pid_ns: String,
+    assigned_ip: String,
+}
+
+enum NetworkStartPlan {
+    AllocateFromUsedIps(BTreeSet<u8>),
+}
 
 pub fn list_workspaces(
     state_dir: &std::path::Path,
@@ -180,7 +193,7 @@ pub fn start_workspace_with_security(
     with_registry_mut(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
 
-        let (workspace_id, sandbox_snapshot, workspace_snapshot) = {
+        let (workspace_id, sandbox_snapshot, workspace_snapshot, used_ips) = {
             let sandbox = registry
                 .sandboxes
                 .get_mut(&sandbox_id)
@@ -230,70 +243,22 @@ pub fn start_workspace_with_security(
                 .get(&workspace_id)
                 .cloned()
                 .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-            (workspace_id, sandbox.metadata.clone(), workspace_snapshot)
+            (
+                workspace_id,
+                sandbox.metadata.clone(),
+                workspace_snapshot,
+                collect_all_used_ip_octets(registry),
+            )
         };
 
-        crate::workspace::ensure_workspace_storage_ready(&workspace_snapshot)?;
-        let session_info =
-            session::start_session(&workspace_snapshot, apparmor_profile, selinux_label)?;
-        if let Err(err) = apply_workspace_runtime_constraints(
+        let started = launch_workspace_runtime(
+            state_dir,
             &sandbox_snapshot,
             &workspace_snapshot,
-            session_info.pid,
-        ) {
-            if let Err(stop_err) =
-                session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
-            {
-                tracing::warn!(
-                    "failed to stop workspace session {} after cgroup setup failure: {stop_err:#}",
-                    session_info.pid
-                );
-            }
-            return Err(err).context("failed to apply workspace cgroup limits");
-        }
-        let workspace_rootfs_path = format!("/proc/{}/root", session_info.pid);
-        let auth_manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
-        if let Err(err) = auth_manager.sync_workspace_auth(
-            &workspace_rootfs_path,
-            &workspace_snapshot.auth_providers,
-            &workspace_snapshot.env_tokens,
-        ) {
-            remove_workspace_cgroups(&sandbox_snapshot, session_info.pid);
-            if let Err(stop_err) =
-                session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
-            {
-                tracing::warn!(
-                    "failed to stop workspace session {} after auth sync failure: {stop_err:#}",
-                    session_info.pid
-                );
-            }
-            return Err(err)
-                .context("failed to sync workspace auth; attempted to stop workspace session");
-        }
-
-        let used_ips = collect_all_used_ip_octets(registry);
-        let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
-        let assigned_ip = match network::setup_workspace_network(
-            session_info.pid,
-            &used_ips,
-            &workspace_rootfs,
-        ) {
-            Ok(ip) => Some(ip),
-            Err(err) => {
-                remove_workspace_cgroups(&sandbox_snapshot, session_info.pid);
-                if let Err(stop_err) =
-                    session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
-                {
-                    tracing::warn!(
-                        "failed to stop workspace session {} after network setup failure: {stop_err:#}",
-                        session_info.pid
-                    );
-                }
-                return Err(err).context(
-                    "failed to attach or validate workspace networking; aborted workspace startup",
-                );
-            }
-        };
+            apparmor_profile,
+            selinux_label,
+            NetworkStartPlan::AllocateFromUsedIps(used_ips),
+        )?;
 
         let sandbox = registry
             .sandboxes
@@ -304,15 +269,11 @@ pub fn start_workspace_with_security(
             .get_mut(&workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
         workspace.status = WorkspaceStatus::Running;
-        workspace.runtime_pid = Some(session_info.pid);
-        workspace.runtime_starttime_ticks = Some(session_info.starttime_ticks);
-        workspace.assigned_ip = assigned_ip;
+        workspace.runtime_pid = Some(started.pid);
+        workspace.runtime_starttime_ticks = Some(started.starttime_ticks);
+        workspace.assigned_ip = Some(started.assigned_ip);
         normalize_namespace_ref_paths(workspace);
-        session::write_namespace_ref_values(
-            workspace,
-            &session_info.mount_ns,
-            &session_info.pid_ns,
-        )?;
+        session::write_namespace_ref_values(workspace, &started.mount_ns, &started.pid_ns)?;
 
         let metadata_path = PathBuf::from(&workspace.workspace_path).join("workspace.json");
         let metadata_raw = serde_json::to_string_pretty(workspace)?;
@@ -325,6 +286,82 @@ pub fn start_workspace_with_security(
             })?;
 
         Ok(workspace.clone())
+    })
+}
+
+fn launch_workspace_runtime(
+    state_dir: &std::path::Path,
+    sandbox_snapshot: &SandboxMetadata,
+    workspace_snapshot: &WorkspaceMetadata,
+    apparmor_profile: Option<&str>,
+    selinux_label: Option<&str>,
+    network_plan: NetworkStartPlan,
+) -> Result<WorkspaceRuntimeStart> {
+    crate::workspace::ensure_workspace_storage_ready(workspace_snapshot)?;
+    let session_info = session::start_session(workspace_snapshot, apparmor_profile, selinux_label)?;
+    if let Err(err) =
+        apply_workspace_runtime_constraints(sandbox_snapshot, workspace_snapshot, session_info.pid)
+    {
+        if let Err(stop_err) =
+            session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
+        {
+            tracing::warn!(
+                "failed to stop workspace session {} after cgroup setup failure: {stop_err:#}",
+                session_info.pid
+            );
+        }
+        return Err(err).context("failed to apply workspace cgroup limits");
+    }
+
+    let workspace_rootfs_path = format!("/proc/{}/root", session_info.pid);
+    let auth_manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
+    if let Err(err) = auth_manager.sync_workspace_auth(
+        &workspace_rootfs_path,
+        &workspace_snapshot.auth_providers,
+        &workspace_snapshot.env_tokens,
+    ) {
+        remove_workspace_cgroups(sandbox_snapshot, session_info.pid);
+        if let Err(stop_err) =
+            session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
+        {
+            tracing::warn!(
+                "failed to stop workspace session {} after auth sync failure: {stop_err:#}",
+                session_info.pid
+            );
+        }
+        return Err(err)
+            .context("failed to sync workspace auth; attempted to stop workspace session");
+    }
+
+    let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
+    let assigned_ip = match network_plan {
+        NetworkStartPlan::AllocateFromUsedIps(used_ips) => {
+            match network::setup_workspace_network(session_info.pid, &used_ips, &workspace_rootfs) {
+                Ok(ip) => ip,
+                Err(err) => {
+                    remove_workspace_cgroups(sandbox_snapshot, session_info.pid);
+                    if let Err(stop_err) =
+                        session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
+                    {
+                        tracing::warn!(
+                            "failed to stop workspace session {} after network setup failure: {stop_err:#}",
+                            session_info.pid
+                        );
+                    }
+                    return Err(err).context(
+                        "failed to attach or validate workspace networking; aborted workspace startup",
+                    );
+                }
+            }
+        }
+    };
+
+    Ok(WorkspaceRuntimeStart {
+        pid: session_info.pid,
+        starttime_ticks: session_info.starttime_ticks,
+        mount_ns: session_info.mount_ns,
+        pid_ns: session_info.pid_ns,
+        assigned_ip,
     })
 }
 
@@ -388,6 +425,7 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
     let stop_result = session::stop_sessions_batch(&stop_targets)?;
 
     let mut stopped_ids = BTreeSet::new();
+    let mut cleanup_jobs = Vec::new();
     let mut failed_ids = Vec::new();
     for workspace in &running {
         let failed = workspace
@@ -408,8 +446,22 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
 
         for workspace_id in &stopped_ids {
-            set_workspace_stopped(sandbox, workspace_id)?;
+            if let Some(job) = mark_workspace_stopped(sandbox, workspace_id)? {
+                cleanup_jobs.push(job);
+            }
         }
+        Ok(())
+    })?;
+
+    run_workspace_stop_cleanups(cleanup_jobs);
+
+    with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
+        remove_sandbox_cgroup_if_idle(sandbox);
         Ok(())
     })?;
 
@@ -555,24 +607,30 @@ pub(crate) fn set_workspace_stopped(
     sandbox: &mut RegistrySandbox,
     workspace_id: &str,
 ) -> Result<()> {
+    if let Some(job) = mark_workspace_stopped(sandbox, workspace_id)? {
+        run_workspace_stop_cleanup(job);
+    }
+    remove_sandbox_cgroup_if_idle(sandbox);
+    Ok(())
+}
+
+struct WorkspaceStopCleanup {
+    sandbox: SandboxMetadata,
+    workspace: WorkspaceMetadata,
+}
+
+fn mark_workspace_stopped(
+    sandbox: &mut RegistrySandbox,
+    workspace_id: &str,
+) -> Result<Option<WorkspaceStopCleanup>> {
     let workspace = sandbox
         .workspaces
         .get_mut(workspace_id)
         .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-
-    if let Some(pid) = workspace.runtime_pid {
-        remove_workspace_cgroups(&sandbox.metadata, pid);
-    }
-
-    if let Some(ref ip) = workspace.assigned_ip {
-        network::teardown_workspace_network(ip);
-    }
-    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted(workspace) {
-        tracing::warn!(
-            "failed to unmount quota-backed workspace storage for {}: {err:#}",
-            workspace.id
-        );
-    }
+    let cleanup = WorkspaceStopCleanup {
+        sandbox: sandbox.metadata.clone(),
+        workspace: workspace.clone(),
+    };
 
     workspace.status = WorkspaceStatus::Stopped;
     workspace.runtime_pid = None;
@@ -608,6 +666,46 @@ pub(crate) fn set_workspace_stopped(
             )
         },
     )?;
+    Ok(Some(cleanup))
+}
+
+fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
+    if cleanups.is_empty() {
+        return;
+    }
+
+    let handles = cleanups
+        .into_iter()
+        .map(|cleanup| thread::spawn(move || run_workspace_stop_cleanup(cleanup)))
+        .collect::<Vec<_>>();
+
+    for handle in handles {
+        if let Err(err) = handle.join() {
+            tracing::warn!("workspace cleanup thread panicked: {:?}", err);
+        }
+    }
+}
+
+fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
+    let workspace = cleanup.workspace;
+    let sandbox = cleanup.sandbox;
+
+    if let Some(pid) = workspace.runtime_pid {
+        remove_workspace_cgroups(&sandbox, pid);
+    }
+
+    if let Some(ref ip) = workspace.assigned_ip {
+        network::teardown_workspace_network(ip);
+    }
+    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
+        tracing::warn!(
+            "failed to unmount quota-backed workspace storage for {}: {err:#}",
+            workspace.id
+        );
+    }
+}
+
+fn remove_sandbox_cgroup_if_idle(sandbox: &RegistrySandbox) {
     if sandbox
         .workspaces
         .values()
@@ -616,7 +714,6 @@ pub(crate) fn set_workspace_stopped(
     {
         remove_sandbox_cgroup(&sandbox.metadata);
     }
-    Ok(())
 }
 
 fn workspace_cgroup_name(pid: u32) -> String {

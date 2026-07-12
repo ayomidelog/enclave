@@ -54,6 +54,10 @@ fn bridge_exists() -> Result<bool> {
     Ok(status.success())
 }
 
+pub fn bridge_is_present() -> Result<bool> {
+    bridge_exists()
+}
+
 fn create_bridge() -> Result<()> {
     run_ip(&["link", "add", BRIDGE_NAME, "type", "bridge"])
         .with_context(|| format!("failed to create bridge {BRIDGE_NAME}"))

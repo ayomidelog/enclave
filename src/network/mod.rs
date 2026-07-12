@@ -8,12 +8,19 @@ pub mod veth;
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 
+static HOST_NETWORKING_READY: AtomicBool = AtomicBool::new(false);
+
 pub fn ensure_host_networking() -> Result<()> {
+    if HOST_NETWORKING_READY.load(Ordering::SeqCst) && bridge::bridge_is_present()? {
+        return Ok(());
+    }
     bridge::ensure_bridge().context("failed to set up enclave bridge")?;
     nat::ensure_nat().context("failed to set up NAT")?;
+    HOST_NETWORKING_READY.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -23,8 +30,13 @@ pub fn setup_workspace_network(
     workspace_rootfs: &Path,
 ) -> Result<String> {
     ensure_host_networking()?;
-
     let ip = ipam::allocate_ip(used_ips)?;
+    attach_workspace_network(pid, &ip, workspace_rootfs)?;
+
+    Ok(ip)
+}
+
+fn attach_workspace_network(pid: u32, ip: &str, workspace_rootfs: &Path) -> Result<()> {
     let host_octet = ipam::parse_host_octet(&ip).expect("allocate_ip returned invalid IP");
     let (veth_host, veth_peer) = veth::veth_names(host_octet);
 
@@ -53,7 +65,7 @@ pub fn setup_workspace_network(
         return Err(err);
     }
 
-    Ok(ip)
+    Ok(())
 }
 
 pub fn teardown_workspace_network(assigned_ip: &str) {
@@ -89,5 +101,6 @@ pub fn cleanup_host_networking() {
         if let Err(err) = nat::remove_nat() {
             tracing::warn!("failed to remove NAT rule: {err:#}");
         }
+        HOST_NETWORKING_READY.store(false, Ordering::SeqCst);
     }
 }

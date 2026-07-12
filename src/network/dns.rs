@@ -23,7 +23,7 @@ pub fn provision_resolv_conf(rootfs: &Path) -> Result<()> {
         "{ENCLAVE_DNS_HEADER} — {source}\n{}",
         source.content.trim_end()
     );
-    fs::write(&target, content).with_context(|| format!("failed to write {}", target.display()))?;
+    write_if_changed(&target, content.as_bytes())?;
     Ok(())
 }
 
@@ -32,7 +32,7 @@ pub fn provision_etc_hosts(rootfs: &Path) -> Result<()> {
     let target_etc = ensure_rootfs_etc(rootfs)?;
     let target = target_etc.join("hosts");
     let content = format!("{ENCLAVE_HOSTS_HEADER}\n{DEFAULT_HOSTS_CONTENT}");
-    fs::write(&target, content).with_context(|| format!("failed to write {}", target.display()))?;
+    write_if_changed(&target, content.as_bytes())?;
     Ok(())
 }
 
@@ -50,7 +50,7 @@ pub fn provision_apt_sandbox_override(rootfs: &Path) -> Result<()> {
         .with_context(|| format!("failed to create {}", apt_conf_dir.display()))?;
     let target = apt_conf_dir.join("99enclave-nosandbox-user");
     let content = format!("{ENCLAVE_APT_HEADER}\n{APT_SANDBOX_OVERRIDE}");
-    fs::write(&target, content).with_context(|| format!("failed to write {}", target.display()))?;
+    write_if_changed(&target, content.as_bytes())?;
     Ok(())
 }
 
@@ -136,6 +136,15 @@ fn ensure_rootfs_etc(rootfs: &Path) -> Result<PathBuf> {
     fs::create_dir_all(&target_etc)
         .with_context(|| format!("failed to create {}", target_etc.display()))?;
     Ok(target_etc)
+}
+
+fn write_if_changed(path: &Path, content: &[u8]) -> Result<()> {
+    if let Ok(existing) = fs::read(path) {
+        if existing == content {
+            return Ok(());
+        }
+    }
+    fs::write(path, content).with_context(|| format!("failed to write {}", path.display()))
 }
 
 fn validate_rootfs_path(rootfs: &Path) -> Result<()> {

@@ -22,8 +22,8 @@ pub use control::{
     stop_workspace, workspace_status,
 };
 pub(crate) use control::{
-    stop_running_workspaces_in_sandbox, sync_sandbox_runtime_limits,
-    sync_workspace_runtime_limits, update_workspace_definition, workspace_metadata,
+    stop_running_workspaces_in_sandbox, sync_sandbox_runtime_limits, sync_workspace_runtime_limits,
+    update_workspace_definition, workspace_metadata,
 };
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
 pub use exec::exec_workspace_command;
