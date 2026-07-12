@@ -44,5 +44,5 @@ fn version_output_contains_release_version() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "enclave 1.0.1");
+    assert_eq!(stdout.trim(), "enclave 1.0.2");
 }

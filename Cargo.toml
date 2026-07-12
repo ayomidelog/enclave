@@ -1,6 +1,6 @@
 [package]
 name = "enclave"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 description = "Enclave Linux workspace isolation platform"
 license = "MIT"

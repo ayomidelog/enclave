@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.0.2 - 2026-07-12
+
+### Changed
+- Repository verification now allows normal explanatory comments and only rejects unresolved `TODO`/`FIXME`/`XXX` markers in tracked Rust, shell, and workflow files.
+
+### Fixed
+- Rust CI is green again after the 1.0.1 release by aligning tests and lockfile metadata with the released version.
+- Batch-stop session tests now assert the stable contract instead of a CI-sensitive transient PID outcome.
+- Stability tests now track the current released version string.
+
 ## 1.0.1 - 2026-07-12
 
 ### Added
