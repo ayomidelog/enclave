@@ -37,13 +37,13 @@ pub fn setup_workspace_network(
 }
 
 fn attach_workspace_network(pid: u32, ip: &str, workspace_rootfs: &Path) -> Result<()> {
-    let host_octet = ipam::parse_host_octet(&ip).expect("allocate_ip returned invalid IP");
+    let host_octet = ipam::parse_host_octet(ip).expect("allocate_ip returned invalid IP");
     let (veth_host, veth_peer) = veth::veth_names(host_octet);
 
     let result: Result<()> = (|| {
-        veth::setup_workspace_networking(pid, &ip, &veth_host, &veth_peer)
+        veth::setup_workspace_networking(pid, ip, &veth_host, &veth_peer)
             .with_context(|| format!("failed to set up networking for workspace (ip={ip})"))?;
-        nat::ensure_workspace_anti_spoofing(&veth_host, &ip)
+        nat::ensure_workspace_anti_spoofing(&veth_host, ip)
             .with_context(|| format!("failed to install anti-spoofing rules for {}", veth_host))?;
 
         dns::provision_resolv_conf(workspace_rootfs)
@@ -55,7 +55,7 @@ fn attach_workspace_network(pid: u32, ip: &str, workspace_rootfs: &Path) -> Resu
         Ok(())
     })();
     if let Err(err) = result {
-        if let Err(cleanup_err) = nat::remove_workspace_anti_spoofing(&veth_host, &ip) {
+        if let Err(cleanup_err) = nat::remove_workspace_anti_spoofing(&veth_host, ip) {
             tracing::warn!(
                 "failed to remove anti-spoofing rules for {} during rollback: {cleanup_err:#}",
                 veth_host

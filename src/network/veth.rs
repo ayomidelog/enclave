@@ -192,5 +192,12 @@ fn dump_nsenter_output(pid: &str, args: &[&str]) -> Result<String> {
 }
 
 #[cfg(test)]
+fn default_route_output_has_route(stdout: &str, iface: &str, gateway_ip: &str) -> bool {
+    stdout
+        .lines()
+        .any(|line| line.contains("default") && line.contains(gateway_ip) && line.contains(iface))
+}
+
+#[cfg(test)]
 #[path = "../../tests/src/network/veth.rs"]
 mod tests;
