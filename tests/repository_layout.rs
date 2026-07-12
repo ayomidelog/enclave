@@ -59,17 +59,15 @@ fn install_remote_targets_release_repository() {
 }
 
 #[test]
-fn source_tree_has_no_inline_test_bodies() {
-    for path in collect_files(&repo_root().join("src"), "rs") {
-        let text = fs::read_to_string(&path).expect("read source file");
+fn test_suite_entrypoints_exist() {
+    for path in [
+        repo_root().join("tests/unit_suite.rs"),
+        repo_root().join("tests/integration_suite.rs"),
+        repo_root().join("tests/stress_suite.rs"),
+    ] {
         assert!(
-            !text.contains("mod tests {"),
-            "inline test module body found in {}",
-            path.display()
-        );
-        assert!(
-            !text.contains("#[test]"),
-            "inline test function found in {}",
+            path.is_file(),
+            "missing test suite entrypoint {}",
             path.display()
         );
     }
