@@ -6,6 +6,7 @@ mod userns;
 
 use std::fs;
 use std::fs::OpenOptions;
+use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -41,6 +42,12 @@ pub struct SessionInfo {
     pub starttime_ticks: u64,
     pub mount_ns: String,
     pub pid_ns: String,
+}
+
+#[derive(Debug, Default)]
+pub struct BatchStopResult {
+    pub stopped_pids: BTreeSet<u32>,
+    pub failed_pids: BTreeSet<u32>,
 }
 
 pub fn start_session(
@@ -328,38 +335,81 @@ fn launch_userns_args(userns: &UserNamespaceMode) -> Vec<String> {
 }
 
 pub fn stop_session(pid: u32, expected_starttime_ticks: Option<u64>) -> Result<()> {
-    if !process_matches(pid, expected_starttime_ticks) {
-        return Ok(());
+    let result = stop_sessions_batch(&[(pid, expected_starttime_ticks)])?;
+    if result.failed_pids.contains(&pid) {
+        bail!("workspace session pid {} did not exit after SIGKILL", pid);
     }
-    match process::verify_signal_target(pid, expected_starttime_ticks) {
-        Ok(()) => {}
-        Err(err) => {
-            let msg = format!("{err:#}");
-            if msg.contains("refusing to signal") || msg.contains("does not look like") {
-                tracing::warn!(
-                    "stale session pid {} detected (not an enclave process); \
-                     treating as already stopped",
-                    pid
-                );
-                return Ok(());
+    Ok(())
+}
+
+pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopResult> {
+    let mut result = BatchStopResult::default();
+    let mut pending = Vec::new();
+
+    for (pid, expected_starttime_ticks) in targets.iter().copied() {
+        if !process_matches(pid, expected_starttime_ticks) {
+            result.stopped_pids.insert(pid);
+            continue;
+        }
+        match process::verify_signal_target(pid, expected_starttime_ticks) {
+            Ok(()) => pending.push((pid, expected_starttime_ticks)),
+            Err(err) => {
+                let msg = format!("{err:#}");
+                if msg.contains("refusing to signal") || msg.contains("does not look like") {
+                    tracing::warn!(
+                        "stale session pid {} detected (not an enclave process); treating as already stopped",
+                        pid
+                    );
+                    result.stopped_pids.insert(pid);
+                    continue;
+                }
+                return Err(err);
             }
-            return Err(err);
         }
     }
 
-    process::send_signal(pid, libc::SIGTERM)?;
-    process::wait_for_exit(pid, STOP_TIMEOUT)?;
+    for (pid, _) in &pending {
+        process::send_signal(*pid, libc::SIGTERM)?;
+    }
+    wait_for_targets_to_exit(&pending, STOP_TIMEOUT);
 
-    if process_matches(pid, expected_starttime_ticks) {
-        process::send_signal(pid, libc::SIGKILL)?;
-        process::wait_for_exit(pid, Duration::from_secs(1))?;
+    let mut remaining = collect_running_targets(&pending);
+    for (pid, _) in &remaining {
+        process::send_signal(*pid, libc::SIGKILL)?;
+    }
+    wait_for_targets_to_exit(&remaining, Duration::from_secs(1));
+
+    for (pid, expected_starttime_ticks) in pending {
+        if process_matches(pid, expected_starttime_ticks) {
+            result.failed_pids.insert(pid);
+        } else {
+            result.stopped_pids.insert(pid);
+        }
     }
 
-    if process_matches(pid, expected_starttime_ticks) {
-        bail!("workspace session pid {} did not exit after SIGKILL", pid);
-    }
+    remaining.clear();
+    Ok(result)
+}
 
-    Ok(())
+fn wait_for_targets_to_exit(targets: &[(u32, Option<u64>)], timeout: Duration) {
+    let started = Instant::now();
+    while started.elapsed() < timeout {
+        if targets
+            .iter()
+            .all(|(pid, expected_starttime_ticks)| !process_matches(*pid, *expected_starttime_ticks))
+        {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn collect_running_targets(targets: &[(u32, Option<u64>)]) -> Vec<(u32, Option<u64>)> {
+    targets
+        .iter()
+        .copied()
+        .filter(|(pid, expected_starttime_ticks)| process_matches(*pid, *expected_starttime_ticks))
+        .collect()
 }
 
 pub fn runtime_pid_file(workspace: &WorkspaceMetadata) -> PathBuf {

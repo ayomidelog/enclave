@@ -312,19 +312,12 @@ fn dispatch_sandbox_stop(
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
-    let mut failed: Vec<String> = Vec::new();
     for ws in workspaces {
         if ws.status == crate::workspace::WorkspaceStatus::Running {
             port_publisher.clear_workspace_ports(&ws.sandbox_id, &ws.id);
-            if let Err(err) = workspace::stop_workspace(&config.state_dir, selector, &ws.id) {
-                tracing::warn!(
-                    "failed to stop workspace {} during sandbox stop: {err:#}",
-                    ws.id
-                );
-                failed.push(ws.id.clone());
-            }
         }
     }
+    let failed = workspace::stop_running_workspaces_in_sandbox(&config.state_dir, selector)?;
     if !failed.is_empty() {
         bail!(
             "sandbox stop: failed to stop {} workspace(s): {}",
@@ -351,12 +344,13 @@ fn dispatch_sandbox_destroy(
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     for ws in workspaces {
         port_publisher.clear_workspace_ports(&ws.sandbox_id, &ws.id);
-        if let Err(err) = workspace::stop_workspace(&config.state_dir, selector, &ws.id) {
-            tracing::warn!(
-                "failed to stop workspace {} during sandbox destroy: {err:#}",
-                ws.id
-            );
-        }
+    }
+    let failed = workspace::stop_running_workspaces_in_sandbox(&config.state_dir, selector)?;
+    if !failed.is_empty() {
+        tracing::warn!(
+            "failed to stop workspace(s) during sandbox destroy: {}",
+            failed.join(", ")
+        );
     }
     let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
     Ok(json!({ "removed": removed }))

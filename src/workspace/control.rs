@@ -1,4 +1,5 @@
 use std::fs;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -356,6 +357,63 @@ pub fn stop_workspace(
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
         Ok(result)
     })
+}
+
+pub(crate) fn stop_running_workspaces_in_sandbox(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+) -> Result<Vec<String>> {
+    let running = with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        Ok(sandbox
+            .workspaces
+            .values()
+            .filter(|workspace| workspace.status == WorkspaceStatus::Running)
+            .cloned()
+            .collect::<Vec<_>>())
+    })?;
+
+    let stop_targets = running
+        .iter()
+        .filter_map(|workspace| {
+            workspace
+                .runtime_pid
+                .map(|pid| (pid, workspace.runtime_starttime_ticks))
+        })
+        .collect::<Vec<_>>();
+    let stop_result = session::stop_sessions_batch(&stop_targets)?;
+
+    let mut stopped_ids = BTreeSet::new();
+    let mut failed_ids = Vec::new();
+    for workspace in &running {
+        let failed = workspace
+            .runtime_pid
+            .is_some_and(|pid| stop_result.failed_pids.contains(&pid));
+        if failed {
+            failed_ids.push(workspace.id.clone());
+        } else {
+            stopped_ids.insert(workspace.id.clone());
+        }
+    }
+
+    with_registry_mut(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+
+        for workspace_id in &stopped_ids {
+            set_workspace_stopped(sandbox, workspace_id)?;
+        }
+        Ok(())
+    })?;
+
+    Ok(failed_ids)
 }
 
 pub fn list_workspace_items(

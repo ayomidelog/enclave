@@ -1,8 +1,6 @@
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -168,17 +166,6 @@ pub(super) fn verify_signal_target(pid: u32, expected_starttime_ticks: Option<u6
         );
     }
 
-    Ok(())
-}
-
-pub(super) fn wait_for_exit(pid: u32, timeout: Duration) -> Result<()> {
-    let started = Instant::now();
-    while started.elapsed() < timeout {
-        if !process_alive(pid) {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
     Ok(())
 }
 
