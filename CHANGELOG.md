@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.1 - 2026-07-12
+
 ### Added
 - `enclave rootfs export`, `enclave rootfs import`, and `enclave rootfs fetch` for distributing prebuilt cached rootfs archives.
 - Documentation for hosting a prebuilt rootfs archive on GitHub Releases and reusing it with `bootstrap_method = "cached_rootfs"`.
