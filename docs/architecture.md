@@ -103,7 +103,7 @@ graph LR
     subgraph Services["Platform Services"]
         PE["Policy Engine<br/><small>UID auth via SO_PEERCRED<br/>Per-action allow/deny rules<br/>Deny wins · UID overrides wildcard</small>"]
         RG["Registry<br/><small>Atomic writes (tmp+fsync+rename)<br/>Advisory file locks<br/>Self-repair with --strict</small>"]
-        SN["Snapshots<br/><small>Copy-based workspace snapshots<br/>Symlink rejection guard<br/>Restore with rollback</small>"]
+        SN["Snapshots<br/><small>Copy-based workspace snapshots<br/>Portable export/import archives<br/>Symlink rejection guard<br/>Restore with rollback</small>"]
         EF["Enclavefile<br/><small>Declarative TOML config<br/>up / down / restart lifecycle<br/>init scaffold generator</small>"]
     end
 ```

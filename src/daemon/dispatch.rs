@@ -217,6 +217,12 @@ pub(crate) fn dispatch(
         }
         Action::WorkspaceRestore => dispatch_workspace_restore(&request.params, config),
         Action::WorkspaceSnapshotGc => dispatch_workspace_snapshot_gc(&request.params, config),
+        Action::WorkspaceSnapshotExport => {
+            dispatch_workspace_snapshot_export(&request.params, config)
+        }
+        Action::WorkspaceSnapshotImport => {
+            dispatch_workspace_snapshot_import(&request.params, config)
+        }
         Action::RegistryRepair => {
             let strict = request
                 .params
@@ -677,6 +683,41 @@ fn dispatch_workspace_snapshot_gc(params: &Value, config: &DaemonConfig) -> Resu
     Ok(serde_json::to_value(removed)?)
 }
 
+fn dispatch_workspace_snapshot_export(params: &Value, config: &DaemonConfig) -> Result<Value> {
+    let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
+    let snapshot = require_param_str(params, &["snapshot"])?;
+    let output = require_param_str(params, &["output"])?;
+    let result = workspace::export_workspace_snapshot_archive(
+        &config.state_dir,
+        sandbox,
+        workspace_selector,
+        snapshot,
+        std::path::Path::new(output),
+    )?;
+    Ok(serde_json::to_value(result)?)
+}
+
+fn dispatch_workspace_snapshot_import(params: &Value, config: &DaemonConfig) -> Result<Value> {
+    let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
+    let archive = require_param_str(params, &["archive"])?;
+    let name = params.get("name").and_then(Value::as_str);
+    let replace = params
+        .get("replace")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let result = workspace::import_workspace_snapshot_archive(
+        &config.state_dir,
+        sandbox,
+        workspace_selector,
+        std::path::Path::new(archive),
+        name,
+        replace,
+    )?;
+    Ok(serde_json::to_value(result)?)
+}
+
 fn dispatch_policy_rule(params: &Value, config: &DaemonConfig, is_allow: bool) -> Result<Value> {
     let uid = params.get("uid").and_then(Value::as_u64).map(|v| v as u32);
     let action = require_param_str(params, &["action"])?;
@@ -724,6 +765,8 @@ enum Action {
     WorkspaceSnapshotList,
     WorkspaceRestore,
     WorkspaceSnapshotGc,
+    WorkspaceSnapshotExport,
+    WorkspaceSnapshotImport,
     RegistryRepair,
     PolicyGet,
     PolicySetDefault,
@@ -770,6 +813,8 @@ impl Action {
             "workspace.snapshot.list" => Self::WorkspaceSnapshotList,
             "workspace.restore" => Self::WorkspaceRestore,
             "workspace.snapshot.gc" => Self::WorkspaceSnapshotGc,
+            "workspace.snapshot.export" => Self::WorkspaceSnapshotExport,
+            "workspace.snapshot.import" => Self::WorkspaceSnapshotImport,
             "registry.repair" => Self::RegistryRepair,
             "policy.get" => Self::PolicyGet,
             "policy.set_default" => Self::PolicySetDefault,

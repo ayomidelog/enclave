@@ -57,6 +57,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 
 - `workspaces/<workspace-id>/runtime/` stores runtime metadata such as PID, logs, and readiness markers.
 - `workspaces/<workspace-id>/snapshots/` stores copy-based workspace snapshots.
+- `snapshot export` packages one of those snapshot directories as a tar or tar.gz archive for transfer or backup.
 - Snapshot data is currently a full copy of the workspace overlay data, which is why snapshot retention matters for disk usage.
 
 ## Auth data

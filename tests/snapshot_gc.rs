@@ -119,6 +119,16 @@ fn top_level_snapshot_restore_help_is_available() {
 }
 
 #[test]
+fn top_level_snapshot_export_help_is_available() {
+    assert_snapshot_subcommand_help_succeeds("export");
+}
+
+#[test]
+fn top_level_snapshot_import_help_is_available() {
+    assert_snapshot_subcommand_help_succeeds("import");
+}
+
+#[test]
 fn snapshot_list_help_is_available() {
     let output = run_enclave_command(&["workspace", "snapshot-list", "--help"]);
 

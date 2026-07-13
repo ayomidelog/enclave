@@ -226,3 +226,9 @@ pub struct WorkspaceSnapshotInfo {
     pub created_at: String,
     pub path: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSnapshotArchiveInfo {
+    pub name: String,
+    pub archive_path: String,
+}

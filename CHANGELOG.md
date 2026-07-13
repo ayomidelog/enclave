@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Portable workspace snapshot archive support via `enclave snapshot export` and `enclave snapshot import`.
+
 ## 1.0.2 - 2026-07-12
 
 ### Changed

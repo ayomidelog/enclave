@@ -12,12 +12,13 @@ use serde_json::json;
 use crate::cli::{
     SnapshotCommands, WorkspaceCommands, WorkspaceCreateArgs, WorkspaceExecArgs, WorkspaceListArgs,
     WorkspaceLogsArgs, WorkspacePortCommands, WorkspacePortPublishArgs, WorkspacePortUnpublishArgs,
-    WorkspaceRemoveArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotGcArgs,
-    WorkspaceTargetArgs, WorkspaceTargetOrLocalArgs,
+    WorkspaceRemoveArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
+    WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
+    WorkspaceTargetOrLocalArgs,
 };
 use crate::workspace::{
     PublishedPortStatus, WorkspaceListItem, WorkspaceLogsResult, WorkspaceMetadata,
-    WorkspaceSnapshotInfo,
+    WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo,
 };
 
 use super::{confirm_destructive_action, send_managed};
@@ -59,6 +60,8 @@ pub(crate) fn run_snapshot_command(socket: &Path, command: SnapshotCommands) -> 
         SnapshotCommands::Create(args) => run_workspace_snapshot(&ctx, args),
         SnapshotCommands::List(args) => run_workspace_snapshot_list(&ctx, args),
         SnapshotCommands::Restore(args) => run_workspace_restore(&ctx, args),
+        SnapshotCommands::Export(args) => run_workspace_snapshot_export(&ctx, args),
+        SnapshotCommands::Import(args) => run_workspace_snapshot_import(&ctx, args),
     }
 }
 
@@ -523,6 +526,60 @@ fn run_workspace_snapshot_gc(
             println!("  {} ({})", snapshot.name, snapshot.created_at);
         }
     }
+    Ok(())
+}
+
+fn run_workspace_snapshot_export(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceSnapshotExportArgs,
+) -> Result<()> {
+    tracing::info!(
+        "exporting snapshot '{}' for workspace '{}' in sandbox '{}'...",
+        args.snapshot,
+        args.workspace,
+        args.sandbox
+    );
+    let response = send_managed(
+        ctx.socket,
+        "workspace.snapshot.export",
+        json!({
+            "sandbox": args.sandbox,
+            "workspace": args.workspace,
+            "snapshot": args.snapshot,
+            "output": args.output,
+        }),
+    )?;
+    let archive: WorkspaceSnapshotArchiveInfo = serde_json::from_value(response)?;
+    println!("snapshot exported: {}", archive.name);
+    println!("archive: {}", archive.archive_path);
+    Ok(())
+}
+
+fn run_workspace_snapshot_import(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceSnapshotImportArgs,
+) -> Result<()> {
+    tracing::info!(
+        "importing snapshot archive '{}' for workspace '{}' in sandbox '{}'...",
+        args.archive.display(),
+        args.workspace,
+        args.sandbox
+    );
+    let response = send_managed(
+        ctx.socket,
+        "workspace.snapshot.import",
+        json!({
+            "sandbox": args.sandbox,
+            "workspace": args.workspace,
+            "name": args.name,
+            "replace": args.replace,
+            "archive": args.archive,
+        }),
+    )?;
+    let snapshot: WorkspaceSnapshotInfo = serde_json::from_value(response)?;
+    println!("snapshot imported: {}", snapshot.name);
+    println!("created_at: {}", snapshot.created_at);
+    println!("path: {}", snapshot.path);
     Ok(())
 }
 

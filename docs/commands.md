@@ -186,6 +186,8 @@ Sandbox limits are aggregate caps across all running workspaces in that sandbox.
 enclave snapshot create  <sandbox> <workspace> [--name snapshot-name]
 enclave snapshot list    <sandbox> <workspace>
 enclave snapshot restore <sandbox> <workspace> <snapshot-name>
+enclave snapshot export  <sandbox> <workspace> <snapshot-name> --output ARCHIVE
+enclave snapshot import  <sandbox> <workspace> [--name snapshot-name] [--replace] ARCHIVE
 
 # Legacy workspace aliases and maintenance
 enclave workspace snapshot      <sandbox> <workspace> [--name snapshot-name]
@@ -199,6 +201,8 @@ enclave workspace snapshot-gc   <sandbox> <workspace> [--keep N]
 | `snapshot create` | Create a point-in-time copy of a workspace's filesystem. |
 | `snapshot list` | List all snapshots for a workspace. |
 | `snapshot restore` | Restore a workspace to a previous snapshot. |
+| `snapshot export` | Package an existing workspace snapshot as a portable tar or tar.gz archive. |
+| `snapshot import` | Import a portable snapshot archive into a workspace snapshot slot. |
 | `workspace snapshot-gc` | Delete old snapshots, keeping the most recent N (default: 5). |
 
 ## Policy

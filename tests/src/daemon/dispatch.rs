@@ -38,6 +38,8 @@ fn action_parse_known_actions() {
         "workspace.snapshot.list",
         "workspace.restore",
         "workspace.snapshot.gc",
+        "workspace.snapshot.export",
+        "workspace.snapshot.import",
         "registry.repair",
         "policy.get",
         "policy.set_default",

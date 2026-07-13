@@ -143,6 +143,8 @@ pub enum SnapshotCommands {
     Create(WorkspaceSnapshotArgs),
     List(WorkspaceTargetArgs),
     Restore(WorkspaceRestoreArgs),
+    Export(WorkspaceSnapshotExportArgs),
+    Import(WorkspaceSnapshotImportArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -515,6 +517,32 @@ pub struct WorkspaceRestoreArgs {
     #[arg(value_parser = parse_entity_name)]
     pub workspace: String,
     pub snapshot: String,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceSnapshotExportArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub snapshot: String,
+    #[arg(long, value_name = "PATH")]
+    pub output: PathBuf,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceSnapshotImportArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace: String,
+    #[arg(long)]
+    pub name: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub replace: bool,
+    #[arg(value_name = "ARCHIVE")]
+    pub archive: PathBuf,
 }
 
 #[derive(Args, Debug)]

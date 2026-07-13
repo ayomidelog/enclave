@@ -1,5 +1,8 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{SecondsFormat, Utc};
@@ -10,7 +13,9 @@ use crate::sandbox::resolve_sandbox_id;
 
 use super::control::{resolve_workspace_id, set_workspace_stopped};
 use super::session;
-use super::types::{WorkspaceMetadata, WorkspaceSnapshotInfo, WorkspaceStatus};
+use super::types::{
+    WorkspaceMetadata, WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo, WorkspaceStatus,
+};
 
 pub const DEFAULT_SNAPSHOT_KEEP: usize = 5;
 
@@ -216,6 +221,118 @@ pub fn gc_workspace_snapshots(
     Ok(removed)
 }
 
+pub fn export_workspace_snapshot_archive(
+    state_dir: &Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    snapshot_name: &str,
+    output: &Path,
+) -> Result<WorkspaceSnapshotArchiveInfo> {
+    with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
+        let workspace = sandbox
+            .workspaces
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+        validate_snapshot_name(snapshot_name)?;
+
+        let snapshot_dir = snapshot_directory(&workspace, snapshot_name)?;
+        ensure_snapshot_layout(&snapshot_dir, snapshot_name)?;
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        export_snapshot_archive(&snapshot_dir, snapshot_name, output)?;
+        Ok(WorkspaceSnapshotArchiveInfo {
+            name: snapshot_name.to_string(),
+            archive_path: output.to_string_lossy().to_string(),
+        })
+    })
+}
+
+pub fn import_workspace_snapshot_archive(
+    state_dir: &Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    archive: &Path,
+    snapshot_name: Option<&str>,
+    replace: bool,
+) -> Result<WorkspaceSnapshotInfo> {
+    with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
+        let workspace = sandbox
+            .workspaces
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+
+        let workspace_dir = PathBuf::from(&workspace.workspace_path);
+        let workspace_dir =
+            crate::fsutil::ensure_path_within(&workspace_dir, &workspace_dir, "workspace path")?;
+        let snapshots_dir = workspace_dir.join("snapshots");
+        fs::create_dir_all(&snapshots_dir)
+            .with_context(|| format!("failed to create {}", snapshots_dir.display()))?;
+
+        let temp_dir = temporary_workspace("snapshot-import");
+        fs::create_dir_all(&temp_dir)
+            .with_context(|| format!("failed to create {}", temp_dir.display()))?;
+
+        let outcome = (|| {
+            extract_archive(archive, &temp_dir)?;
+            let extracted_root = locate_extracted_snapshot(&temp_dir)?;
+            let metadata = read_snapshot_metadata(&extracted_root)?;
+            let target_name = snapshot_name.unwrap_or(&metadata.name);
+            validate_snapshot_name(target_name)?;
+
+            let destination = snapshots_dir.join(target_name);
+            if destination.exists() {
+                if !replace {
+                    bail!(
+                        "snapshot '{}' already exists for workspace '{}'; pass --replace to overwrite it",
+                        target_name,
+                        workspace.name
+                    );
+                }
+                fs::remove_dir_all(&destination)
+                    .with_context(|| format!("failed to remove {}", destination.display()))?;
+            }
+            copy_dir_recursive(&extracted_root, &destination)?;
+
+            let final_metadata = SnapshotMetadata {
+                name: target_name.to_string(),
+                created_at: metadata.created_at,
+            };
+            let metadata_path = destination.join("snapshot.json");
+            crate::fsutil::write_file_atomic(
+                &metadata_path,
+                serde_json::to_string_pretty(&final_metadata)?.as_bytes(),
+                0o600,
+            )
+            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+
+            Ok::<WorkspaceSnapshotInfo, anyhow::Error>(WorkspaceSnapshotInfo {
+                name: final_metadata.name,
+                created_at: final_metadata.created_at,
+                path: destination.to_string_lossy().to_string(),
+            })
+        })();
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        outcome
+    })
+}
+
 pub fn restore_workspace_snapshot(
     state_dir: &Path,
     sandbox_selector: &str,
@@ -262,6 +379,18 @@ fn snapshot_path(workspace: &WorkspaceMetadata, snapshot_name: &str) -> PathBuf 
     snapshots_root(workspace).join(snapshot_name)
 }
 
+fn snapshot_directory(workspace: &WorkspaceMetadata, snapshot_name: &str) -> Result<PathBuf> {
+    let workspace_dir = PathBuf::from(&workspace.workspace_path);
+    let workspace_dir =
+        crate::fsutil::ensure_path_within(&workspace_dir, &workspace_dir, "workspace path")?;
+    let snapshot_dir = crate::fsutil::ensure_path_within(
+        &workspace_dir,
+        &snapshot_path(workspace, snapshot_name),
+        "snapshot path",
+    )?;
+    Ok(snapshot_dir)
+}
+
 fn default_snapshot_name() -> String {
     format!("snap-{}", Utc::now().format("%Y%m%d%H%M%S"))
 }
@@ -279,6 +408,137 @@ fn validate_snapshot_name(name: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn ensure_snapshot_layout(snapshot_dir: &Path, snapshot_name: &str) -> Result<()> {
+    if !snapshot_dir.exists() {
+        bail!("snapshot '{}' not found", snapshot_name);
+    }
+    let snapshot_fs = snapshot_dir.join("fs");
+    let snapshot_home_upper = snapshot_dir.join("home-upper");
+    let metadata_path = snapshot_dir.join("snapshot.json");
+    if !snapshot_fs.exists() || !snapshot_home_upper.exists() || !metadata_path.exists() {
+        bail!("snapshot '{}' is incomplete", snapshot_name);
+    }
+    Ok(())
+}
+
+fn read_snapshot_metadata(snapshot_dir: &Path) -> Result<SnapshotMetadata> {
+    let metadata_path = snapshot_dir.join("snapshot.json");
+    if !metadata_path.is_file() {
+        bail!(
+            "snapshot archive did not contain snapshot.json under {}",
+            snapshot_dir.display()
+        );
+    }
+    let raw = fs::read_to_string(&metadata_path)
+        .with_context(|| format!("failed to read {}", metadata_path.display()))?;
+    let metadata = serde_json::from_str::<SnapshotMetadata>(&raw)
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+    validate_snapshot_name(&metadata.name)?;
+    Ok(metadata)
+}
+
+fn export_snapshot_archive(snapshot_dir: &Path, snapshot_name: &str, output: &Path) -> Result<()> {
+    let parent = snapshot_dir.parent().ok_or_else(|| {
+        anyhow!(
+            "snapshot directory {} has no parent directory",
+            snapshot_dir.display()
+        )
+    })?;
+    let mut cmd = Command::new("tar");
+    cmd.arg("-C").arg(parent);
+    if output_uses_gzip(output) {
+        cmd.arg("-czf");
+    } else {
+        cmd.arg("-cf");
+    }
+    cmd.arg(output).arg(snapshot_name);
+    let output = cmd
+        .output()
+        .with_context(|| format!("failed to run tar for {}", snapshot_dir.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "failed to export snapshot archive from {} ({}): {}",
+            snapshot_dir.display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+fn extract_archive(archive: &Path, target_dir: &Path) -> Result<()> {
+    if !archive.is_file() {
+        bail!(
+            "archive {} does not exist or is not a regular file",
+            archive.display()
+        );
+    }
+    let output = Command::new("tar")
+        .arg("-xf")
+        .arg(archive)
+        .arg("-C")
+        .arg(target_dir)
+        .output()
+        .with_context(|| format!("failed to run tar -xf {}", archive.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "failed to extract archive {} ({}): {}",
+            archive.display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
+fn locate_extracted_snapshot(extract_dir: &Path) -> Result<PathBuf> {
+    if looks_like_snapshot_dir(extract_dir) {
+        return Ok(extract_dir.to_path_buf());
+    }
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(extract_dir)
+        .with_context(|| format!("failed to read {}", extract_dir.display()))?
+    {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() && looks_like_snapshot_dir(&entry.path()) {
+            candidates.push(entry.path());
+        }
+    }
+
+    match candidates.len() {
+        1 => Ok(candidates.remove(0)),
+        0 => bail!(
+            "archive did not contain a recognizable snapshot layout under {}",
+            extract_dir.display()
+        ),
+        _ => bail!(
+            "archive contained multiple snapshot-like directories under {}; keep a single snapshot payload per archive",
+            extract_dir.display()
+        ),
+    }
+}
+
+fn looks_like_snapshot_dir(path: &Path) -> bool {
+    path.join("snapshot.json").is_file()
+        && path.join("fs").is_dir()
+        && path.join("home-upper").is_dir()
+}
+
+fn output_uses_gzip(path: &Path) -> bool {
+    matches!(path.extension().and_then(OsStr::to_str), Some("gz" | "tgz"))
+}
+
+fn temporary_workspace(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("enclave-{label}-{}-{}", std::process::id(), nanos))
 }
 
 fn reset_path(path: &Path) -> Result<()> {

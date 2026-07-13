@@ -35,14 +35,15 @@ pub use ports::{
 pub use ps::{list_process_status, ProcessEntry};
 pub use runtime::workspace_runtime_info;
 pub use snapshot::{
-    create_workspace_snapshot, gc_workspace_snapshots, list_workspace_snapshots,
-    restore_workspace_snapshot, DEFAULT_SNAPSHOT_KEEP,
+    create_workspace_snapshot, export_workspace_snapshot_archive, gc_workspace_snapshots,
+    import_workspace_snapshot_archive, list_workspace_snapshots, restore_workspace_snapshot,
+    DEFAULT_SNAPSHOT_KEEP,
 };
 pub use stats::{list_running_workspace_stats, workspace_stats};
 pub use types::{
     WorkspaceExecResult, WorkspaceLimits, WorkspaceLimitsUpdate, WorkspaceListItem,
-    WorkspaceLogsResult, WorkspaceMetadata, WorkspaceRuntimeInfo, WorkspaceSnapshotInfo,
-    WorkspaceStatsReport, WorkspaceStatus, WorkspaceStatusReport,
+    WorkspaceLogsResult, WorkspaceMetadata, WorkspaceRuntimeInfo, WorkspaceSnapshotArchiveInfo,
+    WorkspaceSnapshotInfo, WorkspaceStatsReport, WorkspaceStatus, WorkspaceStatusReport,
 };
 
 pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) -> bool {

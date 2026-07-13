@@ -1,5 +1,7 @@
 use clap::Parser;
-use enclave::cli::{Cli, Commands, RootfsCommands, WorkspaceCommands, WorkspacePortCommands};
+use enclave::cli::{
+    Cli, Commands, RootfsCommands, SnapshotCommands, WorkspaceCommands, WorkspacePortCommands,
+};
 
 #[test]
 fn workspace_enter_default_cwd_is_home() {
@@ -197,4 +199,54 @@ fn rootfs_fetch_parses_base_url_and_replace() {
     assert!(args.base);
     assert!(args.replace);
     assert_eq!(args.url, "https://example.com/rootfs.tar.gz");
+}
+
+#[test]
+fn snapshot_export_parses_output() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "snapshot",
+        "export",
+        "sb",
+        "ws",
+        "snap1",
+        "--output",
+        "/tmp/snap1.tar.gz",
+    ]);
+    let Commands::Snapshot { command } = cli.command else {
+        panic!("expected snapshot command");
+    };
+    let SnapshotCommands::Export(args) = command else {
+        panic!("expected snapshot export command");
+    };
+    assert_eq!(args.sandbox, "sb");
+    assert_eq!(args.workspace, "ws");
+    assert_eq!(args.snapshot, "snap1");
+    assert_eq!(args.output, std::path::PathBuf::from("/tmp/snap1.tar.gz"));
+}
+
+#[test]
+fn snapshot_import_parses_name_and_replace() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "snapshot",
+        "import",
+        "sb",
+        "ws",
+        "--name",
+        "snap2",
+        "--replace",
+        "/tmp/snap1.tar.gz",
+    ]);
+    let Commands::Snapshot { command } = cli.command else {
+        panic!("expected snapshot command");
+    };
+    let SnapshotCommands::Import(args) = command else {
+        panic!("expected snapshot import command");
+    };
+    assert_eq!(args.sandbox, "sb");
+    assert_eq!(args.workspace, "ws");
+    assert_eq!(args.name.as_deref(), Some("snap2"));
+    assert!(args.replace);
+    assert_eq!(args.archive, std::path::PathBuf::from("/tmp/snap1.tar.gz"));
 }

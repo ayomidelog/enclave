@@ -53,6 +53,17 @@ On the validated 26-workspace sandbox:
 
 These numbers are host-dependent, but they reflect the current best-known build.
 
+## Snapshot Archives
+
+Workspace snapshots are still stored locally as copy-based directories, but Enclave can now package and restore them as portable archives:
+
+```bash
+enclave snapshot export mybox ws1 snap1 --output ./ws1-snap1.tar.gz
+enclave snapshot import mybox ws1 --name imported-snap ./ws1-snap1.tar.gz
+```
+
+That lets you move a workspace snapshot between hosts or keep an archive copy without changing the normal local snapshot workflow.
+
 ## Requirements
 
 - Any modern Linux distribution with kernel 5.12+ recommended for idmapped mounts
