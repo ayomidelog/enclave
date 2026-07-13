@@ -30,7 +30,7 @@ Enclave implements multiple layers of security hardening across privilege manage
 
 ## Privilege Model
 
-All Enclave operations require root. The daemon authenticates connecting clients by reading the peer UID from the Unix socket using `SO_PEERCRED`. This means:
+Most Enclave operations require root. The main exceptions are `help`, `--help`, `--version`, and `init`. The daemon authenticates connecting clients by reading the peer UID from the Unix socket using `SO_PEERCRED`. This means:
 
 - The daemon knows which user is making each request.
 - UID-based policy rules can restrict what each user is allowed to do.
@@ -64,7 +64,7 @@ enclave policy show
 - **Debootstrap suite**: validated against a whitelist of known Debian releases.
 - **Mirror URL**: must use `http://` or `https://` scheme. `file://` mirrors are rejected.
 - **Sandbox and workspace names**: must be 1–63 characters, starting with an alphanumeric character, containing only alphanumerics, hyphens, and underscores. Dots and path separators are rejected.
-- **Snapshot names**: validated for path traversal (no `..` components, no symlink targets outside the sandbox).
+- **Snapshot names**: validated for length, allowed characters, and path traversal (`..`) segments.
 - **Workspace CWD**: restricted to the `/home` subtree with component-level validation. Paths outside `/home` are silently redirected to `/home`.
 
 ## Persistence Integrity
@@ -124,7 +124,8 @@ The registry repair command (`enclave registry repair --strict`) can be used for
 
 Each workspace mounts `/home` from a workspace source directory:
 
-- By default that source is the Enclave-managed `workspaces/<id>/fs/` directory under the sandbox state tree.
+- By default that source is the Enclave-managed `workspaces/<id>/fs/` mount target under the sandbox state tree.
+- When a per-workspace disk quota is configured, that `fs/` mount target is backed by a loop-mounted `fs.img` ext4 image managed by Enclave.
 - If `workspace_dir` / legacy `path` is configured, that host project directory is used instead.
 - In both cases the mount is created as an **idmapped bind mount**, not a raw host bind mount. This preserves the hardened user-namespace model while still allowing workspace access to the selected source tree.
 
