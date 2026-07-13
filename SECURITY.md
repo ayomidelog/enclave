@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Enclave is currently pre-1.0 and under active hardening. The `main` branch and latest tagged release are considered supported.
+Enclave is under active hardening and maintenance. The `main` branch and latest tagged release are considered supported.
 
 ## Reporting a Vulnerability
 
