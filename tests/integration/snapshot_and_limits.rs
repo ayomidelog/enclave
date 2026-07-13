@@ -201,3 +201,58 @@ fn workspace_disk_quota_caps_enclave_managed_home_storage() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn snapshot_restore_recovers_quota_backed_workspace_state() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-snapshot-disk-quota");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-snapshot-quota-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let limits = WorkspaceLimits {
+        disk_bytes: Some(64 * 1024 * 1024),
+        ..WorkspaceLimits::default()
+    };
+    let workspace =
+        create_workspace(&state, &sandbox.id, "quota-snap", limits).expect("create workspace");
+
+    fs::write(
+        Path::new(&workspace.filesystem_path).join("state.txt"),
+        "before",
+    )
+    .expect("seed file");
+    create_workspace_snapshot(&state, &sandbox.id, &workspace.id, Some("snap1"))
+        .expect("create snapshot");
+
+    fs::write(
+        Path::new(&workspace.filesystem_path).join("state.txt"),
+        "after",
+    )
+    .expect("mutate");
+    restore_workspace_snapshot(&state, &sandbox.id, &workspace.id, "snap1").expect("restore");
+
+    start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let restored = fs::read_to_string(Path::new(&workspace.filesystem_path).join("state.txt"))
+        .expect("read restored file");
+    assert_eq!(restored, "before");
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}

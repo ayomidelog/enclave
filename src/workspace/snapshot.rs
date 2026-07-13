@@ -321,129 +321,260 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 }
 
 fn restore_snapshot_filesystem(workspace: &WorkspaceMetadata, snapshot_name: &str) -> Result<()> {
-    crate::workspace::with_workspace_storage_mounted(workspace, || {
-        let workspace_path = PathBuf::from(&workspace.workspace_path);
-        let workspace_path =
-            crate::fsutil::ensure_path_within(&workspace_path, &workspace_path, "workspace path")?;
-        let snapshot_dir = crate::fsutil::ensure_path_within(
-            &workspace_path,
-            &snapshot_path(workspace, snapshot_name),
-            "snapshot path",
-        )?;
-        if !snapshot_dir.exists() {
-            bail!("snapshot '{}' not found", snapshot_name);
-        }
-        let snapshot_fs = snapshot_dir.join("fs");
-        let snapshot_home_upper = snapshot_dir.join("home-upper");
-        if !snapshot_fs.exists() || !snapshot_home_upper.exists() {
-            bail!("snapshot '{}' is incomplete", snapshot_name);
-        }
+    let workspace_path = PathBuf::from(&workspace.workspace_path);
+    let workspace_path =
+        crate::fsutil::ensure_path_within(&workspace_path, &workspace_path, "workspace path")?;
+    let snapshot_dir = crate::fsutil::ensure_path_within(
+        &workspace_path,
+        &snapshot_path(workspace, snapshot_name),
+        "snapshot path",
+    )?;
+    if !snapshot_dir.exists() {
+        bail!("snapshot '{}' not found", snapshot_name);
+    }
+    let snapshot_fs = snapshot_dir.join("fs");
+    let snapshot_home_upper = snapshot_dir.join("home-upper");
+    if !snapshot_fs.exists() || !snapshot_home_upper.exists() {
+        bail!("snapshot '{}' is incomplete", snapshot_name);
+    }
 
-        let backup_root = workspace_path.join(".restore-backup");
-        if backup_root.exists() {
-            fs::remove_dir_all(&backup_root)
-                .with_context(|| format!("failed to clean {}", backup_root.display()))?;
-        }
-        fs::create_dir_all(&backup_root)
-            .with_context(|| format!("failed to create {}", backup_root.display()))?;
+    let backup_root = workspace_path.join(".restore-backup");
+    if backup_root.exists() {
+        fs::remove_dir_all(&backup_root)
+            .with_context(|| format!("failed to clean {}", backup_root.display()))?;
+    }
+    fs::create_dir_all(&backup_root)
+        .with_context(|| format!("failed to create {}", backup_root.display()))?;
 
-        let fs_path = crate::fsutil::ensure_path_within(
-            &workspace_path,
-            Path::new(&workspace.filesystem_path),
-            "workspace filesystem path",
-        )?;
-        let upper_path = crate::fsutil::ensure_path_within(
-            &workspace_path,
-            Path::new(&workspace.overlay_home_upper_path),
-            "workspace home upper path",
-        )?;
-        let work_path = crate::fsutil::ensure_path_within(
-            &workspace_path,
-            Path::new(&workspace.overlay_home_work_path),
-            "workspace home work path",
-        )?;
-        let merged_path = crate::fsutil::ensure_path_within(
-            &workspace_path,
-            Path::new(&workspace.overlay_home_merged_path),
-            "workspace home merged path",
-        )?;
-        let backup_fs = backup_root.join("fs");
-        let backup_upper = backup_root.join("home-upper");
+    let fs_path = crate::fsutil::ensure_path_within(
+        &workspace_path,
+        Path::new(&workspace.filesystem_path),
+        "workspace filesystem path",
+    )?;
+    let upper_path = crate::fsutil::ensure_path_within(
+        &workspace_path,
+        Path::new(&workspace.overlay_home_upper_path),
+        "workspace home upper path",
+    )?;
+    let work_path = crate::fsutil::ensure_path_within(
+        &workspace_path,
+        Path::new(&workspace.overlay_home_work_path),
+        "workspace home work path",
+    )?;
+    let merged_path = crate::fsutil::ensure_path_within(
+        &workspace_path,
+        Path::new(&workspace.overlay_home_merged_path),
+        "workspace home merged path",
+    )?;
 
+    let result = if crate::workspace::storage::workspace_uses_disk_image(workspace) {
+        restore_disk_image_snapshot(
+            workspace,
+            &snapshot_fs,
+            &snapshot_home_upper,
+            &backup_root,
+            &fs_path,
+            &upper_path,
+            &work_path,
+            &merged_path,
+        )
+    } else {
+        restore_directory_snapshot(
+            &snapshot_fs,
+            &snapshot_home_upper,
+            &backup_root,
+            &fs_path,
+            &upper_path,
+            &work_path,
+            &merged_path,
+        )
+    };
+
+    if backup_root.exists() {
+        fs::remove_dir_all(&backup_root)
+            .with_context(|| format!("failed to clean {}", backup_root.display()))?;
+    }
+
+    result
+}
+
+fn restore_directory_snapshot(
+    snapshot_fs: &Path,
+    snapshot_home_upper: &Path,
+    backup_root: &Path,
+    fs_path: &Path,
+    upper_path: &Path,
+    work_path: &Path,
+    merged_path: &Path,
+) -> Result<()> {
+    let backup_fs = backup_root.join("fs");
+    let backup_upper = backup_root.join("home-upper");
+
+    if fs_path.exists() {
+        fs::rename(fs_path, &backup_fs).with_context(|| {
+            format!(
+                "failed to move {} to backup {}",
+                fs_path.display(),
+                backup_fs.display()
+            )
+        })?;
+    }
+    if upper_path.exists() {
+        fs::rename(upper_path, &backup_upper).with_context(|| {
+            format!(
+                "failed to move {} to backup {}",
+                upper_path.display(),
+                backup_upper.display()
+            )
+        })?;
+    }
+    if work_path.exists() {
+        fs::remove_dir_all(work_path)
+            .with_context(|| format!("failed to remove {}", work_path.display()))?;
+    }
+    if merged_path.exists() {
+        fs::remove_dir_all(merged_path)
+            .with_context(|| format!("failed to remove {}", merged_path.display()))?;
+    }
+
+    let restore_result = (|| {
+        reset_path(fs_path)?;
+        reset_path(upper_path)?;
+        reset_path(work_path)?;
+        reset_path(merged_path)?;
+        copy_dir_recursive(snapshot_fs, fs_path)?;
+        copy_dir_recursive(snapshot_home_upper, upper_path)?;
+        Ok::<(), anyhow::Error>(())
+    })();
+    if let Err(err) = restore_result {
         if fs_path.exists() {
-            fs::rename(&fs_path, &backup_fs).with_context(|| {
-                format!(
-                    "failed to move {} to backup {}",
-                    fs_path.display(),
-                    backup_fs.display()
-                )
-            })?;
+            if let Err(remove_err) = fs::remove_dir_all(fs_path) {
+                tracing::warn!("failed to remove {}: {remove_err:#}", fs_path.display());
+            }
         }
         if upper_path.exists() {
-            fs::rename(&upper_path, &backup_upper).with_context(|| {
+            if let Err(remove_err) = fs::remove_dir_all(upper_path) {
+                tracing::warn!("failed to remove {}: {remove_err:#}", upper_path.display());
+            }
+        }
+        if backup_fs.exists() {
+            fs::rename(&backup_fs, fs_path).with_context(|| {
                 format!(
-                    "failed to move {} to backup {}",
-                    upper_path.display(),
-                    backup_upper.display()
+                    "failed to rollback backup {} -> {}",
+                    backup_fs.display(),
+                    fs_path.display()
                 )
             })?;
         }
-        if work_path.exists() {
-            fs::remove_dir_all(&work_path)
-                .with_context(|| format!("failed to remove {}", work_path.display()))?;
+        if backup_upper.exists() {
+            fs::rename(&backup_upper, upper_path).with_context(|| {
+                format!(
+                    "failed to rollback backup {} -> {}",
+                    backup_upper.display(),
+                    upper_path.display()
+                )
+            })?;
         }
-        if merged_path.exists() {
-            fs::remove_dir_all(&merged_path)
-                .with_context(|| format!("failed to remove {}", merged_path.display()))?;
-        }
+        return Err(err);
+    }
 
-        let restore_result = (|| {
-            reset_path(&fs_path)?;
-            reset_path(&upper_path)?;
-            reset_path(&work_path)?;
-            reset_path(&merged_path)?;
-            copy_dir_recursive(&snapshot_fs, &fs_path)?;
-            copy_dir_recursive(&snapshot_home_upper, &upper_path)?;
-            Ok::<(), anyhow::Error>(())
-        })();
-        if let Err(err) = restore_result {
-            if fs_path.exists() {
-                if let Err(remove_err) = fs::remove_dir_all(&fs_path) {
-                    tracing::warn!("failed to remove {}: {remove_err:#}", fs_path.display());
-                }
-            }
-            if upper_path.exists() {
-                if let Err(remove_err) = fs::remove_dir_all(&upper_path) {
-                    tracing::warn!("failed to remove {}: {remove_err:#}", upper_path.display());
-                }
-            }
-            if backup_fs.exists() {
-                fs::rename(&backup_fs, &fs_path).with_context(|| {
-                    format!(
-                        "failed to rollback backup {} -> {}",
-                        backup_fs.display(),
-                        fs_path.display()
-                    )
-                })?;
-            }
-            if backup_upper.exists() {
-                fs::rename(&backup_upper, &upper_path).with_context(|| {
-                    format!(
-                        "failed to rollback backup {} -> {}",
-                        backup_upper.display(),
-                        upper_path.display()
-                    )
-                })?;
-            }
-            return Err(err);
-        }
+    Ok(())
+}
 
-        if backup_root.exists() {
-            fs::remove_dir_all(&backup_root)
-                .with_context(|| format!("failed to clean {}", backup_root.display()))?;
+fn restore_disk_image_snapshot(
+    workspace: &WorkspaceMetadata,
+    snapshot_fs: &Path,
+    snapshot_home_upper: &Path,
+    backup_root: &Path,
+    fs_path: &Path,
+    upper_path: &Path,
+    work_path: &Path,
+    merged_path: &Path,
+) -> Result<()> {
+    crate::workspace::ensure_workspace_storage_unmounted(workspace)?;
+
+    let image_path = crate::workspace::storage::workspace_disk_image_path(workspace);
+    let backup_image = backup_root.join("fs.img");
+    let backup_upper = backup_root.join("home-upper");
+
+    if image_path.exists() {
+        fs::rename(&image_path, &backup_image).with_context(|| {
+            format!(
+                "failed to move {} to backup {}",
+                image_path.display(),
+                backup_image.display()
+            )
+        })?;
+    }
+    if upper_path.exists() {
+        fs::rename(upper_path, &backup_upper).with_context(|| {
+            format!(
+                "failed to move {} to backup {}",
+                upper_path.display(),
+                backup_upper.display()
+            )
+        })?;
+    }
+    if work_path.exists() {
+        fs::remove_dir_all(work_path)
+            .with_context(|| format!("failed to remove {}", work_path.display()))?;
+    }
+    if merged_path.exists() {
+        fs::remove_dir_all(merged_path)
+            .with_context(|| format!("failed to remove {}", merged_path.display()))?;
+    }
+    if fs_path.exists() {
+        fs::create_dir_all(fs_path)
+            .with_context(|| format!("failed to ensure {}", fs_path.display()))?;
+    }
+
+    let restore_result = (|| {
+        reset_path(upper_path)?;
+        reset_path(work_path)?;
+        reset_path(merged_path)?;
+        crate::workspace::ensure_workspace_storage_ready(workspace)?;
+        let copy_result = copy_dir_recursive(snapshot_fs, fs_path)
+            .and_then(|_| copy_dir_recursive(snapshot_home_upper, upper_path));
+        let unmount_result = crate::workspace::ensure_workspace_storage_unmounted(workspace);
+
+        copy_result?;
+        unmount_result?;
+        Ok::<(), anyhow::Error>(())
+    })();
+    if let Err(err) = restore_result {
+        let _ = crate::workspace::ensure_workspace_storage_unmounted(workspace);
+        if image_path.exists() {
+            if let Err(remove_err) = fs::remove_file(&image_path) {
+                tracing::warn!("failed to remove {}: {remove_err:#}", image_path.display());
+            }
         }
-        Ok(())
-    })
+        if upper_path.exists() {
+            if let Err(remove_err) = fs::remove_dir_all(upper_path) {
+                tracing::warn!("failed to remove {}: {remove_err:#}", upper_path.display());
+            }
+        }
+        if backup_image.exists() {
+            fs::rename(&backup_image, &image_path).with_context(|| {
+                format!(
+                    "failed to rollback backup {} -> {}",
+                    backup_image.display(),
+                    image_path.display()
+                )
+            })?;
+        }
+        if backup_upper.exists() {
+            fs::rename(&backup_upper, upper_path).with_context(|| {
+                format!(
+                    "failed to rollback backup {} -> {}",
+                    backup_upper.display(),
+                    upper_path.display()
+                )
+            })?;
+        }
+        return Err(err);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

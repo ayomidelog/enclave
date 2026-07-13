@@ -197,11 +197,11 @@ fn is_mountpoint(path: &Path) -> Result<bool> {
     Ok(status.success())
 }
 
-fn workspace_disk_image_path(workspace: &WorkspaceMetadata) -> PathBuf {
+pub(crate) fn workspace_disk_image_path(workspace: &WorkspaceMetadata) -> PathBuf {
     PathBuf::from(&workspace.workspace_path).join(DISK_IMAGE_NAME)
 }
 
-fn workspace_uses_disk_image(workspace: &WorkspaceMetadata) -> bool {
+pub(crate) fn workspace_uses_disk_image(workspace: &WorkspaceMetadata) -> bool {
     workspace.limits.disk_bytes.is_some() && workspace.home_mount_source_path.is_none()
 }
 
