@@ -15,6 +15,7 @@ SESSION_HELPER="${13}"
 APPARMOR_PROFILE="${14}"
 SELINUX_LABEL="${15}"
 WORKSPACE_IDMAP_OPTION="${16}"
+DISK_BACKED_TMP="${17}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -68,6 +69,10 @@ fi
 echo "$HOST_PID" > "$PID_FILE"
 
 log "workspace session bootstrap complete; switching to hardened runtime helper"
+BOOTSTRAP_TMP_ARGS=""
+if [ "$DISK_BACKED_TMP" = "true" ]; then
+  BOOTSTRAP_TMP_ARGS="--disk-backed-tmp"
+fi
 if [ -n "$APPARMOR_PROFILE" ] || [ -n "$SELINUX_LABEL" ]; then
   setpriv_args="--nnp"
   if [ -n "$APPARMOR_PROFILE" ]; then
@@ -82,6 +87,7 @@ if [ -n "$APPARMOR_PROFILE" ] || [ -n "$SELINUX_LABEL" ]; then
     --workspace-fs "$WS_FS" \
     --mount-target "$MOUNT_TARGET" \
     --workspace-idmap-option "$WORKSPACE_IDMAP_OPTION" \
+    $BOOTSTRAP_TMP_ARGS \
     --ready-file "$READY_FILE"
 fi
 exec "$SESSION_HELPER" internal workspace-session-bootstrap \
@@ -89,6 +95,7 @@ exec "$SESSION_HELPER" internal workspace-session-bootstrap \
   --workspace-fs "$WS_FS" \
   --mount-target "$MOUNT_TARGET" \
   --workspace-idmap-option "$WORKSPACE_IDMAP_OPTION" \
+  $BOOTSTRAP_TMP_ARGS \
   --ready-file "$READY_FILE"
 "#;
 

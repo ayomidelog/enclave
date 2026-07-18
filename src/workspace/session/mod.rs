@@ -101,7 +101,9 @@ pub fn start_session(
         .try_clone()
         .with_context(|| format!("failed to clone {}", log_file.display()))?;
 
-    let status = Command::new("setsid")
+    let disk_backed_tmp = crate::workspace::storage::workspace_uses_disk_image(workspace);
+    let mut command = Command::new("setsid");
+    command
         .arg("-f")
         .arg(&current_exe)
         .arg("internal")
@@ -162,7 +164,11 @@ pub fn start_session(
         .arg("--selinux-label")
         .arg(selinux_label.unwrap_or_default())
         .arg("--workspace-idmap-option")
-        .arg(workspace_bind_idmap.unwrap_or_default())
+        .arg(workspace_bind_idmap.unwrap_or_default());
+    if disk_backed_tmp {
+        command.arg("--disk-backed-tmp");
+    }
+    let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))

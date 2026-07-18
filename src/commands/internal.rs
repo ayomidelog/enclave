@@ -4,6 +4,7 @@ use std::io::Read;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
@@ -80,7 +81,12 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
         Path::new(&args.mount_target),
         &args.workspace_idmap_option,
     )?;
-    mount_post_pivot_filesystems(Path::new(PIVOTED_OLD_ROOT))?;
+    mount_post_pivot_filesystems(
+        Path::new(PIVOTED_OLD_ROOT),
+        Path::new(&args.workspace_fs),
+        &args.workspace_idmap_option,
+        args.disk_backed_tmp,
+    )?;
     run_workspace_session_loop_inner(Path::new(PIVOTED_OLD_ROOT), Path::new(&args.ready_file))
 }
 
@@ -385,6 +391,7 @@ fn exec_workspace_session_script(args: &WorkspaceSessionLaunchArgs) -> Result<()
         .arg(&args.apparmor_profile)
         .arg(&args.selinux_label)
         .arg(&args.workspace_idmap_option)
+        .arg(if args.disk_backed_tmp { "true" } else { "" })
         .exec();
     Err(err).context("failed to exec workspace session bootstrap script")
 }
@@ -444,11 +451,22 @@ fn pivot_into_rootfs(rootfs: &Path, host_old_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn mount_post_pivot_filesystems(old_root: &Path) -> Result<()> {
+fn mount_post_pivot_filesystems(
+    old_root: &Path,
+    workspace_fs: &Path,
+    workspace_idmap_option: &str,
+    disk_backed_tmp: bool,
+) -> Result<()> {
     mount_proc_if_needed()?;
     mount_devpts_if_needed()?;
     bind_sys_if_needed(old_root)?;
-    mount_workspace_tmp_if_needed(Path::new("/tmp"))?;
+    mount_workspace_tmp_if_needed(
+        old_root,
+        workspace_fs,
+        Path::new("/tmp"),
+        workspace_idmap_option,
+        disk_backed_tmp,
+    )?;
     mount_runtime_tmpfs_if_needed(Path::new("/run/enclave/auth"))?;
     mount_runtime_tmpfs_if_needed(Path::new("/run/enclave/env"))?;
     Ok(())
@@ -530,10 +548,28 @@ fn mount_runtime_tmpfs_if_needed(target: &Path) -> Result<()> {
     .with_context(|| format!("failed to mount tmpfs at {}", target.display()))
 }
 
-fn mount_workspace_tmp_if_needed(target: &Path) -> Result<()> {
+fn mount_workspace_tmp_if_needed(
+    old_root: &Path,
+    workspace_fs: &Path,
+    target: &Path,
+    workspace_idmap_option: &str,
+    disk_backed_tmp: bool,
+) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("failed to create {}", target.display()))?;
     if is_mountpoint(target)? {
         return Ok(());
+    }
+    if disk_backed_tmp {
+        let workspace_tmp = workspace_fs.join("tmp");
+        ensure_workspace_tmp_source(old_root, &workspace_tmp)?;
+        return mount_workspace_source(old_root, &workspace_tmp, target, workspace_idmap_option)
+            .with_context(|| {
+                format!(
+                    "failed to mount disk-backed workspace /tmp from {} to {}",
+                    workspace_tmp.display(),
+                    target.display()
+                )
+            });
     }
     mount(
         Some("tmpfs"),
@@ -558,6 +594,36 @@ const WORKSPACE_TMP_DATA: &str = "mode=1777";
 
 fn workspace_tmp_mount_flags() -> MsFlags {
     MsFlags::MS_NODEV | MsFlags::MS_NOSUID
+}
+
+fn ensure_workspace_tmp_source(old_root: &Path, workspace_tmp: &Path) -> Result<()> {
+    let source = path_inside_old_root(old_root, workspace_tmp)?;
+    fs::create_dir_all(&source)
+        .with_context(|| format!("failed to create {}", source.display()))?;
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o1777))
+        .with_context(|| format!("failed to chmod {}", source.display()))?;
+    Ok(())
+}
+
+fn path_inside_old_root(old_root: &Path, absolute_path: &Path) -> Result<PathBuf> {
+    if !absolute_path.is_absolute() {
+        bail!("path must be absolute: {}", absolute_path.display());
+    }
+    let relative = absolute_path
+        .strip_prefix("/")
+        .expect("absolute path strips leading slash");
+    if relative.components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::CurDir | Component::Prefix(_)
+        )
+    }) {
+        bail!(
+            "path must not contain traversal components: {}",
+            absolute_path.display()
+        );
+    }
+    Ok(old_root.join(relative))
 }
 
 fn is_mountpoint(path: &Path) -> Result<bool> {

@@ -7,6 +7,7 @@ fn script_execs_pre_pivot_bootstrap_helper_before_ready() {
     assert!(WORKSPACE_SESSION_SCRIPT.contains("--workspace-fs \"$WS_FS\""));
     assert!(WORKSPACE_SESSION_SCRIPT.contains("--mount-target \"$MOUNT_TARGET\""));
     assert!(WORKSPACE_SESSION_SCRIPT.contains("--ready-file \"$READY_FILE\""));
+    assert!(WORKSPACE_SESSION_SCRIPT.contains("DISK_BACKED_TMP"));
     assert!(!WORKSPACE_SESSION_SCRIPT.contains("SESSION_HELPER_IN_NS"));
     assert!(!WORKSPACE_SESSION_SCRIPT.contains("pivot_root \"$ROOTFS\""));
 }
@@ -30,5 +31,6 @@ fn script_passes_idmapped_mount_option_to_bootstrap_helper() {
         WORKSPACE_SESSION_SCRIPT.contains("--workspace-idmap-option \"$WORKSPACE_IDMAP_OPTION\""),
         "workspace source idmap configuration must be forwarded to the post-pivot bootstrap helper"
     );
+    assert!(WORKSPACE_SESSION_SCRIPT.contains("--disk-backed-tmp"));
     assert!(!WORKSPACE_SESSION_SCRIPT.contains("mount --bind \"$WS_FS\" \"$TARGET_DIR\""));
 }

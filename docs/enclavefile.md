@@ -76,7 +76,7 @@ Each `[workspace.*]` block defines a workspace. The key after `workspace.` is th
 | `memory_mb` | No | — | Per-workspace memory cap. Enforced through cgroup v2 when available and also applied as `RLIMIT_AS`. |
 | `max_procs` | No | — | Per-workspace process-count cap. Enforced through cgroup v2 when available and also applied as `RLIMIT_NPROC`. |
 | `max_open_files` | No | — | Per-workspace file-descriptor cap (`RLIMIT_NOFILE`). |
-| `disk_mb` | No | — | Per-workspace disk quota for Enclave-managed `/home` storage. Not supported when `workspace_dir` / `path` mounts a host directory into `/home`. |
+| `disk_mb` | No | — | Per-workspace disk quota for Enclave-managed writable storage. On quota-backed workspaces, `/home` and the workspace-private `/tmp` share the same quota-backed filesystem. Not supported when `workspace_dir` / `path` mounts a host directory into `/home`. |
 | `auth` | No | `[]` | List of auth providers to inject into this workspace. Supported values: `enclave`, `github`, `npm`. Only listed providers are exposed. |
 | `env_tokens` | No | `[]` | List of plain environment tokens to inject into this workspace. Supported values currently match provider-backed tokens such as `ENCLAVE_TOKEN`, `GITHUB_TOKEN`, and `NPM_TOKEN`. |
 | `ports` | No | `[]` | Loopback-only published port mappings. Format: `127.0.0.1:HOST_PORT:WORKSPACE_PORT/tcp`. `tcp` is the only supported protocol in v1. |

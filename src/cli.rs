@@ -368,6 +368,8 @@ pub struct WorkspaceSessionLaunchArgs {
     pub selinux_label: String,
     #[arg(long, default_value = "")]
     pub workspace_idmap_option: String,
+    #[arg(long, default_value_t = false)]
+    pub disk_backed_tmp: bool,
 }
 
 #[derive(Args, Debug)]
@@ -380,6 +382,8 @@ pub struct WorkspaceSessionBootstrapArgs {
     pub mount_target: String,
     #[arg(long, default_value = "")]
     pub workspace_idmap_option: String,
+    #[arg(long, default_value_t = false)]
+    pub disk_backed_tmp: bool,
     #[arg(long, value_name = "PATH")]
     pub ready_file: String,
 }

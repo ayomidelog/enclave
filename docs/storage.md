@@ -50,6 +50,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - `workspaces/<workspace-id>/home-work/` is the OverlayFS bookkeeping directory.
 - `workspaces/<workspace-id>/home-merged/` is the merged OverlayFS view.
 - `workspaces/<workspace-id>/fs/` is the default workspace source directory mounted into `/home` inside the workspace.
+- When `disk_mb` is configured, that `fs/` mount target is backed by the workspace's `fs.img` loop-mounted ext4 image, and the workspace-private `/tmp` is bind-mounted from the same filesystem so both paths consume the same quota.
 - If `workspace_dir` is configured, Enclave mounts that directory instead.
 - In both cases, `/home` is presented through an idmapped bind mount rather than a raw host bind.
 
