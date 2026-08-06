@@ -47,6 +47,21 @@ fn runtime_exec_clears_environment_before_running_wrapper() {
     assert_eq!(args[9], "sb-1");
     assert_eq!(args[10], "--workspace-id");
     assert_eq!(args[11], "ws-1");
-    assert_eq!(args[12], "/bin/echo");
-    assert_eq!(args[13], "ok");
+    assert_eq!(args[12], "--");
+    assert_eq!(args[13], "/bin/echo");
+    assert_eq!(args[14], "ok");
+}
+
+#[test]
+fn runtime_exec_separates_wrapped_command_flags() {
+    let args = runtime_exec_command_args(
+        1234,
+        1,
+        "sb-1",
+        "ws-1",
+        "/home",
+        &["tar".to_string(), "-C".to_string(), "/home".to_string()],
+    );
+
+    assert_eq!(&args[12..], ["--", "tar", "-C", "/home"]);
 }
