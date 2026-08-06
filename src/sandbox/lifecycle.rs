@@ -343,38 +343,38 @@ pub fn stop_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata>
 }
 
 pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
-    with_registry_mut(state_dir, |registry| {
+    let (sandbox_id, sandbox) = with_registry_mut(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, selector)?;
         let sandbox = registry
             .sandboxes
-            .get(&sandbox_id)
-            .cloned()
+            .remove(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
 
-        let sandbox_dir = PathBuf::from(&sandbox.metadata.sandbox_path);
-        let mut metadata = sandbox.metadata.clone();
-        normalize_sandbox_metadata(&mut metadata);
-        mounts::ensure_rootfs_unmounted(&metadata)
-            .with_context(|| format!("failed to unmount rootfs for sandbox {}", sandbox_id))?;
-        let sandbox_cgroup = PathBuf::from("/sys/fs/cgroup")
-            .join(crate::sandbox::cgroup::sandbox_cgroup_name(&metadata.id));
-        if let Err(err) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_cgroup) {
-            tracing::debug!(
-                "sandbox cgroup cleanup skipped for '{}': {err:#}",
-                metadata.id
-            );
-        }
-        let sandboxes_root = sandboxes_dir(state_dir);
-        let sandbox_dir =
-            crate::fsutil::ensure_path_within(&sandboxes_root, &sandbox_dir, "sandbox directory")?;
-        if sandbox_dir.exists() {
-            fs::remove_dir_all(&sandbox_dir)
-                .with_context(|| format!("failed to remove sandbox {}", sandbox_dir.display()))?;
-        }
+        Ok((sandbox_id, sandbox))
+    })?;
 
-        registry.sandboxes.remove(&sandbox_id);
-        Ok(sandbox_id)
-    })
+    let sandbox_dir = PathBuf::from(&sandbox.metadata.sandbox_path);
+    let mut metadata = sandbox.metadata.clone();
+    normalize_sandbox_metadata(&mut metadata);
+    mounts::ensure_rootfs_unmounted(&metadata)
+        .with_context(|| format!("failed to unmount rootfs for sandbox {}", sandbox_id))?;
+    let sandbox_cgroup = PathBuf::from("/sys/fs/cgroup")
+        .join(crate::sandbox::cgroup::sandbox_cgroup_name(&metadata.id));
+    if let Err(err) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_cgroup) {
+        tracing::debug!(
+            "sandbox cgroup cleanup skipped for '{}': {err:#}",
+            metadata.id
+        );
+    }
+    let sandboxes_root = sandboxes_dir(state_dir);
+    let sandbox_dir =
+        crate::fsutil::ensure_path_within(&sandboxes_root, &sandbox_dir, "sandbox directory")?;
+    if sandbox_dir.exists() {
+        fs::remove_dir_all(&sandbox_dir)
+            .with_context(|| format!("failed to remove sandbox {}", sandbox_dir.display()))?;
+    }
+
+    Ok(sandbox_id)
 }
 
 pub fn exec_setup_command(
@@ -439,3 +439,7 @@ fn persist_sandbox_metadata(metadata: &SandboxMetadata) -> Result<()> {
         },
     )
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/sandbox/lifecycle.rs"]
+mod tests;
