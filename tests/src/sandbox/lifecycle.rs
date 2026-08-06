@@ -6,7 +6,7 @@ use crate::registry::{with_registry, with_registry_mut, RegistrySandbox};
 use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxStatus};
 
 #[test]
-fn destroy_removes_registry_entry_before_failed_unmount_cleanup() {
+fn destroy_keeps_registry_entry_until_unmount_cleanup_succeeds() {
     let temp_dir =
         std::env::temp_dir().join(format!("enclave-destroy-registry-{}", std::process::id()));
     let _ = fs::remove_dir_all(&temp_dir);
@@ -50,6 +50,14 @@ fn destroy_removes_registry_entry_before_failed_unmount_cleanup() {
     let error = destroy_sandbox(&temp_dir, "sandbox").unwrap_err();
     assert!(format!("{error:#}").contains("must not be a symlink"));
 
+    with_registry(&temp_dir, |registry| {
+        assert!(registry.sandboxes.contains_key("sandbox-id"));
+        Ok(())
+    })
+    .unwrap();
+
+    fs::remove_file(&metadata.mounted_rootfs_path).unwrap();
+    destroy_sandbox(&temp_dir, "sandbox").unwrap();
     with_registry(&temp_dir, |registry| {
         assert!(!registry.sandboxes.contains_key("sandbox-id"));
         Ok(())

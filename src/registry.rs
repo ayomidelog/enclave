@@ -100,17 +100,15 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
                             .insert(workspace_id.clone(), workspace.clone());
                     }
 
-                    if strict {
-                        let stale_ids: Vec<String> = existing
-                            .workspaces
-                            .keys()
-                            .filter(|id| !discovered_sandbox.workspaces.contains_key(*id))
-                            .cloned()
-                            .collect();
-                        for workspace_id in stale_ids {
-                            existing.workspaces.remove(&workspace_id);
-                            report.removed_workspaces += 1;
-                        }
+                    let stale_ids: Vec<String> = existing
+                        .workspaces
+                        .keys()
+                        .filter(|id| !discovered_sandbox.workspaces.contains_key(*id))
+                        .cloned()
+                        .collect();
+                    for workspace_id in stale_ids {
+                        existing.workspaces.remove(&workspace_id);
+                        report.removed_workspaces += 1;
                     }
                 }
                 None => {
@@ -123,18 +121,16 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
             }
         }
 
-        if strict {
-            let stale_sandbox_ids: Vec<String> = registry
-                .sandboxes
-                .keys()
-                .filter(|id| !discovered.contains_key(*id))
-                .cloned()
-                .collect();
-            for sandbox_id in stale_sandbox_ids {
-                if let Some(removed) = registry.sandboxes.remove(&sandbox_id) {
-                    report.removed_sandboxes += 1;
-                    report.removed_workspaces += removed.workspaces.len();
-                }
+        let stale_sandbox_ids: Vec<String> = registry
+            .sandboxes
+            .keys()
+            .filter(|id| !discovered.contains_key(*id))
+            .cloned()
+            .collect();
+        for sandbox_id in stale_sandbox_ids {
+            if let Some(removed) = registry.sandboxes.remove(&sandbox_id) {
+                report.removed_sandboxes += 1;
+                report.removed_workspaces += removed.workspaces.len();
             }
         }
 
@@ -213,6 +209,7 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
                     metadata_path.display()
                 );
             }
+            remove_orphan_directory(&sandbox_dir)?;
             continue;
         }
 
@@ -262,6 +259,23 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
         }
 
         normalize_sandbox_metadata(&mut metadata);
+        let rootfs_path = PathBuf::from(&metadata.rootfs_path);
+        let rootfs_path =
+            crate::fsutil::ensure_path_within(&sandbox_dir, &rootfs_path, "rootfs path")?;
+        if !rootfs_path.is_dir() {
+            if strict {
+                bail!(
+                    "strict repair failed: missing sandbox rootfs {}",
+                    rootfs_path.display()
+                );
+            }
+            tracing::warn!(
+                "registry repair removed sandbox directory with missing rootfs {}",
+                sandbox_dir.display()
+            );
+            remove_orphan_directory(&sandbox_dir)?;
+            continue;
+        }
         ensure_sandbox_layout(&metadata)?;
 
         let discovered_workspaces = scan_workspaces(&metadata, strict)?;
@@ -319,6 +333,7 @@ fn scan_workspaces(
                     metadata_path.display()
                 );
             }
+            remove_orphan_directory(&workspace_dir)?;
             continue;
         }
 
@@ -383,6 +398,11 @@ fn scan_workspaces(
     }
 
     Ok(result)
+}
+
+fn remove_orphan_directory(path: &Path) -> Result<()> {
+    fs::remove_dir_all(path)
+        .with_context(|| format!("failed to remove orphaned directory {}", path.display()))
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {

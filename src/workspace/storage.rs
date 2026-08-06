@@ -65,12 +65,22 @@ pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Resu
         .output()
         .with_context(|| format!("failed to run umount {}", mountpoint.display()))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = stderr.to_ascii_lowercase();
+        if detail.contains("enoent")
+            || detail.contains("einval")
+            || detail.contains("no such file")
+            || detail.contains("invalid argument")
+            || detail.contains("not mounted")
+            || detail.contains("no mount point")
+        {
+            return Ok(());
+        }
         bail!(
             "failed to unmount quota-backed workspace storage {} ({}): {}",
             mountpoint.display(),
             output.status,
-            stderr.trim()
+            stderr
         );
     }
     Ok(())

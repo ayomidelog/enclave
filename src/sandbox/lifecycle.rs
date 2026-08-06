@@ -343,15 +343,38 @@ pub fn stop_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata>
 }
 
 pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
-    let (sandbox_id, sandbox) = with_registry_mut(state_dir, |registry| {
+    let (sandbox_id, sandbox) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, selector)?;
         let sandbox = registry
             .sandboxes
-            .remove(&sandbox_id)
+            .get(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
 
-        Ok((sandbox_id, sandbox))
+        Ok((sandbox_id, sandbox.clone()))
     })?;
+
+    if !Path::new(&sandbox.metadata.sandbox_path).exists() {
+        with_registry_mut(state_dir, |registry| {
+            registry.sandboxes.remove(&sandbox_id);
+            Ok(())
+        })?;
+        return Ok(sandbox_id);
+    }
+
+    let workspace_ids = sandbox.workspaces.keys().cloned().collect::<Vec<_>>();
+    let mut workspace_errors = Vec::new();
+    for workspace_id in workspace_ids {
+        if let Err(err) = crate::workspace::destroy_workspace(state_dir, &sandbox_id, &workspace_id)
+        {
+            workspace_errors.push(format!("{}: {err:#}", workspace_id));
+        }
+    }
+    if !workspace_errors.is_empty() {
+        bail!(
+            "failed to destroy workspace(s) during sandbox destroy: {}",
+            workspace_errors.join("; ")
+        );
+    }
 
     let sandbox_dir = PathBuf::from(&sandbox.metadata.sandbox_path);
     let mut metadata = sandbox.metadata.clone();
@@ -373,6 +396,26 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
         fs::remove_dir_all(&sandbox_dir)
             .with_context(|| format!("failed to remove sandbox {}", sandbox_dir.display()))?;
     }
+
+    if sandbox_dir.exists() {
+        bail!("sandbox directory {} still exists", sandbox_dir.display());
+    }
+
+    with_registry_mut(state_dir, |registry| {
+        let current = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        if !current.workspaces.is_empty() {
+            bail!(
+                "sandbox '{}' still has {} workspace record(s) after cleanup",
+                sandbox_id,
+                current.workspaces.len()
+            );
+        }
+        registry.sandboxes.remove(&sandbox_id);
+        Ok(())
+    })?;
 
     Ok(sandbox_id)
 }
