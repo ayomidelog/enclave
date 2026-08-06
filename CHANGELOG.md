@@ -17,6 +17,7 @@
 - Cleanup now handles nested workspace mounts deepest-first, lazily detaches mounts owned by dead runtimes, and preserves workspace directories while a mount remains active.
 - Registry repair now removes safe invalid-metadata or orphan directories, persists corrected metadata, and avoids deleting paths that still contain mounts.
 - Unmount failures now identify the mount target, kernel errno, and namespace processes holding the mount while independent cleanup continues.
+- Workspace copy now invokes the wrapped `tar` executable correctly, validates workspace-to-host archive entries in a private staging directory, rejects special source files, and commits only to an absent destination entry.
 
 ## 1.0.2 - 2026-07-12
 

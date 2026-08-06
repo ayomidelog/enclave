@@ -1,7 +1,12 @@
 use super::path::{
-    destination_plan, source_name, validate_direction_paths, validate_host_destination, Direction,
+    destination_plan, source_name, validate_direction_paths, validate_host_destination,
+    validate_host_source, Direction,
 };
-use super::stream::{wait_child_output, ChildGuard};
+use super::stream::{
+    extract_workspace_archive, open_host_directory, validate_archive_entry_type,
+    validate_archive_path, wait_child_output, workspace_tar_command, ChildGuard,
+    HostStagingDirectory,
+};
 
 #[test]
 fn source_name_rejects_root_and_parent_entries() {
@@ -84,4 +89,128 @@ fn disconnected_client_cancels_child_process() {
     let mut child = ChildGuard::new(child);
     let error = wait_child_output(&mut child, Some(&server)).unwrap_err();
     assert!(error.to_string().contains("client disconnected"));
+}
+
+#[test]
+fn workspace_tar_command_includes_executable_before_flags() {
+    assert_eq!(
+        workspace_tar_command(vec!["-C".into(), "/home".into(), "-cf".into(), "-".into()]),
+        vec!["tar", "-C", "/home", "-cf", "-"]
+    );
+}
+
+#[test]
+fn host_source_rejects_fifo() {
+    let root = std::env::temp_dir().join(format!("enclave-cp-fifo-test-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let fifo = root.join("source.fifo");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+
+    let error = validate_host_source(&fifo.to_string_lossy()).unwrap_err();
+    assert!(error.to_string().contains("unsupported host source type"));
+    std::fs::remove_file(&fifo).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn archive_validation_rejects_unsafe_and_unexpected_entries() {
+    assert!(validate_archive_path(std::path::Path::new("../escape"), "source").is_err());
+    assert!(validate_archive_path(std::path::Path::new("/absolute"), "source").is_err());
+    assert!(validate_archive_path(std::path::Path::new("other/file"), "source").is_err());
+    assert!(validate_archive_entry_type(tar::EntryType::new(b'1')).is_err());
+    assert!(validate_archive_entry_type(tar::EntryType::new(b'3')).is_err());
+}
+
+#[test]
+fn hostile_archive_is_rejected_and_staging_is_removed() {
+    let root = std::env::temp_dir().join(format!(
+        "enclave-cp-hostile-archive-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut archive_data = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut archive_data);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "unexpected.txt", &b"oops"[..])
+            .unwrap();
+        builder.finish().unwrap();
+    }
+
+    let stage = HostStagingDirectory::create(&root).unwrap();
+    let stage_path = stage.path().to_path_buf();
+    let error = extract_workspace_archive(&archive_data[..], &stage, "source").unwrap_err();
+    assert!(error.to_string().contains("unexpected entry"));
+    drop(stage);
+    assert!(!stage_path.exists());
+    assert!(std::fs::read_dir(&root).unwrap().next().is_none());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn validated_archive_commits_once_without_overwriting_destination() {
+    let root = std::env::temp_dir().join(format!(
+        "enclave-cp-commit-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut archive_data = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut archive_data);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(4);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "source.txt", &b"safe"[..])
+            .unwrap();
+        builder.finish().unwrap();
+    }
+
+    let stage = HostStagingDirectory::create(&root).unwrap();
+    assert_eq!(
+        extract_workspace_archive(&archive_data[..], &stage, "source.txt").unwrap(),
+        4
+    );
+    stage.commit("source.txt", "destination.txt").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("destination.txt")).unwrap(),
+        "safe"
+    );
+
+    std::fs::write(root.join("existing.txt"), "keep").unwrap();
+    let stage = HostStagingDirectory::create(&root).unwrap();
+    extract_workspace_archive(&archive_data[..], &stage, "source.txt").unwrap();
+    assert!(stage.commit("source.txt", "existing.txt").is_err());
+    assert_eq!(
+        std::fs::read_to_string(root.join("existing.txt")).unwrap(),
+        "keep"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn secure_host_parent_open_rejects_symlink() {
+    let root = std::env::temp_dir().join(format!("enclave-cp-parent-test-{}", std::process::id()));
+    let real = root.join("real");
+    let link = root.join("link");
+    std::fs::create_dir_all(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    assert!(open_host_directory(&link).is_err());
+    std::fs::remove_file(link).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
 }

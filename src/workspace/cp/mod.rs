@@ -18,8 +18,8 @@ use self::path::{
     validate_direction_paths, validate_host_destination, validate_host_source, Direction,
 };
 use self::stream::{
-    run_host_to_workspace, run_workspace_to_host, workspace_path_has_symlink,
-    workspace_path_is_directory,
+    run_host_to_workspace, run_workspace_to_host, validate_workspace_source,
+    workspace_path_has_symlink, workspace_path_is_directory,
 };
 
 pub fn copy_workspace_path(
@@ -55,16 +55,19 @@ pub(crate) fn copy_workspace_path_with_connection(
     let workspace = load_workspace(state_dir, sandbox_selector, workspace_selector)?;
     ensure_workspace_running(&workspace)?;
 
-    if direction == Direction::HostToWorkspace {
-        validate_host_source(src)?;
+    let host_source_bytes = if direction == Direction::HostToWorkspace {
+        Some(validate_host_source(src)?)
     } else {
         validate_host_destination(dst)?;
-    }
+        None
+    };
 
     let started = Instant::now();
     let transfer = crate::workspace::with_workspace_storage_mounted(&workspace, || {
         if direction == Direction::HostToWorkspace {
             workspace_path_has_symlink(&workspace, dst, client_stream)?;
+        } else {
+            validate_workspace_source(&workspace, src, client_stream)?;
         }
         let source_is_dir = match direction {
             Direction::HostToWorkspace => Path::new(src).is_dir(),
@@ -85,9 +88,14 @@ pub(crate) fn copy_workspace_path_with_connection(
         let source_name = path::source_name(src)?;
         let destination = path::destination_plan(dst, &source_name, destination_is_dir)?;
         match direction {
-            Direction::HostToWorkspace => {
-                run_host_to_workspace(&workspace, src, &destination, &source_name, client_stream)
-            }
+            Direction::HostToWorkspace => run_host_to_workspace(
+                &workspace,
+                src,
+                &destination,
+                &source_name,
+                host_source_bytes.unwrap_or_default(),
+                client_stream,
+            ),
             Direction::WorkspaceToHost => {
                 run_workspace_to_host(&workspace, src, &destination, &source_name, client_stream)
             }
@@ -146,6 +154,12 @@ fn ensure_workspace_running(workspace: &WorkspaceMetadata) -> Result<()> {
             "workspace '{}' runtime pid {} is not alive; restart workspace",
             workspace.id,
             pid
+        );
+    }
+    if !session::namespace_refs_match_runtime(workspace, pid) {
+        bail!(
+            "workspace '{}' namespace references are stale; restart workspace",
+            workspace.id
         );
     }
     Ok(())

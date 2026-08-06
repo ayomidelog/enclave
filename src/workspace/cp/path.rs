@@ -43,13 +43,24 @@ pub(super) fn validate_direction_paths(src: &str, dst: &str, direction: Directio
     Ok(())
 }
 
-pub(super) fn validate_host_source(path: &str) -> Result<()> {
+pub(super) fn validate_host_source(path: &str) -> Result<u64> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("host source '{}' does not exist", path))?;
-    if metadata.file_type().is_block_device() || metadata.file_type().is_char_device() {
-        bail!("refusing to copy device node '{}'", path);
+    if metadata.is_file() || metadata.file_type().is_symlink() {
+        return Ok(metadata.len());
     }
-    Ok(())
+    if !metadata.is_dir() {
+        bail!("refusing to copy unsupported host source type '{}'", path);
+    }
+
+    let mut logical_bytes = 0u64;
+    for entry in
+        fs::read_dir(path).with_context(|| format!("failed to read host source '{}'", path))?
+    {
+        logical_bytes =
+            logical_bytes.saturating_add(validate_host_source(&entry?.path().to_string_lossy())?);
+    }
+    Ok(logical_bytes)
 }
 
 pub(super) fn validate_host_destination(path: &str) -> Result<()> {
@@ -147,6 +158,7 @@ pub(super) fn destination_plan(
 }
 
 impl DestinationPlan {
+    #[cfg(test)]
     pub(super) fn extracted_path(&self, source_name: &str) -> PathBuf {
         self.parent.join(source_name)
     }
@@ -154,5 +166,9 @@ impl DestinationPlan {
     pub(super) fn final_path(&self, source_name: &str) -> PathBuf {
         self.parent
             .join(self.rename_to.as_deref().unwrap_or(source_name))
+    }
+
+    pub(super) fn final_name<'a>(&'a self, source_name: &'a str) -> &'a str {
+        self.rename_to.as_deref().unwrap_or(source_name)
     }
 }

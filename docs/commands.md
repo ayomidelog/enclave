@@ -131,7 +131,7 @@ enclave workspace stats   <workspace>
 |---------|-------------|
 | `create` | Create a new workspace inside a sandbox with optional resource limits. |
 | `resize` | Increase the disk allocation of an Enclave-managed workspace. The target is an absolute size in MiB; host-backed workspace directories and decreases are not supported. |
-| `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. |
+| `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. Transfers stage data before committing it, reject special files, and do not overwrite an existing destination entry. |
 | `start` | Start a workspace session (namespaces + mounts). |
 | `stop` | Stop a running workspace session. |
 | `destroy` | Stop and permanently delete a workspace. Requires an already-running daemon unless `--start-daemon` is supplied. |
@@ -160,7 +160,9 @@ enclave workspace resize mybox agent1 --disk-mb 2048
 
 `workspace cp` requires exactly one `ws:/` path. Host paths are resolved from
 the current directory; workspace paths are absolute paths inside the workspace.
-The workspace must already be running.
+The workspace must already be running. Enclave stages each transfer and only
+commits it after both sides succeed, so an existing destination entry is rejected
+rather than partially merged or overwritten.
 
 ```bash
 enclave workspace cp mybox agent1 ./myfile.py ws:/home/myfile.py
