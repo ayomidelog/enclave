@@ -153,3 +153,65 @@ fn cleanup_workspace_artifacts_accepts_missing_workspace_root() {
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn reconcile_clears_dead_runtime_and_namespace_references() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-workspace-runtime-reconcile-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+    let sandbox_dir = temp_dir.join("sandbox");
+    let workspace_dir = sandbox_dir.join("workspaces").join("workspace-id");
+    fs::create_dir_all(workspace_dir.join("ns")).unwrap();
+    fs::write(workspace_dir.join("ns").join("mnt.ref"), "mnt:[1]\n").unwrap();
+    fs::write(workspace_dir.join("ns").join("pid.ref"), "pid:[1]\n").unwrap();
+
+    let mut workspace = WorkspaceMetadata {
+        id: "workspace-id".to_string(),
+        sandbox_id: "sandbox-id".to_string(),
+        name: "workspace".to_string(),
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        workspace_path: workspace_dir.to_string_lossy().to_string(),
+        filesystem_path: workspace_dir.join("fs").to_string_lossy().to_string(),
+        filesystem_mount_target: "/home".to_string(),
+        home_mount_source_path: None,
+        sandbox_rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        overlay_home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        overlay_home_upper_path: String::new(),
+        overlay_home_work_path: String::new(),
+        overlay_home_merged_path: String::new(),
+        auth_providers: Vec::new(),
+        env_tokens: Vec::new(),
+        published_ports: Vec::new(),
+        status: WorkspaceStatus::Running,
+        runtime_pid: Some(u32::MAX),
+        runtime_starttime_ticks: Some(1),
+        namespace_refs: NamespaceRefs {
+            mount: workspace_dir
+                .join("ns")
+                .join("mnt.ref")
+                .to_string_lossy()
+                .to_string(),
+            pid: workspace_dir
+                .join("ns")
+                .join("pid.ref")
+                .to_string_lossy()
+                .to_string(),
+        },
+        limits: WorkspaceLimits::default(),
+        assigned_ip: Some("10.88.0.99".to_string()),
+    };
+
+    assert!(reconcile_workspace_runtime_state(&mut workspace).unwrap());
+    assert_eq!(workspace.status, WorkspaceStatus::Stopped);
+    assert!(workspace.runtime_pid.is_none());
+    assert!(workspace.runtime_starttime_ticks.is_none());
+    assert!(workspace.assigned_ip.is_none());
+    assert_eq!(workspace.namespace_refs.mount, "unassigned");
+    assert_eq!(workspace.namespace_refs.pid, "unassigned");
+    assert!(!workspace_dir.join("ns").join("mnt.ref").exists());
+    assert!(!workspace_dir.join("ns").join("pid.ref").exists());
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}

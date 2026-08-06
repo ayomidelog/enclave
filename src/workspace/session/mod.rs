@@ -478,6 +478,37 @@ pub fn write_namespace_ref_values(
     Ok(())
 }
 
+pub fn namespace_refs_match_runtime(workspace: &WorkspaceMetadata, pid: u32) -> bool {
+    let Ok((expected_mount, expected_pid)) = read_namespace_refs(pid) else {
+        return false;
+    };
+    let (mount_ref_path, pid_ref_path) = namespace_ref_paths(workspace);
+    let mount_ref = fs::read_to_string(mount_ref_path).ok();
+    let pid_ref = fs::read_to_string(pid_ref_path).ok();
+    mount_ref.is_some_and(|value| value.trim() == expected_mount)
+        && pid_ref.is_some_and(|value| value.trim() == expected_pid)
+}
+
+pub fn clear_namespace_ref_files(workspace: &WorkspaceMetadata) -> Result<()> {
+    let (mount_ref_path, pid_ref_path) = namespace_ref_paths(workspace);
+    for path in [mount_ref_path, pid_ref_path] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to remove namespace ref {}", path.display()))
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn namespace_ref_files_exist(workspace: &WorkspaceMetadata) -> bool {
+    let (mount_ref_path, pid_ref_path) = namespace_ref_paths(workspace);
+    mount_ref_path.exists() || pid_ref_path.exists()
+}
+
 pub fn runtime_log_file(workspace: &WorkspaceMetadata) -> PathBuf {
     runtime_dir(workspace).join("session.log")
 }

@@ -147,3 +147,40 @@ fn disk_resize_grows_real_ext4_image() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn mountinfo_parser_preserves_nested_mounts_for_reverse_cleanup() {
+    let mountinfo = concat!(
+        "100 1 0:50 / /tmp/enclave/ws/fs rw,relatime - ext4 /dev/loop0 rw\n",
+        "101 100 0:51 / /tmp/enclave/ws/fs/cache\\040data rw,relatime - tmpfs tmpfs rw\n"
+    );
+    let mut mountpoints = parse_mountinfo_mountpoints(mountinfo)
+        .into_iter()
+        .filter(|path| path.starts_with("/tmp/enclave/ws/fs"))
+        .collect::<Vec<_>>();
+    mountpoints.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+
+    assert_eq!(
+        mountpoints,
+        vec![
+            PathBuf::from("/tmp/enclave/ws/fs/cache data"),
+            PathBuf::from("/tmp/enclave/ws/fs"),
+        ]
+    );
+}
+
+#[test]
+fn dead_workspace_owner_allows_lazy_unmount_fallback() {
+    let mut workspace = workspace_fixture();
+    workspace.runtime_pid = Some(u32::MAX);
+    workspace.runtime_starttime_ticks = Some(1);
+    assert!(workspace_owner_is_dead(&workspace));
+}
+
+#[test]
+fn missing_starttime_does_not_block_lazy_unmount_fallback() {
+    let mut workspace = workspace_fixture();
+    workspace.runtime_pid = Some(std::process::id());
+    workspace.runtime_starttime_ticks = None;
+    assert!(workspace_owner_is_dead(&workspace));
+}

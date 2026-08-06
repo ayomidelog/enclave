@@ -17,6 +17,8 @@ pub struct Cli {
     pub config: Option<PathBuf>,
     #[arg(long, global = true, value_name = "PATH", default_value_os_t = default_socket_arg())]
     pub socket: PathBuf,
+    #[arg(long, global = true)]
+    pub start_daemon: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -34,7 +36,7 @@ pub enum Commands {
     },
     Ping,
     Health,
-    Doctor,
+    Doctor(DoctorArgs),
     Init,
     Up(UpArgs),
     Down,
@@ -211,6 +213,12 @@ pub struct StartArgs {
     pub workspace_apparmor_profile: Option<String>,
     #[arg(long, value_parser = parse_non_empty_arg, value_name = "LABEL")]
     pub workspace_selinux_label: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DoctorArgs {
+    #[arg(long)]
+    pub repair: bool,
 }
 
 #[derive(Args, Debug)]

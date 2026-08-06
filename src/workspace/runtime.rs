@@ -52,6 +52,12 @@ pub fn workspace_runtime_info(
                 runtime_pid
             );
         }
+        if !session::namespace_refs_match_runtime(workspace, runtime_pid) {
+            bail!(
+                "workspace '{}' namespace references are stale; restart workspace",
+                workspace.id
+            );
+        }
 
         Ok(WorkspaceRuntimeInfo {
             sandbox_id: workspace.sandbox_id.clone(),

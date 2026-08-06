@@ -149,6 +149,10 @@ pub(crate) fn dispatch(
             let report = crate::doctor::run_doctor(&config.state_dir)?;
             Ok(serde_json::to_value(report)?)
         }
+        Action::DaemonDoctorRepair => {
+            let report = crate::doctor::repair_doctor(&config.state_dir, &config.socket_path)?;
+            Ok(serde_json::to_value(report)?)
+        }
         Action::Init => {
             sandbox::init_storage(&config.state_dir)?;
             Ok(json!({
@@ -806,6 +810,7 @@ enum Action {
     Ping,
     DaemonHealth,
     DaemonDoctor,
+    DaemonDoctorRepair,
     Init,
     SandboxCreate,
     SandboxUpdate,
@@ -856,6 +861,7 @@ impl Action {
             "ping" => Self::Ping,
             "daemon.health" => Self::DaemonHealth,
             "daemon.doctor" => Self::DaemonDoctor,
+            "daemon.doctor.repair" => Self::DaemonDoctorRepair,
             "init" => Self::Init,
             "sandbox.create" => Self::SandboxCreate,
             "sandbox.update" => Self::SandboxUpdate,

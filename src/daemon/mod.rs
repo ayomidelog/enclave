@@ -1,5 +1,6 @@
 mod dispatch;
 mod rate_limiter;
+pub(crate) mod state_lock;
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -39,6 +40,7 @@ pub struct DaemonConfig {
 
 pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     install_signal_handlers()?;
+    let _state_lock = state_lock::acquire_state_lock(&config.state_dir, &config.socket_path)?;
     sandbox::init_storage(&config.state_dir)?;
     policy::ensure_policy(&config.state_dir)?;
     prepare_runtime_paths(&config.socket_path, &config.pid_file)?;

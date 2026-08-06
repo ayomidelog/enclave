@@ -31,32 +31,15 @@ pub fn init_storage(state_dir: &Path) -> Result<()> {
 }
 
 fn reconcile_workspace_states(state_dir: &Path) -> Result<()> {
-    use crate::workspace::WorkspaceStatus;
-
     with_registry_mut(state_dir, |registry| {
         let mut reconciled = 0usize;
         for sandbox in registry.sandboxes.values_mut() {
             for workspace in sandbox.workspaces.values_mut() {
-                if workspace.status != WorkspaceStatus::Running {
-                    continue;
-                }
-                let pid_alive = workspace
-                    .runtime_pid
-                    .map(|pid| {
-                        crate::workspace::session_process_matches(
-                            pid,
-                            workspace.runtime_starttime_ticks,
-                        )
-                    })
-                    .unwrap_or(false);
-                if !pid_alive {
+                if crate::workspace::reconcile_workspace_runtime_state(workspace)? {
                     tracing::warn!(
-                        "reconcile: workspace '{}' was marked running but pid is gone; marking stopped",
+                        "reconcile: repaired stale runtime state for workspace '{}'",
                         workspace.id
                     );
-                    workspace.status = WorkspaceStatus::Stopped;
-                    workspace.runtime_pid = None;
-                    workspace.runtime_starttime_ticks = None;
                     reconciled += 1;
                 }
             }
@@ -362,43 +345,59 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
     }
 
     let workspace_ids = sandbox.workspaces.keys().cloned().collect::<Vec<_>>();
-    let mut workspace_errors = Vec::new();
+    let mut cleanup_errors = Vec::new();
     for workspace_id in workspace_ids {
         if let Err(err) = crate::workspace::destroy_workspace(state_dir, &sandbox_id, &workspace_id)
         {
-            workspace_errors.push(format!("{}: {err:#}", workspace_id));
+            cleanup_errors.push(format!("workspace {workspace_id} cleanup: {err:#}"));
         }
-    }
-    if !workspace_errors.is_empty() {
-        bail!(
-            "failed to destroy workspace(s) during sandbox destroy: {}",
-            workspace_errors.join("; ")
-        );
     }
 
     let sandbox_dir = PathBuf::from(&sandbox.metadata.sandbox_path);
     let mut metadata = sandbox.metadata.clone();
     normalize_sandbox_metadata(&mut metadata);
-    mounts::ensure_rootfs_unmounted(&metadata)
-        .with_context(|| format!("failed to unmount rootfs for sandbox {}", sandbox_id))?;
+    let rootfs_unmounted = match mounts::ensure_rootfs_unmounted(&metadata) {
+        Ok(()) => true,
+        Err(error) => {
+            cleanup_errors.push(format!("rootfs cleanup: {error:#}"));
+            false
+        }
+    };
     let sandbox_cgroup = PathBuf::from("/sys/fs/cgroup")
         .join(crate::sandbox::cgroup::sandbox_cgroup_name(&metadata.id));
     if let Err(err) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_cgroup) {
-        tracing::debug!(
-            "sandbox cgroup cleanup skipped for '{}': {err:#}",
-            metadata.id
-        );
+        cleanup_errors.push(format!(
+            "cgroup {} cleanup: {err:#}",
+            sandbox_cgroup.display()
+        ));
     }
-    let sandboxes_root = sandboxes_dir(state_dir);
-    let sandbox_dir =
-        crate::fsutil::ensure_path_within(&sandboxes_root, &sandbox_dir, "sandbox directory")?;
-    if sandbox_dir.exists() {
-        fs::remove_dir_all(&sandbox_dir)
-            .with_context(|| format!("failed to remove sandbox {}", sandbox_dir.display()))?;
+    if rootfs_unmounted && cleanup_errors.is_empty() {
+        let sandboxes_root = sandboxes_dir(state_dir);
+        let sandbox_dir =
+            crate::fsutil::ensure_path_within(&sandboxes_root, &sandbox_dir, "sandbox directory")?;
+        if sandbox_dir.exists() {
+            if let Err(error) = fs::remove_dir_all(&sandbox_dir) {
+                cleanup_errors.push(format!(
+                    "sandbox directory {} cleanup: {error}",
+                    sandbox_dir.display()
+                ));
+            }
+        }
+
+        if sandbox_dir.exists() {
+            cleanup_errors.push(format!(
+                "sandbox directory {} still exists",
+                sandbox_dir.display()
+            ));
+        }
     }
 
-    if sandbox_dir.exists() {
-        bail!("sandbox directory {} still exists", sandbox_dir.display());
+    if !cleanup_errors.is_empty() {
+        bail!(
+            "failed to fully destroy sandbox '{}': {}",
+            sandbox_id,
+            cleanup_errors.join("; ")
+        );
     }
 
     with_registry_mut(state_dir, |registry| {

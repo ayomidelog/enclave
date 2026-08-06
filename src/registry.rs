@@ -219,10 +219,15 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
                 if strict {
                     return Err(err);
                 }
-                tracing::warn!("registry repair skipped invalid sandbox metadata: {err:#}");
+                tracing::warn!(
+                    "registry repair removed sandbox with invalid metadata {}: {err:#}",
+                    metadata_path.display()
+                );
+                remove_orphan_directory(&sandbox_dir)?;
                 continue;
             }
         };
+        let original_metadata = serde_json::to_vec(&metadata)?;
 
         if metadata.id.is_empty() {
             if strict {
@@ -277,6 +282,10 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
             continue;
         }
         ensure_sandbox_layout(&metadata)?;
+
+        if !strict && original_metadata != serde_json::to_vec(&metadata)? {
+            persist_metadata(&metadata_path, &metadata)?;
+        }
 
         let discovered_workspaces = scan_workspaces(&metadata, strict)?;
         result.insert(
@@ -343,10 +352,15 @@ fn scan_workspaces(
                 if strict {
                     return Err(err);
                 }
-                tracing::warn!("registry repair skipped invalid workspace metadata: {err:#}");
+                tracing::warn!(
+                    "registry repair removed workspace with invalid metadata {}: {err:#}",
+                    metadata_path.display()
+                );
+                remove_orphan_directory(&workspace_dir)?;
                 continue;
             }
         };
+        let original_metadata = serde_json::to_vec(&metadata)?;
 
         if metadata.id.is_empty() {
             if strict {
@@ -394,6 +408,10 @@ fn scan_workspaces(
             metadata.workspace_path = workspace_dir.to_string_lossy().to_string();
         }
 
+        if !strict && original_metadata != serde_json::to_vec(&metadata)? {
+            persist_metadata(&metadata_path, &metadata)?;
+        }
+
         result.insert(metadata.id.clone(), metadata);
     }
 
@@ -401,8 +419,56 @@ fn scan_workspaces(
 }
 
 fn remove_orphan_directory(path: &Path) -> Result<()> {
+    if path_contains_mount(path)? {
+        bail!(
+            "refusing to remove orphaned directory {} while it or a descendant is still mounted",
+            path.display()
+        );
+    }
     fs::remove_dir_all(path)
         .with_context(|| format!("failed to remove orphaned directory {}", path.display()))
+}
+
+fn path_contains_mount(path: &Path) -> Result<bool> {
+    let mountinfo = fs::read_to_string("/proc/self/mountinfo")
+        .context("failed to read /proc/self/mountinfo")?;
+    Ok(mountinfo
+        .lines()
+        .filter_map(mountinfo_path)
+        .any(|mountpoint| mountpoint == path || mountpoint.starts_with(path)))
+}
+
+fn mountinfo_path(line: &str) -> Option<PathBuf> {
+    let raw = line.split_whitespace().nth(4)?;
+    Some(PathBuf::from(unescape_mountinfo_path(raw)))
+}
+
+fn unescape_mountinfo_path(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..=index + 3].iter().all(u8::is_ascii_digit)
+        {
+            let value = (bytes[index + 1] - b'0') * 64
+                + (bytes[index + 2] - b'0') * 8
+                + (bytes[index + 3] - b'0');
+            result.push(value as char);
+            index += 4;
+        } else {
+            result.push(bytes[index] as char);
+            index += 1;
+        }
+    }
+    result
+}
+
+fn persist_metadata<T: Serialize>(path: &Path, metadata: &T) -> Result<()> {
+    let payload = serde_json::to_string_pretty(metadata)?;
+    crate::fsutil::write_file_atomic(path, payload.as_bytes(), 0o600)
+        .with_context(|| format!("failed to persist normalized metadata {}", path.display()))
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {

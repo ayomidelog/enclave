@@ -69,13 +69,8 @@ fn unmount_rejects_symlinked_mount_path() {
 }
 
 #[test]
-fn unmount_error_classifier_accepts_missing_state_errors() {
-    assert!(is_already_unmounted_error(
-        "umount: /path: No such file or directory"
-    ));
-    assert!(is_already_unmounted_error(
-        "umount: /path: Invalid argument"
-    ));
-    assert!(is_already_unmounted_error("umount: /path: not mounted"));
-    assert!(!is_already_unmounted_error("umount: /path: target is busy"));
+fn unmount_errno_classifier_accepts_missing_state_errors() {
+    assert!(is_already_unmounted_errno(Some(libc::ENOENT)));
+    assert!(is_already_unmounted_errno(Some(libc::EINVAL)));
+    assert!(!is_already_unmounted_errno(Some(libc::EBUSY)));
 }

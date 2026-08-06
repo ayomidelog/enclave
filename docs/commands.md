@@ -9,7 +9,7 @@ enclave daemon status
 enclave daemon stop
 enclave ping
 enclave health
-enclave doctor
+enclave doctor [--repair]
 ```
 
 | Command | Description |
@@ -21,6 +21,15 @@ enclave doctor
 | `ping` | Send a ping to the daemon and print the response. |
 | `health` | Print daemon health information (state dir, uptime, etc.). |
 | `doctor` | Run diagnostic checks: registry consistency, orphaned mounts, stale cgroups, and cgroup v2 availability. |
+| `doctor --repair` | Reconcile registry and filesystem state, remove stale workspace mounts and namespace state, and validate daemon ownership. Requires a running daemon unless global `--start-daemon` is supplied. |
+
+Destructive commands do not start a stopped daemon automatically. Start it with `enclave daemon start`, or opt in for one invocation with the global `--start-daemon` flag:
+
+```bash
+enclave daemon start
+enclave --start-daemon workspace destroy mybox agent1
+enclave --start-daemon doctor --repair
+```
 
 ## Enclavefile Lifecycle
 
@@ -84,14 +93,14 @@ enclave wipe
 | `create` | Bootstrap a new sandbox with `debootstrap` or `cached_rootfs`. |
 | `start` | Start a stopped sandbox (mount rootfs). |
 | `stop` | Stop all workspaces in the sandbox, then stop the sandbox. |
-| `destroy` | Stop and permanently delete a sandbox and all its workspaces. |
+| `destroy` | Stop and permanently delete a sandbox and all its workspaces. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List all sandboxes. |
 | `stats` | Show live stats for all running workspaces across all sandboxes. |
 | `ps` | Show live process status for all running workspaces across all sandboxes. |
 | `ps --local` (`--project`) | Show only workspaces defined by the Enclavefile in the current directory. |
 | `status` | Show detailed status for a sandbox. |
 | `remove` | Remove a sandbox entry from the registry (does not delete files). |
-| `wipe` | Destroy all sandboxes. Requires confirmation. |
+| `wipe` | Destroy all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 
 ## Workspace
 
@@ -125,11 +134,11 @@ enclave workspace stats   <workspace>
 | `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. |
 | `start` | Start a workspace session (namespaces + mounts). |
 | `stop` | Stop a running workspace session. |
-| `destroy` | Stop and permanently delete a workspace. |
+| `destroy` | Stop and permanently delete a workspace. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List workspaces, optionally filtered by sandbox. |
 | `status` | Show detailed status for a workspace (process count, resource usage). |
 | `remove` | Remove a workspace entry from the registry. |
-| `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation. |
+| `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). |
 | `exec` | Execute a one-shot command inside a workspace. |
 | `run` | Run a command inside a workspace (alias for exec). |

@@ -123,6 +123,7 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 | `src/commands/internal.rs` | Hidden internal commands for hardened session loops and runtime namespace entry |
 | `src/client.rs` | Unix socket JSON client |
 | `src/daemon/mod.rs` | Daemon main loop, connection handling |
+| `src/daemon/state_lock.rs` | Exclusive state-directory daemon ownership lock and metadata record |
 | `src/daemon/dispatch.rs` | Action routing and parameter extraction |
 | `src/daemon/rate_limiter.rs` | Per-UID request rate limiting |
 | `src/registry.rs` | Atomic JSON state persistence with file locking |
