@@ -212,7 +212,19 @@ enclave workspace stats api
 enclave stats
 ```
 
-**7. Tear it down:**
+**7. Copy files to or from a running workspace when needed:**
+
+```bash
+enclave workspace cp devbox shell ./notes.md ws:/home/notes.md
+enclave workspace cp devbox shell ws:/home/output.txt ./output.txt
+```
+
+Use the `ws:/` prefix on exactly one path to identify the workspace side. The
+command streams regular files and directories through the namespace boundary;
+see the [Command Reference](docs/commands.md) for copy semantics and current
+limitations.
+
+**8. Tear it down:**
 
 ```bash
 enclave down

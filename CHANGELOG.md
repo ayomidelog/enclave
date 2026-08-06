@@ -5,6 +5,7 @@
 ### Added
 - Portable workspace snapshot archive support via `enclave snapshot export` and `enclave snapshot import`.
 - `enclave workspace resize` for increasing Enclave-managed ext4 workspace disk allocations without recreating the workspace.
+- `enclave workspace cp <sandbox> <workspace> <src> <dst>` for streaming files and directories between the host and a running workspace with `ws:/` workspace paths.
 
 ## 1.0.2 - 2026-07-12
 

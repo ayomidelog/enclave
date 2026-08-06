@@ -1,4 +1,5 @@
 mod control;
+mod cp;
 mod create;
 mod cwd;
 mod exec;
@@ -27,6 +28,8 @@ pub(crate) use control::{
     sync_sandbox_runtime_limits, sync_workspace_runtime_limits, update_workspace_definition,
     workspace_metadata,
 };
+pub use cp::copy_workspace_path;
+pub(crate) use cp::copy_workspace_path_with_connection;
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
 pub use exec::exec_workspace_command;
 pub use logs::workspace_logs;
@@ -43,10 +46,10 @@ pub use snapshot::{
 };
 pub use stats::{list_running_workspace_stats, workspace_stats};
 pub use types::{
-    WorkspaceExecResult, WorkspaceLimits, WorkspaceLimitsUpdate, WorkspaceListItem,
-    WorkspaceLogsResult, WorkspaceMetadata, WorkspaceResizeResult, WorkspaceRuntimeInfo,
-    WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo, WorkspaceStatsReport, WorkspaceStatus,
-    WorkspaceStatusReport,
+    WorkspaceCpResult, WorkspaceExecResult, WorkspaceLimits, WorkspaceLimitsUpdate,
+    WorkspaceListItem, WorkspaceLogsResult, WorkspaceMetadata, WorkspaceResizeResult,
+    WorkspaceRuntimeInfo, WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo,
+    WorkspaceStatsReport, WorkspaceStatus, WorkspaceStatusReport,
 };
 
 pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) -> bool {

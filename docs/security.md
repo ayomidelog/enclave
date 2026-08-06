@@ -89,6 +89,7 @@ Workspace runtime tracks both the PID and the process start-time ticks (`/proc/<
 - **Runtime directory**: checked for correct ownership and permissions on startup.
 - **Socket validation**: the daemon socket is verified for ownership and mode before the CLI connects.
 - **Symlink rejection**: snapshot copy operations reject symlinks that point outside the workspace boundary.
+- **Workspace copy destination checks**: `workspace cp` rejects existing symlink components in either destination path before extraction, preventing a transfer from being redirected through a symlink.
 - **Mount path canonicalization**: bind mount and overlay mount targets are canonicalized to prevent path confusion.
 - **Sandbox boundary validation**: all paths derived from user input are validated to stay within the sandbox directory tree.
 - **Path traversal guards**: `..` components are detected and rejected in snapshot names, workspace CWD, and other user-supplied paths.

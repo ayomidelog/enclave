@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -10,7 +10,7 @@ use crate::workspace::sanitize_workspace_cwd;
 use super::control::resolve_workspace_id;
 use super::logs;
 use super::session;
-use super::types::{WorkspaceExecResult, WorkspaceStatus};
+use super::types::{WorkspaceExecResult, WorkspaceMetadata, WorkspaceStatus};
 
 pub fn exec_workspace_command(
     state_dir: &Path,
@@ -51,41 +51,18 @@ pub fn exec_workspace_command(
         );
     }
 
-    let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
-        anyhow!(
-            "workspace '{}' has no runtime pid; restart workspace",
-            workspace.id
-        )
-    })?;
-    if !session::process_matches(runtime_pid, workspace.runtime_starttime_ticks) {
-        bail!(
-            "workspace '{}' runtime pid {} is not alive; restart workspace",
-            workspace.id,
-            runtime_pid
-        );
-    }
-    let runtime_starttime_ticks = workspace.runtime_starttime_ticks.ok_or_else(|| {
-        anyhow!(
-            "workspace '{}' has no runtime starttime; restart workspace",
-            workspace.id
-        )
-    })?;
-
     let effective_cwd = sanitize_workspace_cwd(cwd);
     let output = crate::workspace::with_workspace_storage_mounted(&workspace, || {
-        let current_exe = crate::workspace::session::resolve_session_helper_source();
-        let mut cmd = Command::new(&current_exe);
-        cmd.args(runtime_exec_command_args(
-            runtime_pid,
-            runtime_starttime_ticks,
-            workspace.sandbox_id.as_str(),
-            workspace.id.as_str(),
+        spawn_workspace_command(
+            &workspace,
             &effective_cwd,
             command,
-        ));
-
-        cmd.output()
-            .context("failed to execute workspace command via internal helper")
+            Stdio::null(),
+            Stdio::piped(),
+            Stdio::piped(),
+        )?
+        .wait_with_output()
+        .context("failed to execute workspace command via internal helper")
     })?;
 
     let exit_code = output
@@ -94,6 +71,12 @@ pub fn exec_workspace_command(
         .unwrap_or(if output.status.success() { 0 } else { 1 });
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime pid after command execution",
+            workspace.id
+        )
+    })?;
     let (mount_ns, pid_ns) = session::read_namespace_refs(runtime_pid)
         .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
     if let Err(err) = logs::append_workspace_command_log(
@@ -117,6 +100,59 @@ pub fn exec_workspace_command(
         mount_ns,
         pid_ns,
     })
+}
+
+pub(crate) fn spawn_workspace_command(
+    workspace: &WorkspaceMetadata,
+    cwd: &str,
+    command: &[String],
+    stdin: Stdio,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child> {
+    if command.is_empty() {
+        bail!("workspace command helper requires a command");
+    }
+    if workspace.status != WorkspaceStatus::Running {
+        bail!(
+            "workspace '{}' is stopped; start workspace first",
+            workspace.id
+        );
+    }
+    let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime pid; restart workspace",
+            workspace.id
+        )
+    })?;
+    if !session::process_matches(runtime_pid, workspace.runtime_starttime_ticks) {
+        bail!(
+            "workspace '{}' runtime pid {} is not alive; restart workspace",
+            workspace.id,
+            runtime_pid
+        );
+    }
+    let runtime_starttime_ticks = workspace.runtime_starttime_ticks.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime starttime; restart workspace",
+            workspace.id
+        )
+    })?;
+    let current_exe = crate::workspace::session::resolve_session_helper_source();
+    Command::new(&current_exe)
+        .args(runtime_exec_command_args(
+            runtime_pid,
+            runtime_starttime_ticks,
+            workspace.sandbox_id.as_str(),
+            workspace.id.as_str(),
+            cwd,
+            command,
+        ))
+        .stdin(stdin)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .context("failed to execute workspace command via internal helper")
 }
 
 fn runtime_exec_command_args(

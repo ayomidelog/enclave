@@ -55,6 +55,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - Resizing a running workspace temporarily stops and restarts its runtime through the normal lifecycle cleanup and hardening path. Host-backed workspace directories and allocation decreases are intentionally unsupported.
 - If `workspace_dir` is configured, Enclave mounts that directory instead.
 - In both cases, `/home` is presented through an idmapped bind mount rather than a raw host bind.
+- `enclave workspace cp` operates on the live mounted workspace filesystem. It is a streaming transfer and does not create a separate archive or durable copy in Enclave state.
 
 ## Runtime and snapshot data
 

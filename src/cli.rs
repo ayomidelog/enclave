@@ -110,6 +110,7 @@ pub enum InternalCommands {
 pub enum WorkspaceCommands {
     Create(WorkspaceCreateArgs),
     Resize(WorkspaceResizeArgs),
+    Cp(WorkspaceCpArgs),
     List(WorkspaceListArgs),
     Remove(WorkspaceRemoveArgs),
     Wipe,
@@ -327,6 +328,18 @@ pub struct WorkspaceResizeArgs {
     pub workspace: String,
     #[arg(long, value_name = "MIB")]
     pub disk_mb: u64,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceCpArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace: String,
+    #[arg(value_parser = parse_non_empty_arg)]
+    pub src: String,
+    #[arg(value_parser = parse_non_empty_arg)]
+    pub dst: String,
 }
 
 #[derive(Args, Debug)]

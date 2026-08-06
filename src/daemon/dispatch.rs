@@ -1,3 +1,4 @@
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -133,6 +134,7 @@ pub(crate) fn dispatch(
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
     port_publisher: &Arc<PortPublisher>,
+    client_stream: Option<&UnixStream>,
 ) -> Result<Value> {
     let action = Action::parse(&request.action)?;
     match action {
@@ -211,6 +213,7 @@ pub(crate) fn dispatch(
             dispatch_workspace_resize(&request.params, config, port_publisher)
         }
         Action::WorkspaceExec => dispatch_workspace_exec(&request.params, config),
+        Action::WorkspaceCp => dispatch_workspace_cp(&request.params, config, client_stream),
         Action::WorkspacePortPublish => {
             dispatch_workspace_port_publish(&request.params, config, port_publisher)
         }
@@ -592,6 +595,28 @@ fn dispatch_workspace_exec(params: &Value, config: &DaemonConfig) -> Result<Valu
     Ok(serde_json::to_value(result)?)
 }
 
+fn dispatch_workspace_cp(
+    params: &Value,
+    config: &DaemonConfig,
+    client_stream: Option<&UnixStream>,
+) -> Result<Value> {
+    let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let workspace = require_param_str(params, &["workspace", "workspace_id", "name"])?;
+    let src = require_param_str(params, &["src"])?;
+    let dst = require_param_str(params, &["dst"])?;
+    let direction = require_param_str(params, &["direction"])?;
+    let result = workspace::copy_workspace_path_with_connection(
+        &config.state_dir,
+        sandbox,
+        workspace,
+        src,
+        dst,
+        direction,
+        client_stream,
+    )?;
+    Ok(serde_json::to_value(result)?)
+}
+
 fn dispatch_workspace_logs(params: &Value, config: &DaemonConfig) -> Result<Value> {
     let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
@@ -804,6 +829,7 @@ enum Action {
     WorkspaceUpdate,
     WorkspaceResize,
     WorkspaceExec,
+    WorkspaceCp,
     WorkspacePortPublish,
     WorkspacePortUnpublish,
     WorkspacePortList,
@@ -853,6 +879,7 @@ impl Action {
             "workspace.update" | "workspace.update_auth" => Self::WorkspaceUpdate,
             "workspace.resize" => Self::WorkspaceResize,
             "workspace.exec" => Self::WorkspaceExec,
+            "workspace.cp" => Self::WorkspaceCp,
             "workspace.port.publish" => Self::WorkspacePortPublish,
             "workspace.port.unpublish" => Self::WorkspacePortUnpublish,
             "workspace.port.list" => Self::WorkspacePortList,

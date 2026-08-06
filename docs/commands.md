@@ -98,6 +98,7 @@ enclave wipe
 ```bash
 enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
 enclave workspace resize  <sandbox> <workspace> --disk-mb N
+enclave workspace cp      <sandbox> <workspace> <src> <dst>
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>
 enclave workspace destroy <sandbox> <workspace>
@@ -121,6 +122,7 @@ enclave workspace stats   <workspace>
 |---------|-------------|
 | `create` | Create a new workspace inside a sandbox with optional resource limits. |
 | `resize` | Increase the disk allocation of an Enclave-managed workspace. The target is an absolute size in MiB; host-backed workspace directories and decreases are not supported. |
+| `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. |
 | `start` | Start a workspace session (namespaces + mounts). |
 | `stop` | Stop a running workspace session. |
 | `destroy` | Stop and permanently delete a workspace. |
@@ -145,16 +147,30 @@ enclave workspace stats   <workspace>
 enclave workspace resize mybox agent1 --disk-mb 2048
 ```
 
-The command is supported only for workspaces whose writable storage is backed by
-an Enclave-managed `fs.img` ext4 image. The requested size must be greater than
-the current allocation; shrinking images and resizing host-backed
-`workspace_dir`/`path` mounts are not supported. Equal-size requests are safe
-no-ops.
+### Copy files with a workspace
 
-If the workspace is running, Enclave briefly stops it, grows the image and its
-ext4 filesystem, then starts it again through the normal hardened lifecycle.
-Published workspace ports are restored after a successful restart. Workspace
-data and workspace configuration are preserved.
+`workspace cp` requires exactly one `ws:/` path. Host paths are resolved from
+the current directory; workspace paths are absolute paths inside the workspace.
+The workspace must already be running.
+
+```bash
+enclave workspace cp mybox agent1 ./myfile.py ws:/home/myfile.py
+enclave workspace cp mybox agent1 ws:/home/output.txt ./output.txt
+enclave workspace cp mybox agent1 ./project/ ws:/home/project/
+```
+
+Transfers stream `tar` directly across the workspace namespace boundary. It
+initially supports regular files and recursive directories. Permissions and
+timestamps are preserved; archive ownership is not restored. Existing symlinked
+destination components are rejected. The reported byte count is the logical
+source/destination payload size, not a byte-for-byte pipe counter.
+
+For directories, the destination follows standard `cp`-style behavior: an
+existing destination directory receives an entry named after the source, while
+a missing trailing-slash destination receives the source directory's contents.
+
+The initial implementation intentionally does not include compression, progress
+output, glob expansion, resumable transfers, or parallel directory transfer.
 
 ## Auth
 

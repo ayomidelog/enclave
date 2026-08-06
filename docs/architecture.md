@@ -17,6 +17,7 @@ graph LR
 - **CLI** serializes commands as JSON requests: `{ "action": "...", "params": { ... } }`
 - **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "..." }`
 - For `workspace enter` and `workspace exec`, the daemon returns runtime metadata and the CLI launches an internal helper that joins the runtime namespaces directly. Stdout/stderr still stream in real-time without passing through the daemon.
+- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run `tar` in the workspace and pipes it to a host-side `tar`. File payloads stream across the namespace boundary rather than being buffered in the JSON control protocol.
 
 ## Isolation Model
 

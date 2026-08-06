@@ -30,6 +30,7 @@ fn action_parse_known_actions() {
         "workspace.update_auth",
         "workspace.resize",
         "workspace.exec",
+        "workspace.cp",
         "workspace.port.publish",
         "workspace.port.unpublish",
         "workspace.port.list",

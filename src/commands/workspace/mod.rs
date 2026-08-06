@@ -1,3 +1,4 @@
+mod cp;
 pub(crate) mod display;
 mod enter;
 
@@ -35,6 +36,7 @@ pub(crate) fn run_workspace_command(socket: &Path, command: WorkspaceCommands) -
     match command {
         WorkspaceCommands::Create(args) => run_workspace_create(&ctx, args),
         WorkspaceCommands::Resize(args) => run_workspace_resize(&ctx, args),
+        WorkspaceCommands::Cp(args) => cp::run_workspace_cp(&ctx, args),
         WorkspaceCommands::List(args) => run_workspace_list(&ctx, args),
         WorkspaceCommands::Remove(args) => run_workspace_remove(&ctx, args),
         WorkspaceCommands::Wipe => run_workspace_wipe(&ctx),

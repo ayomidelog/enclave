@@ -167,6 +167,14 @@ pub struct WorkspaceResizeResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceCpResult {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub logical_bytes: u64,
+    pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceListItem {
     pub id: String,
     pub name: String,

@@ -214,7 +214,8 @@ fn handle_client(
         return Ok(());
     }
 
-    let response = match dispatch::dispatch(request, config, shutdown, port_publisher) {
+    let response = match dispatch::dispatch(request, config, shutdown, port_publisher, Some(stream))
+    {
         Ok(result) => Response::ok(result),
         Err(err) => Response::err(err.to_string()),
     };
