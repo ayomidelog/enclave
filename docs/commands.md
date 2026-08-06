@@ -137,6 +137,25 @@ enclave workspace stats   <workspace>
 | `logs` | Show workspace session logs. `--follow` continuously streams appended log output. |
 | `stats` | Show workspace resource metrics like CPU %, memory usage/limit, memory %, network I/O, block I/O, pids, and threads. |
 
+### Resize workspace storage
+
+`workspace resize` takes an absolute target size in MiB rather than a size delta:
+
+```bash
+enclave workspace resize mybox agent1 --disk-mb 2048
+```
+
+The command is supported only for workspaces whose writable storage is backed by
+an Enclave-managed `fs.img` ext4 image. The requested size must be greater than
+the current allocation; shrinking images and resizing host-backed
+`workspace_dir`/`path` mounts are not supported. Equal-size requests are safe
+no-ops.
+
+If the workspace is running, Enclave briefly stops it, grows the image and its
+ext4 filesystem, then starts it again through the normal hardened lifecycle.
+Published workspace ports are restored after a successful restart. Workspace
+data and workspace configuration are preserved.
+
 ## Auth
 
 ```bash
