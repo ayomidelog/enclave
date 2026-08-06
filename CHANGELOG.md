@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.3 - 2026-08-06
+
 ### Added
 - Portable workspace snapshot archive support via `enclave snapshot export` and `enclave snapshot import`.
 - `enclave workspace resize` for increasing Enclave-managed ext4 workspace disk allocations without recreating the workspace.
