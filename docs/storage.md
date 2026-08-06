@@ -10,6 +10,7 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 │   └── <provider>.token         # Stored provider tokens (0600)
 ├── registry.json                # Sandbox & workspace metadata
 ├── registry.lock                # Advisory file lock
+├── daemon.lock                  # Exclusive daemon owner record while the daemon runs
 ├── policy.json                  # Authorization rules
 ├── policy.lock                  # Advisory file lock
 └── sandboxes/
@@ -60,9 +61,15 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 ## Runtime and snapshot data
 
 - `workspaces/<workspace-id>/runtime/` stores runtime metadata such as PID, logs, and readiness markers.
+- `workspaces/<workspace-id>/ns/` stores mount and PID namespace references while a runtime is active. Enclave validates these references with the recorded runtime PID and start time before treating a workspace as active.
+- `daemon.lock` is held exclusively while the daemon owns the state directory. Its JSON record identifies the daemon PID, socket, binary version, binary path, and start time; the file is removed when the owning daemon exits normally.
 - `workspaces/<workspace-id>/snapshots/` stores copy-based workspace snapshots.
 - `snapshot export` packages one of those snapshot directories as a tar or tar.gz archive for transfer or backup.
 - Snapshot data is currently a full copy of the workspace overlay data, which is why snapshot retention matters for disk usage.
+
+## Repairing stale state
+
+Use `enclave doctor --repair` after a host reboot, daemon crash, or interrupted cleanup. It validates daemon ownership, removes stale nested workspace mounts before filesystem reconciliation, clears dead namespace state, and reconciles registry records with safe on-disk sandbox and workspace data. It does not remove a directory while it or one of its descendants is still mounted.
 
 ## Auth data
 

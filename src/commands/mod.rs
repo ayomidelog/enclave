@@ -40,7 +40,7 @@ pub fn run() -> Result<()> {
     let mut cli = Cli::from_arg_matches(&matches)?;
     let file_config = crate::config::load_config(cli.config.as_deref())?;
     apply_config_defaults(&mut cli, &matches, &file_config);
-    daemon::configure_automatic_start_defaults(&file_config);
+    daemon::configure_automatic_start_defaults(&file_config, cli.start_daemon);
     match cli.command {
         Commands::Internal { command } => match *command {
             InternalCommands::WorkspaceSessionLaunch(args) => {
@@ -65,8 +65,17 @@ pub fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
-        Commands::Doctor => {
-            let result = send(&cli.socket, "daemon.doctor", json!({}))?;
+        Commands::Doctor(args) => {
+            let action = if args.repair {
+                "daemon.doctor.repair"
+            } else {
+                "daemon.doctor"
+            };
+            let result = if args.repair {
+                send_managed(&cli.socket, action, json!({}))?
+            } else {
+                send(&cli.socket, action, json!({}))?
+            };
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
@@ -322,7 +331,7 @@ pub(crate) fn send_managed(
     action: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    daemon::ensure_daemon_running(socket)?;
+    daemon::ensure_daemon_running_for_action(socket, action)?;
     send(socket, action, params)
 }
 

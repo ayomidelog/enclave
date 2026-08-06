@@ -258,7 +258,8 @@ pub(crate) fn run_remove(socket: &Path, sandbox_id: &str) -> Result<()> {
 }
 
 pub(crate) fn run_wipe(socket: &Path) -> Result<()> {
-    let response = send_managed(socket, "sandbox.list", json!({}))?;
+    daemon::ensure_daemon_running_for_action(socket, "sandbox.wipe")?;
+    let response = send(socket, "sandbox.list", json!({}))?;
     let sandboxes: Vec<SandboxListItem> = serde_json::from_value(response)?;
     if sandboxes.is_empty() {
         println!("no sandboxes");

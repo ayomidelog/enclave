@@ -1,10 +1,10 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::registry::with_registry;
+use crate::registry::{ensure_registry, repair_registry, with_registry};
 use crate::sandbox::cgroup;
 use crate::workspace::WorkspaceStatus;
 
@@ -22,6 +22,14 @@ pub struct DoctorCheck {
     pub name: String,
     pub status: String,
     pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DoctorRepairReport {
+    pub registry: crate::registry::RepairReport,
+    pub unmounted_stale_mounts: usize,
+    pub reconciled_workspace_mounts: usize,
+    pub daemon_state_consistent: bool,
 }
 
 impl DoctorCheck {
@@ -59,6 +67,63 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
     };
 
     Ok(DoctorReport { status, checks })
+}
+
+pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepairReport> {
+    fs::create_dir_all(state_dir.join("sandboxes"))
+        .with_context(|| format!("failed to initialize storage at {}", state_dir.display()))?;
+    ensure_registry(state_dir)?;
+
+    let (active_roots, stopped_workspaces) = with_registry(state_dir, |registry| {
+        let mut active_roots = Vec::new();
+        let mut stopped_workspaces = Vec::new();
+        for sandbox in registry.sandboxes.values() {
+            if sandbox.metadata.status == crate::sandbox::SandboxStatus::Running {
+                active_roots.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
+            }
+            for workspace in sandbox.workspaces.values() {
+                if crate::workspace::workspace_runtime_is_active(workspace) {
+                    active_roots.push(PathBuf::from(&workspace.workspace_path));
+                } else {
+                    stopped_workspaces.push(workspace.clone());
+                }
+            }
+        }
+        Ok((active_roots, stopped_workspaces))
+    })?;
+
+    let mut reconciled_workspace_mounts = 0usize;
+    for workspace in stopped_workspaces {
+        crate::workspace::ensure_workspace_storage_unmounted(&workspace)?;
+        reconciled_workspace_mounts += 1;
+    }
+    let unmounted_stale_mounts = crate::workspace::unmount_mounts_at_or_below_excluding(
+        &state_dir.join("sandboxes"),
+        &active_roots,
+    )?;
+    let registry = repair_registry(state_dir, false)?;
+
+    let daemon_state_consistent = crate::daemon::state_lock::read_state_lock_record(state_dir)?
+        .is_some_and(|record| {
+            record.pid == std::process::id()
+                && record.socket == socket_path.to_string_lossy()
+                && record.binary_version == env!("CARGO_PKG_VERSION")
+        });
+    if !daemon_state_consistent {
+        anyhow::bail!(
+            "daemon state lock does not match pid={} socket={} version={}",
+            std::process::id(),
+            socket_path.display(),
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    Ok(DoctorRepairReport {
+        registry,
+        unmounted_stale_mounts,
+        reconciled_workspace_mounts,
+        daemon_state_consistent,
+    })
 }
 
 fn check_registry_consistency(state_dir: &Path) -> DoctorCheck {

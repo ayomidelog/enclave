@@ -23,6 +23,7 @@ use super::send;
 
 const MAX_DAEMON_LOG_BYTES: u64 = 10 * 1024 * 1024;
 static AUTO_START_DEFAULTS: OnceLock<AutoStartDefaults> = OnceLock::new();
+static EXPLICIT_DAEMON_START: OnceLock<bool> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 struct AutoStartDefaults {
@@ -174,7 +175,10 @@ fn start_daemon(socket: &Path, args: StartArgs) -> Result<()> {
     )
 }
 
-pub(crate) fn configure_automatic_start_defaults(file_config: &FileConfig) {
+pub(crate) fn configure_automatic_start_defaults(
+    file_config: &FileConfig,
+    explicit_daemon_start: bool,
+) {
     let _ = AUTO_START_DEFAULTS.set(AutoStartDefaults {
         state_dir: file_config
             .state_dir
@@ -192,9 +196,10 @@ pub(crate) fn configure_automatic_start_defaults(file_config: &FileConfig) {
         workspace_apparmor_profile: file_config.workspace_apparmor_profile.clone(),
         workspace_selinux_label: file_config.workspace_selinux_label.clone(),
     });
+    let _ = EXPLICIT_DAEMON_START.set(explicit_daemon_start);
 }
 
-pub(crate) fn ensure_daemon_running(socket: &Path) -> Result<()> {
+pub(crate) fn ensure_daemon_running_for_action(socket: &Path, action: &str) -> Result<()> {
     match send(socket, "ping", json!({})) {
         Ok(_) => return Ok(()),
         Err(err) => {
@@ -203,6 +208,16 @@ pub(crate) fn ensure_daemon_running(socket: &Path) -> Result<()> {
                 return Err(err);
             }
         }
+    }
+
+    if destructive_action_requires_explicit_start(action)
+        && !EXPLICIT_DAEMON_START.get().copied().unwrap_or(false)
+    {
+        bail!(
+            "{} requires a running daemon at {}; start it explicitly with `enclave daemon start` or retry with `--start-daemon`",
+            action,
+            socket.display()
+        );
     }
 
     let defaults = AUTO_START_DEFAULTS
@@ -218,6 +233,24 @@ pub(crate) fn ensure_daemon_running(socket: &Path) -> Result<()> {
         workspace_selinux_label: defaults.workspace_selinux_label,
     };
     start_daemon(socket, args)
+}
+
+pub(crate) fn ensure_daemon_running(socket: &Path) -> Result<()> {
+    ensure_daemon_running_for_action(socket, "non_destructive")
+}
+
+fn destructive_action_requires_explicit_start(action: &str) -> bool {
+    matches!(
+        action,
+        "sandbox.destroy"
+            | "sandbox.remove"
+            | "sandbox.wipe"
+            | "workspace.destroy"
+            | "workspace.remove"
+            | "workspace.wipe"
+            | "registry.repair"
+            | "daemon.doctor.repair"
+    )
 }
 
 fn default_auto_start_defaults() -> AutoStartDefaults {
@@ -285,3 +318,7 @@ fn rotate_daemon_log(log_path: &Path, max_bytes: u64) -> Result<()> {
     })?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/commands/daemon.rs"]
+mod tests;

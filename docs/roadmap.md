@@ -34,6 +34,10 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
 
 ## Recently completed
 
+- **Runtime repair and ownership safety**
+  - Exclusive state-directory daemon locking with inspectable ownership metadata.
+  - `enclave doctor --repair` for mount-first stale-state cleanup and registry reconciliation.
+  - Idempotent sandbox and workspace destruction with dead-runtime namespace validation.
 - **Host-to-workspace port publishing**
   - Explicit, opt-in TCP publishing from `127.0.0.1:HOST_PORT` on the host to a selected workspace port.
   - Supported through both `Enclavefile` `ports = [...]` declarations and `enclave workspace port ...` commands.

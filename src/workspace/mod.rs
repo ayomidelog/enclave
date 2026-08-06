@@ -24,9 +24,9 @@ pub use control::{
     stop_workspace, workspace_status,
 };
 pub(crate) use control::{
-    resize_workspace_disk_with_security, stop_running_workspaces_in_sandbox,
-    sync_sandbox_runtime_limits, sync_workspace_runtime_limits, update_workspace_definition,
-    workspace_metadata,
+    reconcile_workspace_runtime_state, resize_workspace_disk_with_security,
+    stop_running_workspaces_in_sandbox, sync_sandbox_runtime_limits, sync_workspace_runtime_limits,
+    update_workspace_definition, workspace_metadata, workspace_runtime_is_active,
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;
@@ -59,5 +59,6 @@ pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) 
 pub(crate) use cwd::sanitize_workspace_cwd;
 pub(crate) use storage::{
     create_workspace_storage, ensure_workspace_storage_ready, ensure_workspace_storage_unmounted,
-    validate_workspace_storage_limits, with_workspace_storage_mounted,
+    unmount_mounts_at_or_below_excluding, validate_workspace_storage_limits,
+    with_workspace_storage_mounted,
 };

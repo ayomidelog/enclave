@@ -177,6 +177,7 @@ fn runtime_exec_command_args(
         "--workspace-id".to_string(),
         workspace_id.to_string(),
     ];
+    args.push("--".to_string());
     args.extend(command.iter().cloned());
     args
 }

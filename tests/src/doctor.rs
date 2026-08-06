@@ -100,3 +100,27 @@ fn check_orphaned_mounts_does_not_panic() {
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+#[test]
+fn repair_removes_orphaned_sandbox_directories_and_validates_daemon_state() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-doctor-repair-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let socket_path = temp_dir.join("daemon.sock");
+    std::fs::create_dir_all(temp_dir.join("sandboxes").join("orphan")).unwrap();
+
+    let state_lock = crate::daemon::state_lock::acquire_state_lock(&temp_dir, &socket_path)
+        .expect("acquire daemon state lock");
+    let report = repair_doctor(&temp_dir, &socket_path).expect("repair state");
+
+    assert!(report.daemon_state_consistent);
+    assert!(!temp_dir.join("sandboxes").join("orphan").exists());
+
+    drop(state_lock);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

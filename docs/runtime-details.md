@@ -77,7 +77,7 @@ Those measurements are host-dependent, but they reflect the current build after 
 
 - **Crash recovery**: On daemon startup, Enclave reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. This handles daemon crashes, host reboots, and OOM-killed sessions without manual cleanup.
 - **cgroup fallback**: When cgroup v2 is not available, Enclave falls back to rlimit-only resource enforcement and logs a warning. Workspace isolation remains intact — only hard memory/PID limits are downgraded to soft rlimits.
-- **Mount cleanup**: Sandbox destroy fails if the rootfs unmount fails, preventing orphaned mounts. Workspace stop tears down per-workspace networking (veth + IP release) and clears runtime state atomically.
+- **Mount cleanup**: Cleanup unmounts nested workspace mounts deepest-first. If the runtime owner is gone, it retries with a lazy unmount; failed resources report the mount target, errno, and namespace holders while independent cleanup continues.
 - **Overlay guarantees**: The shared rootfs is bind-mounted read-only under OverlayFS. Workspace writes go to the upper layer only. Stopping or destroying a workspace removes only the workspace-specific overlay data — the shared rootfs is never modified.
 - **Workspace source mounts**: `/home` is presented through an idmapped bind mount, whether the source is the Enclave-managed workspace directory or an explicit host `workspace_dir`.
-- **System diagnostics**: Run `enclave doctor` to verify mount state, cgroup state, registry consistency, and runtime process health at any time.
+- **System diagnostics**: Run `enclave doctor` to verify mount state, cgroup state, registry consistency, and runtime process health. Run `enclave doctor --repair` to reconcile stale registry entries, files, mounts, namespace references, and workspace artifacts.

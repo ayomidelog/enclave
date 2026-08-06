@@ -66,11 +66,11 @@ pub fn destroy_workspace(
     sandbox_selector: &str,
     workspace_selector: &str,
 ) -> Result<String> {
-    with_registry_mut(state_dir, |registry| {
+    let (sandbox, workspace) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
-            .get_mut(&sandbox_id)
+            .get(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
 
         let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
@@ -86,25 +86,114 @@ pub fn destroy_workspace(
                 )
             })?;
 
-        if workspace.status == WorkspaceStatus::Running {
-            if let Some(pid) = workspace.runtime_pid {
-                session::stop_session(pid, workspace.runtime_starttime_ticks)?;
-            }
-            set_workspace_stopped(sandbox, &workspace_id)?;
-        }
+        Ok((sandbox.metadata.clone(), workspace))
+    })?;
 
-        let workspace_path = validated_workspace_dir(sandbox, &workspace)?;
-        if let Err(err) = fs::remove_dir_all(&workspace_path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(err).with_context(|| {
-                    format!("failed to remove workspace {}", workspace_path.display())
-                });
-            }
-        }
+    let workspace_id = workspace.id.clone();
+    cleanup_workspace_artifacts(&sandbox, &workspace)?;
 
+    with_registry_mut(state_dir, |registry| {
+        let sandbox = registry
+            .sandboxes
+            .get_mut(&sandbox.id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox.id))?;
         sandbox.workspaces.remove(&workspace_id);
-        Ok(workspace_id)
-    })
+        Ok(())
+    })?;
+
+    Ok(workspace_id)
+}
+
+fn cleanup_workspace_artifacts(
+    sandbox: &SandboxMetadata,
+    workspace: &WorkspaceMetadata,
+) -> Result<()> {
+    if !std::path::Path::new(&sandbox.workspaces_path).exists() {
+        return Ok(());
+    }
+    let workspace_path = validated_workspace_dir_from_metadata(sandbox, workspace)?;
+    let mut errors = Vec::new();
+
+    if let Some(pid) = workspace.runtime_pid {
+        if let Err(err) = session::stop_session(pid, workspace.runtime_starttime_ticks) {
+            errors.push(format!("stop runtime {}: {err:#}", pid));
+        }
+        remove_workspace_cgroups(sandbox, pid);
+    }
+    if let Some(ip) = workspace.assigned_ip.as_deref() {
+        network::teardown_workspace_network(ip);
+    }
+
+    let storage_unmounted = match crate::workspace::ensure_workspace_storage_unmounted(workspace) {
+        Ok(()) => true,
+        Err(err) => {
+            errors.push(format!("unmount workspace storage: {err:#}"));
+            false
+        }
+    };
+
+    let mut artifacts = vec![
+        workspace_path.join("workspace.json"),
+        workspace_path.join("fs.img"),
+        workspace_path.join("ns"),
+        workspace_path.join("home-upper"),
+        workspace_path.join("home-work"),
+        workspace_path.join("home-merged"),
+        workspace_path.join("runtime"),
+    ];
+    if storage_unmounted {
+        artifacts.push(workspace_path.join("fs"));
+    }
+
+    for artifact in artifacts {
+        if let Err(err) = remove_path_if_present(&artifact) {
+            errors.push(format!("remove {}: {err:#}", artifact.display()));
+        }
+    }
+    if storage_unmounted {
+        if let Err(err) = remove_path_if_present(&workspace_path) {
+            errors.push(format!("remove {}: {err:#}", workspace_path.display()));
+        }
+        if workspace_path.exists() {
+            errors.push(format!(
+                "workspace directory {} still exists",
+                workspace_path.display()
+            ));
+        }
+    } else {
+        errors.push(format!(
+            "workspace directory {} retained until all managed mounts are absent",
+            workspace_path.display()
+        ));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "workspace '{}' cleanup incomplete: {}",
+            workspace.id,
+            errors.join("; ")
+        )
+    }
+}
+
+fn remove_path_if_present(path: &std::path::Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(path)
+                .with_context(|| format!("failed to remove directory {}", path.display()))?;
+        }
+        Ok(_) => {
+            fs::remove_file(path)
+                .with_context(|| format!("failed to remove file {}", path.display()))?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to inspect {}", path.display()))
+        }
+    }
+    Ok(())
 }
 
 pub fn update_workspace_definition(
@@ -346,7 +435,6 @@ pub fn start_workspace_with_security(
                     .workspaces
                     .get_mut(&workspace_id)
                     .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-                normalize_namespace_ref_paths(workspace);
                 workspace.sandbox_rootfs_path = sandbox_rootfs_path.clone();
             }
             let current = sandbox
@@ -356,8 +444,10 @@ pub fn start_workspace_with_security(
                 .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
 
             if current.status == WorkspaceStatus::Running {
-                if let Some(pid) = current.runtime_pid {
-                    if session::process_matches(pid, current.runtime_starttime_ticks) {
+                if let Some((pid, starttime)) =
+                    current.runtime_pid.zip(current.runtime_starttime_ticks)
+                {
+                    if session::process_matches(pid, Some(starttime)) {
                         let (mount_ns, pid_ns) = session::read_namespace_refs(pid)?;
                         let workspace = sandbox
                             .workspaces
@@ -643,26 +733,19 @@ pub fn workspace_status(
             .get(&workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
 
-        let active_process_count = if workspace.status == WorkspaceStatus::Running {
+        let runtime_is_active = workspace_runtime_is_active(workspace);
+        let active_process_count = if runtime_is_active {
             if let Some(pid) = workspace.runtime_pid {
-                if session::process_matches(pid, workspace.runtime_starttime_ticks) {
-                    session::count_processes_in_pid_namespace(pid).unwrap_or(0)
-                } else {
-                    0
-                }
+                session::count_processes_in_pid_namespace(pid).unwrap_or(0)
             } else {
                 0
             }
         } else {
             0
         };
-        let resource_usage = if workspace.status == WorkspaceStatus::Running {
+        let resource_usage = if runtime_is_active {
             if let Some(pid) = workspace.runtime_pid {
-                if session::process_matches(pid, workspace.runtime_starttime_ticks) {
-                    session::process_resource_usage(pid).ok()
-                } else {
-                    None
-                }
+                session::process_resource_usage(pid).ok()
             } else {
                 None
             }
@@ -675,7 +758,11 @@ pub fn workspace_status(
             name: workspace.name.clone(),
             created_at: workspace.created_at.clone(),
             allocated_path: workspace.workspace_path.clone(),
-            status: workspace.status.clone(),
+            status: if workspace.status == WorkspaceStatus::Running && !runtime_is_active {
+                WorkspaceStatus::Stopped
+            } else {
+                workspace.status.clone()
+            },
             active_process_count,
             resource_usage,
             limits: workspace.limits.clone(),
@@ -769,13 +856,7 @@ fn mark_workspace_stopped(
     workspace.runtime_pid = None;
     workspace.runtime_starttime_ticks = None;
     workspace.assigned_ip = None;
-    normalize_namespace_ref_paths(workspace);
-    if let Err(err) = session::write_namespace_ref_values(workspace, "unassigned", "unassigned") {
-        tracing::warn!(
-            "failed to clear namespace refs for workspace {}: {err:#}",
-            workspace.id
-        );
-    }
+    clear_workspace_namespace_refs(workspace);
     let pid_file = session::runtime_pid_file(workspace);
     if let Err(err) = fs::remove_file(&pid_file) {
         if err.kind() != std::io::ErrorKind::NotFound {
@@ -800,6 +881,72 @@ fn mark_workspace_stopped(
         },
     )?;
     Ok(Some(cleanup))
+}
+
+pub(crate) fn reconcile_workspace_runtime_state(workspace: &mut WorkspaceMetadata) -> Result<bool> {
+    if workspace.status != WorkspaceStatus::Running {
+        let stale_runtime_state = workspace.runtime_pid.is_some()
+            || workspace.runtime_starttime_ticks.is_some()
+            || workspace.assigned_ip.is_some()
+            || workspace.namespace_refs.mount != "unassigned"
+            || workspace.namespace_refs.pid != "unassigned"
+            || session::namespace_ref_files_exist(workspace);
+        if !stale_runtime_state {
+            return Ok(false);
+        }
+        workspace.runtime_pid = None;
+        workspace.runtime_starttime_ticks = None;
+        workspace.assigned_ip = None;
+        clear_workspace_namespace_refs(workspace);
+        persist_workspace_metadata(workspace)?;
+        return Ok(true);
+    }
+
+    let runtime_is_live = workspace
+        .runtime_pid
+        .zip(workspace.runtime_starttime_ticks)
+        .is_some_and(|(pid, starttime)| session::process_matches(pid, Some(starttime)));
+    if !runtime_is_live {
+        workspace.status = WorkspaceStatus::Stopped;
+        workspace.runtime_pid = None;
+        workspace.runtime_starttime_ticks = None;
+        workspace.assigned_ip = None;
+        clear_workspace_namespace_refs(workspace);
+        persist_workspace_metadata(workspace)?;
+        return Ok(true);
+    }
+
+    let pid = workspace.runtime_pid.expect("live runtime has a pid");
+    if session::namespace_refs_match_runtime(workspace, pid) {
+        return Ok(false);
+    }
+
+    let (mount_ns, pid_ns) = session::read_namespace_refs(pid)?;
+    normalize_namespace_ref_paths(workspace);
+    session::write_namespace_ref_values(workspace, &mount_ns, &pid_ns)?;
+    persist_workspace_metadata(workspace)?;
+    Ok(true)
+}
+
+pub(crate) fn workspace_runtime_is_active(workspace: &WorkspaceMetadata) -> bool {
+    workspace.status == WorkspaceStatus::Running
+        && workspace
+            .runtime_pid
+            .zip(workspace.runtime_starttime_ticks)
+            .is_some_and(|(pid, starttime)| {
+                session::process_matches(pid, Some(starttime))
+                    && session::namespace_refs_match_runtime(workspace, pid)
+            })
+}
+
+fn clear_workspace_namespace_refs(workspace: &mut WorkspaceMetadata) {
+    if let Err(err) = session::clear_namespace_ref_files(workspace) {
+        tracing::warn!(
+            "failed to clear namespace refs for workspace {}: {err:#}",
+            workspace.id
+        );
+    }
+    workspace.namespace_refs = Default::default();
 }
 
 fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
@@ -873,10 +1020,11 @@ pub(crate) fn sync_workspace_runtime_limits(
         Ok((sandbox.metadata.clone(), workspace))
     })?;
 
-    if let Some(pid) = workspace.runtime_pid {
-        if session::process_matches(pid, workspace.runtime_starttime_ticks) {
-            apply_workspace_runtime_constraints(&sandbox, &workspace, pid)?;
-        }
+    if workspace_runtime_is_active(&workspace) {
+        let pid = workspace
+            .runtime_pid
+            .expect("active workspace has a runtime pid");
+        apply_workspace_runtime_constraints(&sandbox, &workspace, pid)?;
     }
 
     Ok(workspace)
@@ -902,7 +1050,7 @@ pub(crate) fn sync_sandbox_runtime_limits(
 
     if workspaces
         .iter()
-        .all(|workspace| workspace.status != WorkspaceStatus::Running)
+        .all(|workspace| !workspace_runtime_is_active(workspace))
     {
         let sandbox_config = build_sandbox_cgroup_config(&sandbox)?;
         if crate::sandbox::cgroup::is_cgroup_v2_available() {
@@ -920,12 +1068,12 @@ pub(crate) fn sync_sandbox_runtime_limits(
     }
 
     for workspace in workspaces {
-        let Some(pid) = workspace.runtime_pid else {
-            continue;
-        };
-        if !session::process_matches(pid, workspace.runtime_starttime_ticks) {
+        if !workspace_runtime_is_active(&workspace) {
             continue;
         }
+        let pid = workspace
+            .runtime_pid
+            .expect("active workspace has a runtime pid");
         apply_workspace_runtime_constraints(&sandbox, &workspace, pid)?;
     }
 
@@ -951,12 +1099,12 @@ fn persist_workspace_metadata(workspace: &WorkspaceMetadata) -> Result<()> {
     )
 }
 
-fn validated_workspace_dir(
-    sandbox: &RegistrySandbox,
+fn validated_workspace_dir_from_metadata(
+    sandbox: &SandboxMetadata,
     workspace: &WorkspaceMetadata,
 ) -> Result<PathBuf> {
-    let sandbox_base = PathBuf::from(&sandbox.metadata.sandbox_path);
-    let workspace_root = PathBuf::from(&sandbox.metadata.workspaces_path);
+    let sandbox_base = PathBuf::from(&sandbox.sandbox_path);
+    let workspace_root = PathBuf::from(&sandbox.workspaces_path);
     let sandbox_dir =
         crate::fsutil::ensure_path_within(&sandbox_base, &workspace_root, "workspace root")?;
     let workspace_dir = PathBuf::from(&workspace.workspace_path);
@@ -970,7 +1118,7 @@ fn collect_all_used_ip_octets(
         .sandboxes
         .values()
         .flat_map(|s| s.workspaces.values())
-        .filter(|ws| ws.status == WorkspaceStatus::Running)
+        .filter(|workspace| workspace_runtime_is_active(workspace))
         .filter_map(|ws| ws.assigned_ip.as_deref());
     network::collect_used_ips(ips)
 }
@@ -1081,3 +1229,7 @@ fn remove_sandbox_cgroup(sandbox: &SandboxMetadata) {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/workspace/control.rs"]
+mod tests;

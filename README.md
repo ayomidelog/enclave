@@ -21,6 +21,17 @@ One file, one command, entire environment running.
 - [Limitations](docs/limitations.md)
 - [Roadmap](docs/roadmap.md)
 
+## Runtime recovery
+
+Enclave protects each configured state directory with an exclusive daemon lock. If a daemon or runtime is interrupted, run diagnostics before manually removing state:
+
+```bash
+enclave doctor
+enclave doctor --repair
+```
+
+`doctor --repair` reconciles stale registry records, workspace namespace references, mounts, and safe orphaned files. Destructive commands require a running daemon by default; use `enclave daemon start` or opt in for one command with `--start-daemon`.
+
 ## Why Enclave exists
 I was running multiple AI agents in parallel and needed each one isolated, separate filesystem, separate processes and no cross-contamination.
 

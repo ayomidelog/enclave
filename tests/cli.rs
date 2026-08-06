@@ -4,6 +4,16 @@ use enclave::cli::{
 };
 
 #[test]
+fn doctor_repair_and_explicit_daemon_start_parse() {
+    let cli = Cli::parse_from(["enclave", "--start-daemon", "doctor", "--repair"]);
+    assert!(cli.start_daemon);
+    let Commands::Doctor(args) = cli.command else {
+        panic!("expected doctor command");
+    };
+    assert!(args.repair);
+}
+
+#[test]
 fn workspace_enter_default_cwd_is_home() {
     let cli = Cli::parse_from(["enclave", "workspace", "enter", "sb", "ws"]);
     let Commands::Workspace { command } = cli.command else {

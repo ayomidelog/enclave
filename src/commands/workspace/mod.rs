@@ -22,7 +22,7 @@ use crate::workspace::{
     WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo,
 };
 
-use super::{confirm_destructive_action, send_managed};
+use super::{confirm_destructive_action, daemon, send, send_managed};
 
 struct WorkspaceCommandContext<'a> {
     socket: &'a Path,
@@ -208,7 +208,8 @@ fn run_workspace_remove(
 }
 
 fn run_workspace_wipe(ctx: &WorkspaceCommandContext<'_>) -> Result<()> {
-    let response = send_managed(ctx.socket, "workspace.list", json!({}))?;
+    daemon::ensure_daemon_running_for_action(ctx.socket, "workspace.wipe")?;
+    let response = send(ctx.socket, "workspace.list", json!({}))?;
     let workspaces: Vec<WorkspaceMetadata> = serde_json::from_value(response)?;
     if workspaces.is_empty() {
         println!("no workspaces");

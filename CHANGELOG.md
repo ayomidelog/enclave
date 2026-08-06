@@ -2,10 +2,24 @@
 
 ## Unreleased
 
+## 1.0.3 - 2026-08-06
+
 ### Added
 - Portable workspace snapshot archive support via `enclave snapshot export` and `enclave snapshot import`.
 - `enclave workspace resize` for increasing Enclave-managed ext4 workspace disk allocations without recreating the workspace.
 - `enclave workspace cp <sandbox> <workspace> <src> <dst>` for streaming files and directories between the host and a running workspace with `ws:/` workspace paths.
+- `enclave doctor --repair` for reconciling stale registry entries, orphaned state directories, dead namespace references, stale workspace mounts, and daemon ownership metadata.
+
+### Changed
+- Destructive commands (`destroy`, `remove`, and `wipe`) now require an already-running daemon unless the global `--start-daemon` flag is supplied explicitly.
+- Daemons now take an exclusive lock for their state directory and record the owning PID, socket, binary version, binary path, and start time in `daemon.lock`.
+
+### Fixed
+- Sandbox and workspace destruction are idempotent when mounts, rootfs data, or runtime artifacts are already absent.
+- Cleanup now handles nested workspace mounts deepest-first, lazily detaches mounts owned by dead runtimes, and preserves workspace directories while a mount remains active.
+- Registry repair now removes safe invalid-metadata or orphan directories, persists corrected metadata, and avoids deleting paths that still contain mounts.
+- Unmount failures now identify the mount target, kernel errno, and namespace processes holding the mount while independent cleanup continues.
+- Workspace copy now invokes the wrapped `tar` executable correctly, validates workspace-to-host archive entries in a private staging directory, rejects special source files, and commits only to an absent destination entry.
 
 ## 1.0.2 - 2026-07-12
 
