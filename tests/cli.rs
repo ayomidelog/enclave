@@ -54,6 +54,33 @@ fn workspace_create_rejects_unsafe_selector_name() {
 }
 
 #[test]
+fn workspace_resize_parses_target_disk_size() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "workspace",
+        "resize",
+        "sb",
+        "ws",
+        "--disk-mb",
+        "2048",
+    ]);
+    let Commands::Workspace { command } = cli.command else {
+        panic!("expected workspace command");
+    };
+    let WorkspaceCommands::Resize(args) = command else {
+        panic!("expected workspace resize command");
+    };
+    assert_eq!(args.sandbox, "sb");
+    assert_eq!(args.workspace, "ws");
+    assert_eq!(args.disk_mb, 2048);
+}
+
+#[test]
+fn workspace_resize_requires_disk_size() {
+    assert!(Cli::try_parse_from(["enclave", "workspace", "resize", "sb", "ws"]).is_err());
+}
+
+#[test]
 fn workspace_logs_accepts_project_target_and_follow_flag() {
     let cli = Cli::parse_from(["enclave", "workspace", "logs", "api", "--follow"]);
     let Commands::Workspace { command } = cli.command else {

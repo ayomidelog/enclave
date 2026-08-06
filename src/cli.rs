@@ -109,6 +109,7 @@ pub enum InternalCommands {
 #[derive(Subcommand, Debug)]
 pub enum WorkspaceCommands {
     Create(WorkspaceCreateArgs),
+    Resize(WorkspaceResizeArgs),
     List(WorkspaceListArgs),
     Remove(WorkspaceRemoveArgs),
     Wipe,
@@ -316,6 +317,16 @@ pub struct WorkspaceCreateArgs {
     pub max_open_files: Option<u64>,
     #[arg(long)]
     pub disk_mb: Option<u64>,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceResizeArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace: String,
+    #[arg(long, value_name = "MIB")]
+    pub disk_mb: u64,
 }
 
 #[derive(Args, Debug)]

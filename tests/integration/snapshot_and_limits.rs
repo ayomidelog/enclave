@@ -5,8 +5,9 @@ use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
 };
 use enclave::workspace::{
-    create_workspace, create_workspace_snapshot, destroy_workspace, restore_workspace_snapshot,
-    start_workspace, stop_workspace, workspace_runtime_info, WorkspaceLimits,
+    create_workspace, create_workspace_snapshot, destroy_workspace, list_workspaces,
+    resize_workspace_disk, restore_workspace_snapshot, start_workspace, stop_workspace,
+    workspace_runtime_info, WorkspaceLimits,
 };
 
 fn root_only() -> bool {
@@ -196,6 +197,94 @@ fn workspace_disk_quota_caps_enclave_managed_home_storage() {
     );
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn workspace_disk_resize_grows_running_managed_storage() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-disk-resize");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-disk-resize-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let initial_bytes = 64 * 1024 * 1024;
+    let expanded_bytes = 96 * 1024 * 1024;
+    let workspace = create_workspace(
+        &state,
+        &sandbox.id,
+        "resize",
+        WorkspaceLimits {
+            disk_bytes: Some(initial_bytes),
+            ..WorkspaceLimits::default()
+        },
+    )
+    .expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let old_pid = started.runtime_pid.expect("runtime pid");
+    let workspace_file = Path::new("/proc")
+        .join(old_pid.to_string())
+        .join("root/home/preserved.txt");
+    fs::write(&workspace_file, "preserve me").expect("write workspace data");
+
+    let result = resize_workspace_disk(&state, &sandbox.id, &workspace.id, expanded_bytes)
+        .expect("resize workspace");
+    assert!(result.restarted);
+    assert_eq!(result.previous_disk_bytes, initial_bytes);
+    assert_eq!(result.new_disk_bytes, expanded_bytes);
+
+    let workspaces = list_workspaces(&state, Some(&sandbox.id)).expect("list workspaces");
+    let resized = workspaces
+        .into_iter()
+        .find(|item| item.id == workspace.id)
+        .expect("resized workspace metadata");
+    assert_eq!(resized.limits.disk_bytes, Some(expanded_bytes));
+    let new_pid = resized.runtime_pid.expect("restarted runtime pid");
+    assert_ne!(new_pid, old_pid);
+    assert_eq!(
+        fs::read_to_string(
+            Path::new("/proc")
+                .join(new_pid.to_string())
+                .join("root/home/preserved.txt")
+        )
+        .expect("read preserved workspace data"),
+        "preserve me"
+    );
+    assert_eq!(
+        fs::metadata(Path::new(&workspace.workspace_path).join("fs.img"))
+            .expect("disk image metadata")
+            .len(),
+        expanded_bytes
+    );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    let stopped_result = resize_workspace_disk(&state, &sandbox.id, &workspace.id, expanded_bytes)
+        .expect("equal stopped resize");
+    assert!(!stopped_result.restarted);
+    assert!(list_workspaces(&state, Some(&sandbox.id))
+        .expect("list stopped workspace")
+        .into_iter()
+        .find(|item| item.id == workspace.id)
+        .expect("stopped workspace metadata")
+        .runtime_pid
+        .is_none());
+
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");

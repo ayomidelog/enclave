@@ -162,7 +162,8 @@ Workspace names must:
 ## Behavior
 
 - `enclave up` when the sandbox already exists skips sandbox creation, re-applies setup commands, and starts workspaces.
-- `enclave up` and `enclave restart` reconcile declared sandbox/workspace resource limits onto existing environments.
+- `enclave up` and `enclave restart` reconcile declared sandbox/workspace resource limits onto existing environments; changing an existing `disk_mb` allocation requires the explicit `workspace resize` command.
+- `enclave workspace resize <sandbox> <workspace> --disk-mb N` increases an existing Enclave-managed `fs.img` allocation offline. It does not resize host-backed `workspace_dir`/`path` mounts or decrease allocations.
 - Setup commands run at creation time and are re-applied on later `up` / `restart` runs.
 - `--rebuild` forces sandbox destruction and recreation, re-running all setup commands.
 - If no Enclavefile is found in the current directory, commands produce a clear error pointing to `enclave init`.

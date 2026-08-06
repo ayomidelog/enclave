@@ -83,6 +83,16 @@ fn parse_workspace_limits_create(params: &Value) -> Result<workspace::WorkspaceL
     Ok(limits)
 }
 
+fn parse_required_disk_bytes(params: &Value) -> Result<u64> {
+    let disk_mb = params
+        .get("disk_mb")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("missing 'disk_mb' unsigned integer"))?;
+    disk_mb
+        .checked_mul(1024 * 1024)
+        .ok_or_else(|| anyhow::anyhow!("'disk_mb' is too large"))
+}
+
 fn parse_workspace_limits_update(params: &Value) -> Result<workspace::WorkspaceLimitsUpdate> {
     Ok(workspace::WorkspaceLimitsUpdate {
         cpu_seconds: parse_optional_u64_field(params, "cpu_seconds")?,
@@ -196,6 +206,9 @@ pub(crate) fn dispatch(
         }
         Action::WorkspaceUpdate => {
             dispatch_workspace_update(&request.params, config, port_publisher)
+        }
+        Action::WorkspaceResize => {
+            dispatch_workspace_resize(&request.params, config, port_publisher)
         }
         Action::WorkspaceExec => dispatch_workspace_exec(&request.params, config),
         Action::WorkspacePortPublish => {
@@ -529,6 +542,40 @@ fn dispatch_workspace_update(
     Ok(json!({"updated": true}))
 }
 
+fn dispatch_workspace_resize(
+    params: &Value,
+    config: &DaemonConfig,
+    port_publisher: &Arc<PortPublisher>,
+) -> Result<Value> {
+    let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
+    let new_disk_bytes = parse_required_disk_bytes(params)?;
+    let current = workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
+    if current.status == workspace::WorkspaceStatus::Running
+        && current
+            .limits
+            .disk_bytes
+            .is_some_and(|bytes| bytes < new_disk_bytes)
+    {
+        port_publisher.clear_workspace_ports(&current.sandbox_id, &current.id);
+    }
+
+    let result = workspace::resize_workspace_disk_with_security(
+        &config.state_dir,
+        sandbox,
+        workspace_selector,
+        new_disk_bytes,
+        config.workspace_apparmor_profile.as_deref(),
+        config.workspace_selinux_label.as_deref(),
+    )?;
+    if result.restarted {
+        let metadata =
+            workspace::workspace_metadata(&config.state_dir, sandbox, &result.workspace_id)?;
+        ensure_workspace_ports_started(&config.state_dir, &metadata, port_publisher)?;
+    }
+    Ok(serde_json::to_value(result)?)
+}
+
 fn dispatch_workspace_exec(params: &Value, config: &DaemonConfig) -> Result<Value> {
     let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
@@ -755,6 +802,7 @@ enum Action {
     WorkspaceList,
     WorkspaceRemove,
     WorkspaceUpdate,
+    WorkspaceResize,
     WorkspaceExec,
     WorkspacePortPublish,
     WorkspacePortUnpublish,
@@ -803,6 +851,7 @@ impl Action {
             "workspace.list" => Self::WorkspaceList,
             "workspace.remove" => Self::WorkspaceRemove,
             "workspace.update" | "workspace.update_auth" => Self::WorkspaceUpdate,
+            "workspace.resize" => Self::WorkspaceResize,
             "workspace.exec" => Self::WorkspaceExec,
             "workspace.port.publish" => Self::WorkspacePortPublish,
             "workspace.port.unpublish" => Self::WorkspacePortUnpublish,

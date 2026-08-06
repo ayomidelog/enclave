@@ -97,6 +97,7 @@ enclave wipe
 
 ```bash
 enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
+enclave workspace resize  <sandbox> <workspace> --disk-mb N
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>
 enclave workspace destroy <sandbox> <workspace>
@@ -119,6 +120,7 @@ enclave workspace stats   <workspace>
 | Command | Description |
 |---------|-------------|
 | `create` | Create a new workspace inside a sandbox with optional resource limits. |
+| `resize` | Increase the disk allocation of an Enclave-managed workspace. The target is an absolute size in MiB; host-backed workspace directories and decreases are not supported. |
 | `start` | Start a workspace session (namespaces + mounts). |
 | `stop` | Stop a running workspace session. |
 | `destroy` | Stop and permanently delete a workspace. |

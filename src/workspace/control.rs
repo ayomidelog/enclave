@@ -12,8 +12,8 @@ use crate::sandbox::{effective_rootfs_path, resolve_sandbox_id, SandboxMetadata,
 use super::ports::{merge_published_port_statuses, PublishedPortSpec, PublishedPortStatus};
 use super::session;
 use super::types::{
-    WorkspaceLimitsUpdate, WorkspaceListItem, WorkspaceMetadata, WorkspaceStatus,
-    WorkspaceStatusReport,
+    WorkspaceLimitsUpdate, WorkspaceListItem, WorkspaceMetadata, WorkspaceResizeResult,
+    WorkspaceStatus, WorkspaceStatusReport,
 };
 
 struct WorkspaceRuntimeStart {
@@ -141,6 +141,12 @@ pub fn update_workspace_definition(
             .get_mut(&workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
 
+        if limits_update.disk_bytes.is_some() {
+            bail!(
+                "workspace disk allocation changes require `workspace resize`; metadata updates cannot resize fs.img"
+            );
+        }
+
         let mut changed = false;
         if let Some(auth_providers) = auth_providers {
             if workspace.auth_providers != auth_providers {
@@ -173,6 +179,133 @@ pub fn update_workspace_definition(
 
         Ok(workspace.clone())
     })
+}
+
+pub fn resize_workspace_disk_with_security(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    new_disk_bytes: u64,
+    apparmor_profile: Option<&str>,
+    selinux_label: Option<&str>,
+) -> Result<WorkspaceResizeResult> {
+    with_registry_mut(state_dir, |registry| {
+        let used_ips = collect_all_used_ip_octets(registry);
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
+        if sandbox.metadata.status != SandboxStatus::Running {
+            bail!(
+                "sandbox '{}' is stopped; start it before resizing a workspace",
+                sandbox.metadata.id
+            );
+        }
+
+        let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
+        let current = sandbox
+            .workspaces
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_selector))?;
+        let previous_disk_bytes = current.limits.disk_bytes.ok_or_else(|| {
+            anyhow!(
+                "workspace '{}' has no Enclave-managed disk allocation; configure disk_mb when creating it",
+                current.name
+            )
+        })?;
+        if current.home_mount_source_path.is_some() {
+            bail!(
+                "workspace '{}' uses a host-backed workspace directory; disk resize is only supported for Enclave-managed storage",
+                current.name
+            );
+        }
+        if new_disk_bytes == previous_disk_bytes {
+            return Ok(WorkspaceResizeResult {
+                workspace_id,
+                workspace_name: current.name,
+                previous_disk_bytes,
+                new_disk_bytes,
+                restarted: false,
+            });
+        }
+
+        let was_running = current.status == WorkspaceStatus::Running;
+        if was_running {
+            if let Some(pid) = current.runtime_pid {
+                session::stop_session(pid, current.runtime_starttime_ticks).with_context(|| {
+                    format!(
+                        "failed to stop workspace '{}' before resizing",
+                        current.name
+                    )
+                })?;
+            }
+            set_workspace_stopped(sandbox, &workspace_id)?;
+        }
+
+        let resize = super::storage::increase_workspace_disk_allocation(&current, new_disk_bytes)?;
+        let resized_workspace = {
+            let workspace = sandbox
+                .workspaces
+                .get_mut(&workspace_id)
+                .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+            workspace.limits.disk_bytes = Some(resize.new_bytes);
+            persist_workspace_metadata(workspace)?;
+            workspace.clone()
+        };
+
+        let restarted = if was_running {
+            let sandbox_snapshot = sandbox.metadata.clone();
+            let workspace_snapshot = resized_workspace.clone();
+            let started = launch_workspace_runtime(
+                state_dir,
+                &sandbox_snapshot,
+                &workspace_snapshot,
+                apparmor_profile,
+                selinux_label,
+                NetworkStartPlan::AllocateFromUsedIps(used_ips),
+            )?;
+            let workspace = sandbox
+                .workspaces
+                .get_mut(&workspace_id)
+                .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+            workspace.status = WorkspaceStatus::Running;
+            workspace.runtime_pid = Some(started.pid);
+            workspace.runtime_starttime_ticks = Some(started.starttime_ticks);
+            workspace.assigned_ip = Some(started.assigned_ip);
+            normalize_namespace_ref_paths(workspace);
+            session::write_namespace_ref_values(workspace, &started.mount_ns, &started.pid_ns)?;
+            persist_workspace_metadata(workspace)?;
+            true
+        } else {
+            false
+        };
+
+        Ok(WorkspaceResizeResult {
+            workspace_id,
+            workspace_name: current.name,
+            previous_disk_bytes,
+            new_disk_bytes: resize.new_bytes,
+            restarted,
+        })
+    })
+}
+
+pub fn resize_workspace_disk(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    new_disk_bytes: u64,
+) -> Result<WorkspaceResizeResult> {
+    resize_workspace_disk_with_security(
+        state_dir,
+        sandbox_selector,
+        workspace_selector,
+        new_disk_bytes,
+        None,
+        None,
+    )
 }
 
 pub fn start_workspace(

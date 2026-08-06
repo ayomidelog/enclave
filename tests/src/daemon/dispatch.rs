@@ -28,6 +28,7 @@ fn action_parse_known_actions() {
         "workspace.remove",
         "workspace.update",
         "workspace.update_auth",
+        "workspace.resize",
         "workspace.exec",
         "workspace.port.publish",
         "workspace.port.unpublish",
@@ -115,4 +116,22 @@ fn parse_string_array_rejects_non_string_elements() {
         "command": ["ls", 42],
     });
     assert!(parse_string_array(&params, "command").is_err());
+}
+
+#[test]
+fn parse_required_disk_bytes_uses_checked_mib_conversion() {
+    let params = serde_json::json!({"disk_mb": 64});
+    assert_eq!(
+        parse_required_disk_bytes(&params).unwrap(),
+        64 * 1024 * 1024
+    );
+}
+
+#[test]
+fn parse_required_disk_bytes_rejects_missing_and_overflowing_values() {
+    assert!(parse_required_disk_bytes(&serde_json::json!({})).is_err());
+    assert!(parse_required_disk_bytes(&serde_json::json!({
+        "disk_mb": u64::MAX
+    }))
+    .is_err());
 }

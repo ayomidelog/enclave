@@ -9,6 +9,12 @@ use super::types::WorkspaceMetadata;
 const DISK_IMAGE_NAME: &str = "fs.img";
 const MIN_DISK_BYTES: u64 = 32 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkspaceDiskResize {
+    pub previous_bytes: u64,
+    pub new_bytes: u64,
+}
+
 pub fn validate_workspace_storage_limits(
     home_mount_source_path: Option<&str>,
     disk_bytes: Option<u64>,
@@ -68,6 +74,117 @@ pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Resu
         );
     }
     Ok(())
+}
+
+pub fn increase_workspace_disk_allocation(
+    workspace: &WorkspaceMetadata,
+    new_disk_bytes: u64,
+) -> Result<WorkspaceDiskResize> {
+    let current_disk_bytes = workspace.limits.disk_bytes.ok_or_else(|| {
+        anyhow::anyhow!(
+            "workspace '{}' has no Enclave-managed disk allocation",
+            workspace.id
+        )
+    })?;
+
+    if workspace.home_mount_source_path.is_some() {
+        bail!(
+            "workspace '{}' uses a host-backed workspace directory; disk allocation resize is only supported for Enclave-managed storage",
+            workspace.id
+        );
+    }
+    if new_disk_bytes < MIN_DISK_BYTES {
+        bail!(
+            "workspace disk allocation must be at least {} MiB",
+            MIN_DISK_BYTES / (1024 * 1024)
+        );
+    }
+    if new_disk_bytes < current_disk_bytes {
+        bail!(
+            "workspace disk resize only supports increases; requested {} bytes is below the current {} bytes",
+            new_disk_bytes,
+            current_disk_bytes
+        );
+    }
+    if new_disk_bytes == current_disk_bytes {
+        return Ok(WorkspaceDiskResize {
+            previous_bytes: current_disk_bytes,
+            new_bytes: current_disk_bytes,
+        });
+    }
+
+    ensure_disk_backend_available()?;
+    let image = workspace_disk_image_path(workspace);
+    let image_metadata = fs::metadata(&image)
+        .with_context(|| format!("failed to inspect workspace disk image {}", image.display()))?;
+    if !image_metadata.is_file() {
+        bail!(
+            "workspace disk image {} is not a regular file",
+            image.display()
+        );
+    }
+    if image_metadata.len() < current_disk_bytes {
+        bail!(
+            "workspace disk image {} is smaller than its recorded allocation",
+            image.display()
+        );
+    }
+    if image_metadata.len() > new_disk_bytes {
+        bail!(
+            "workspace disk image {} is already larger than the requested allocation; refusing to shrink it",
+            image.display()
+        );
+    }
+    if is_mountpoint(Path::new(&workspace.filesystem_path))? {
+        bail!(
+            "workspace disk image {} is still mounted; stop the workspace and retry",
+            image.display()
+        );
+    }
+
+    let truncate = Command::new("truncate")
+        .args(["-s", &new_disk_bytes.to_string()])
+        .arg(&image)
+        .output()
+        .with_context(|| format!("failed to grow workspace disk image {}", image.display()))?;
+    if !truncate.status.success() {
+        let stderr = String::from_utf8_lossy(&truncate.stderr);
+        bail!(
+            "failed to grow workspace disk image {} ({}): {}",
+            image.display(),
+            truncate.status,
+            stderr.trim()
+        );
+    }
+
+    let resize = Command::new("resize2fs")
+        .arg(&image)
+        .output()
+        .with_context(|| format!("failed to grow ext4 filesystem {}", image.display()))?;
+    if !resize.status.success() {
+        let stderr = String::from_utf8_lossy(&resize.stderr);
+        bail!(
+            "grew workspace disk image {} but failed to grow its ext4 filesystem ({}): {}",
+            image.display(),
+            resize.status,
+            stderr.trim()
+        );
+    }
+
+    let final_size = fs::metadata(&image)
+        .with_context(|| format!("failed to verify workspace disk image {}", image.display()))?
+        .len();
+    if final_size < new_disk_bytes {
+        bail!(
+            "workspace disk image {} is smaller than the requested allocation after resize",
+            image.display()
+        );
+    }
+
+    Ok(WorkspaceDiskResize {
+        previous_bytes: current_disk_bytes,
+        new_bytes: new_disk_bytes,
+    })
 }
 
 pub fn with_workspace_storage_mounted<T, F>(
@@ -173,7 +290,14 @@ fn initialize_disk_image(workspace: &WorkspaceMetadata) -> Result<()> {
 }
 
 fn ensure_disk_backend_available() -> Result<()> {
-    for command in ["truncate", "mkfs.ext4", "mount", "umount", "mountpoint"] {
+    for command in [
+        "truncate",
+        "mkfs.ext4",
+        "resize2fs",
+        "mount",
+        "umount",
+        "mountpoint",
+    ] {
         let status = Command::new("sh")
             .args(["-c", &format!("command -v {command} >/dev/null 2>&1")])
             .status()

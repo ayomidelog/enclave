@@ -12,9 +12,9 @@ use serde_json::json;
 use crate::cli::{
     SnapshotCommands, WorkspaceCommands, WorkspaceCreateArgs, WorkspaceExecArgs, WorkspaceListArgs,
     WorkspaceLogsArgs, WorkspacePortCommands, WorkspacePortPublishArgs, WorkspacePortUnpublishArgs,
-    WorkspaceRemoveArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
-    WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
-    WorkspaceTargetOrLocalArgs,
+    WorkspaceRemoveArgs, WorkspaceResizeArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs,
+    WorkspaceSnapshotExportArgs, WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs,
+    WorkspaceTargetArgs, WorkspaceTargetOrLocalArgs,
 };
 use crate::workspace::{
     PublishedPortStatus, WorkspaceListItem, WorkspaceLogsResult, WorkspaceMetadata,
@@ -34,6 +34,7 @@ pub(crate) fn run_workspace_command(socket: &Path, command: WorkspaceCommands) -
     let ctx = WorkspaceCommandContext { socket };
     match command {
         WorkspaceCommands::Create(args) => run_workspace_create(&ctx, args),
+        WorkspaceCommands::Resize(args) => run_workspace_resize(&ctx, args),
         WorkspaceCommands::List(args) => run_workspace_list(&ctx, args),
         WorkspaceCommands::Remove(args) => run_workspace_remove(&ctx, args),
         WorkspaceCommands::Wipe => run_workspace_wipe(&ctx),
@@ -104,6 +105,40 @@ fn run_workspace_create(
         metadata.id, metadata.sandbox_id
     );
     println!("workspace path {}", metadata.workspace_path);
+    Ok(())
+}
+
+fn run_workspace_resize(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceResizeArgs,
+) -> Result<()> {
+    let response = send_managed(
+        ctx.socket,
+        "workspace.resize",
+        json!({
+            "sandbox": args.sandbox,
+            "workspace": args.workspace,
+            "disk_mb": args.disk_mb,
+        }),
+    )?;
+    let result: crate::workspace::WorkspaceResizeResult = serde_json::from_value(response)?;
+    if result.previous_disk_bytes == result.new_disk_bytes {
+        println!(
+            "workspace {} already has a {} MiB disk allocation",
+            result.workspace_name,
+            result.new_disk_bytes / (1024 * 1024)
+        );
+    } else {
+        println!(
+            "resized workspace {} from {} MiB to {} MiB",
+            result.workspace_name,
+            result.previous_disk_bytes / (1024 * 1024),
+            result.new_disk_bytes / (1024 * 1024)
+        );
+    }
+    if result.restarted {
+        println!("workspace restarted");
+    }
     Ok(())
 }
 
