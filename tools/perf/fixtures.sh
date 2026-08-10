@@ -8,13 +8,14 @@ if [[ -z "$output_dir" ]]; then
 fi
 
 mkdir -p "$output_dir/small" "$output_dir/many" "$output_dir/deep" "$output_dir/sparse"
+many_count=${ENCLAVE_PERF_MANY_FILES:-100000}
 printf 'enclave performance fixture\n' >"$output_dir/small/4k.txt"
 truncate -s 4096 "$output_dir/small/4k.bin"
 truncate -s 1M "$output_dir/small/1m.bin"
 truncate -s 1G "$output_dir/sparse/1g.sparse"
 truncate -s 5G "$output_dir/sparse/5g.sparse"
 
-for index in $(seq -w 1 1000); do
+for index in $(seq -w 1 "$many_count"); do
   truncate -s 4096 "$output_dir/many/file-$index.bin"
 done
 
@@ -31,4 +32,4 @@ printf 'fixture_dir=%s\nsmall_4k=%s\nsmall_1m=%s\nsparse_1g=%s\nsparse_5g=%s\nma
   "$output_dir/small/1m.bin" \
   "$output_dir/sparse/1g.sparse" \
   "$output_dir/sparse/5g.sparse" \
-  1000
+  "$many_count"

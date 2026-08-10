@@ -298,6 +298,9 @@ fn is_regular_file(path: &str) -> Result<bool> {
 }
 
 fn sendfile_to_pipe(source: &mut File, destination_fd: i32, expected_bytes: u64) -> Result<()> {
+    if splice_to_pipe(source, destination_fd, expected_bytes)? {
+        return Ok(());
+    }
     let mut transferred = 0u64;
     while transferred < expected_bytes {
         let remaining = expected_bytes - transferred;
@@ -327,6 +330,45 @@ fn sendfile_to_pipe(source: &mut File, destination_fd: i32, expected_bytes: u64)
         return Err(error).context("failed to stream host file with sendfile");
     }
     Ok(())
+}
+
+fn splice_to_pipe(source: &File, destination_fd: i32, expected_bytes: u64) -> Result<bool> {
+    let mut transferred = 0u64;
+    while transferred < expected_bytes {
+        let amount = unsafe {
+            libc::splice(
+                source.as_raw_fd(),
+                std::ptr::null_mut(),
+                destination_fd,
+                std::ptr::null_mut(),
+                (expected_bytes - transferred).min(4 * 1024 * 1024) as usize,
+                0,
+            )
+        };
+        if amount > 0 {
+            transferred = transferred.saturating_add(amount as u64);
+            continue;
+        }
+        if amount == 0 {
+            bail!(
+                "host source ended before expected size ({} of {} bytes)",
+                transferred,
+                expected_bytes
+            );
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        if matches!(
+            error.raw_os_error(),
+            Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+        ) {
+            return Ok(false);
+        }
+        return Err(error).context("failed to stream host file with splice");
+    }
+    Ok(true)
 }
 
 fn run_host_archive_to_workspace(

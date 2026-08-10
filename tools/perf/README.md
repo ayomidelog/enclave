@@ -27,5 +27,6 @@ Generate deterministic transfer fixtures with:
 ```
 
 The generator creates 4 KiB and 1 MiB files, sparse 1 GiB and 5 GiB files,
-1000 small files, and a ten-level directory tree. The fixture directory is
-never inferred from the current working directory.
+100,000 small files, and a ten-level directory tree. Set
+`ENCLAVE_PERF_MANY_FILES=1000` for a shorter smoke fixture. The fixture
+directory is never inferred from the current working directory.
