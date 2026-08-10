@@ -13,6 +13,12 @@ user-visible CLI and records the host metadata needed to compare runs.
 Set `ENCLAVE_PERF_MANY_FILES=100000` before the benchmark for the full
 metadata-heavy fixture; the default 1000-file run is intended as a quick smoke
 test.
+
+Capture syscall counts for a focused command with:
+
+```bash
+./tools/perf/trace.sh target/release/enclave --help
+```
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
 
