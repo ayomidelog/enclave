@@ -435,6 +435,7 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
     for (pid, expected_starttime_ticks) in targets.iter().copied() {
         if !process_matches(pid, expected_starttime_ticks) {
             result.stopped_pids.insert(pid);
+            namespace_cache::invalidate(pid, expected_starttime_ticks);
             continue;
         }
         match process::verify_signal_target(pid, expected_starttime_ticks) {
@@ -447,6 +448,7 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
                         pid
                     );
                     result.stopped_pids.insert(pid);
+                    namespace_cache::invalidate(pid, expected_starttime_ticks);
                     continue;
                 }
                 return Err(err);
