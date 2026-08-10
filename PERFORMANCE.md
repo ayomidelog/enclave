@@ -36,7 +36,7 @@ measurements below use the same host and harness as the baseline.
 | Rootfs cache index | pass | Indexed required-directory fingerprints with invalidation tests in `sandbox::cache` |
 | Registry repeated read | `1.78x` faster (`0.020666869s` -> `0.011633155s`) | `tools/perf/bench.sh registry` |
 | Single-file archive creation | `22.04x` faster (`1.892066383s` -> `0.085836286s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 |
-| Many-file archive creation | `0.74x` relative to external tar (`0.256312628s` -> `0.345617069s`) | 1000 x 4 KiB fixture, `tools/perf/bench.sh many-files`; host-to-workspace directory transfers now use the kernel-streamed host tar path, while workspace-to-host remains Rust-validated extraction |
+| Many-file archive creation | `0.71x` relative to external tar (`17.856997685s` -> `25.299986690s`) | 100,000 x 4 KiB fixture, `ENCLAVE_PERF_MANY_FILES=100000 tools/perf/bench.sh many-files`; host-to-workspace uses streamed host tar while workspace-to-host remains Rust-validated extraction |
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
 | Runtime observability | bounded latency histograms and lifecycle counters | `daemon.health` exposes request/phase buckets, lock wait, mount/unmount, cleanup retry, transfer-file, cache, and process-spawn counters |

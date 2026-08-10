@@ -9,6 +9,10 @@ user-visible CLI and records the host metadata needed to compare runs.
 ./tools/perf/bench.sh health --iterations 30
 ./tools/perf/bench.sh registry --iterations 1000
 ./tools/perf/bench.sh many-files
+
+Set `ENCLAVE_PERF_MANY_FILES=100000` before the benchmark for the full
+metadata-heavy fixture; the default 1000-file run is intended as a quick smoke
+test.
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
 

@@ -113,7 +113,11 @@ fn many_file_archive_benchmark() {
     let source = state.join("many");
     let output = state.join("archive.tar");
     fs::create_dir_all(&source).expect("create many-file fixture");
-    for index in 0..1_000 {
+    let file_count = std::env::var("ENCLAVE_PERF_MANY_FILES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1_000);
+    for index in 0..file_count {
         fs::write(source.join(format!("file-{index:04}.bin")), [0u8; 4096])
             .expect("write many-file fixture");
     }
@@ -148,7 +152,11 @@ fn many_file_archive_benchmark() {
     }
     let rust_elapsed = rust_start.elapsed();
     black_box((external_elapsed, rust_elapsed));
-    println!("benchmark=many_file_archive iterations=3 files=1000 bytes=4096000");
+    println!(
+        "benchmark=many_file_archive iterations=3 files={} bytes={}",
+        file_count,
+        file_count * 4096
+    );
     println!("external_tar_seconds={:.9}", external_elapsed.as_secs_f64());
     println!("rust_archive_seconds={:.9}", rust_elapsed.as_secs_f64());
     println!(
