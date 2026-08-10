@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -247,7 +247,6 @@ pub(super) fn run_host_to_workspace(
             source,
             destination,
             source_name,
-            logical_bytes,
             &stage,
             TransferContext {
                 gzip,
@@ -388,7 +387,6 @@ fn run_host_archive_to_workspace(
     source: &str,
     destination: &DestinationPlan,
     source_name: &str,
-    logical_bytes: u64,
     stage: &str,
     context: TransferContext<'_>,
 ) -> Result<TransferOutput> {
@@ -408,34 +406,16 @@ fn run_host_archive_to_workspace(
         .take()
         .context("workspace tar stdin unavailable")?;
     set_pipe_capacity(stdin.as_raw_fd());
-    if source_metadata.is_dir() {
-        let parent = Path::new(source)
-            .parent()
-            .context("host directory source has no parent")?;
-        let mut host_tar = ChildGuard::new(spawn_host_tar(parent, source_name)?);
-        let mut host_stdout = host_tar
-            .child
-            .stdout
-            .take()
-            .context("host tar stdout unavailable")?;
+    let (logical_bytes, files) = if source_metadata.is_dir() {
         if context.gzip {
             let mut encoder = GzEncoder::new(stdin, Compression::default());
-            std::io::copy(&mut host_stdout, &mut encoder)
-                .with_context(|| format!("failed to compress host tar for '{}'", source))?;
-            stdin = encoder.finish().context("failed to finish gzip stream")?;
+            let stats = write_host_directory_archive(source, source_name, &mut encoder)?;
+            encoder.finish().context("failed to finish gzip stream")?;
+            stats
         } else {
-            std::io::copy(&mut host_stdout, &mut stdin)
-                .with_context(|| format!("failed to stream host tar for '{}'", source))?;
-        }
-        drop(host_stdout);
-        drop(stdin);
-        let status = host_tar
-            .child
-            .wait()
-            .context("failed to wait for host tar")?;
-        host_tar.disarm();
-        if !status.success() {
-            bail!("host tar failed for '{}' with status {}", source, status);
+            let stats = write_host_directory_archive(source, source_name, &mut stdin)?;
+            drop(stdin);
+            stats
         }
     } else {
         let mut archive = tar::Builder::new(stdin);
@@ -446,7 +426,8 @@ fn run_host_archive_to_workspace(
             .finish()
             .context("failed to finish host tar archive")?;
         drop(archive);
-    }
+        (source_metadata.len(), 1)
+    };
     let workspace_output = wait_child_output(&mut workspace_tar, context.client_stream)
         .context("failed to run workspace tar extractor")?;
     ensure_transfer_success("workspace tar", &workspace_output)?;
@@ -465,27 +446,61 @@ fn run_host_archive_to_workspace(
     )?;
     Ok(TransferOutput {
         logical_bytes,
-        files: if source_metadata.is_dir() { 0 } else { 1 },
+        files,
     })
 }
 
-fn spawn_host_tar(parent: &Path, source_name: &str) -> Result<Child> {
-    crate::perf::record_process_spawn();
-    Command::new("tar")
-        .args([
-            "-C",
-            parent
-                .to_str()
-                .context("host tar parent path is not valid UTF-8")?,
-            "-cf",
-            "-",
-            "--",
-            source_name,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to start host tar")
+pub(super) fn write_host_directory_archive<W: Write>(
+    source: &str,
+    source_name: &str,
+    writer: W,
+) -> Result<(u64, u64)> {
+    let mut archive = tar::Builder::new(writer);
+    let source_path = Path::new(source);
+    archive
+        .append_dir(source_name, source_path)
+        .with_context(|| format!("failed to archive host directory '{}'", source))?;
+
+    let mut pending = vec![(source_path.to_path_buf(), PathBuf::from(source_name))];
+    let mut logical_bytes = 0u64;
+    let mut files = 0u64;
+    while let Some((directory, archive_directory)) = pending.pop() {
+        for entry in fs::read_dir(&directory)
+            .with_context(|| format!("failed to read host source '{}'", directory.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let archive_path = archive_directory.join(entry.file_name());
+            let metadata = fs::symlink_metadata(&path)
+                .with_context(|| format!("failed to stat host source '{}'", path.display()))?;
+            let file_type = metadata.file_type();
+            if file_type.is_dir() {
+                archive
+                    .append_dir(&archive_path, &path)
+                    .with_context(|| format!("failed to archive directory '{}'", path.display()))?;
+                pending.push((path, archive_path));
+            } else if file_type.is_file() || file_type.is_symlink() {
+                if file_type.is_file() {
+                    logical_bytes = logical_bytes.saturating_add(metadata.len());
+                    files = files.saturating_add(1);
+                }
+                archive
+                    .append_path_with_name(&path, &archive_path)
+                    .with_context(|| {
+                        format!("failed to archive host source '{}'", path.display())
+                    })?;
+            } else {
+                bail!(
+                    "refusing to archive unsupported host source type '{}'",
+                    path.display()
+                );
+            }
+        }
+    }
+    archive
+        .finish()
+        .context("failed to finish host directory archive")?;
+    Ok((logical_bytes, files))
 }
 
 fn restore_workspace_metadata(

@@ -25,7 +25,8 @@ graph LR
 - Registry mutations carry a monotonic generation counter used as durable evidence that a resource snapshot is not being committed over a newer lifecycle change.
 - Host bridge/NAT initialization has a daemon-wide mutex; workspace-specific veth, DNS, and namespace setup remains outside that critical section.
 - Setup caching is an explicit CLI opt-in. The daemon stores per-command completion markers under the sandbox runtime directory and only writes them after successful setup execution.
-- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; host-to-workspace directories use a host `tar` stream and workspace-to-host data uses Rust-validated extraction. Both directions stage output before an atomic commit; payloads never enter the JSON control protocol.
+- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; host-to-workspace directories use a Rust-controlled tar stream and workspace-to-host data uses Rust-validated extraction. Both directions stage output before an atomic commit; payloads never enter the JSON control protocol.
+- Host-to-workspace directory archives are produced by a single Rust traversal that validates entry types while writing the stream; workspace-to-host extraction retains independent archive validation before its atomic commit.
 
 ## Isolation Model
 

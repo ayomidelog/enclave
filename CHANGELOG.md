@@ -17,6 +17,7 @@ No unreleased changes.
 - Snapshot creation releases the registry lock before mounting storage and copying workspace data, preventing multi-gigabyte snapshots from blocking unrelated metadata requests.
 - Concurrent workspace starts now serialize only shared bridge/NAT initialization, preventing duplicate host-network setup while preserving parallel per-workspace networking.
 - `enclave up --cache-setup` and `enclave restart --cache-setup` add an explicit digest-keyed setup cache; successful commands are marked individually and default setup behavior remains uncached.
+- Host-to-workspace directory copies now combine source safety validation and archive generation in one Rust traversal, removing a host `tar` process and duplicate metadata walk.
 - Global `--verbose` emits opt-in phase timing diagnostics to stderr for benchmark and troubleshooting runs.
 - Workspace creation performs filesystem, namespace-reference, metadata, and storage preparation outside the global registry lock, then commits metadata with a final identity-checked transaction.
 - Persistent command output is drained with nonblocking polling and bounded buffers so stdout/stderr cannot deadlock the helper or consume unbounded memory.
