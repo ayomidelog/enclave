@@ -194,6 +194,30 @@ fn workspace_cp_streams_files_and_directories_both_directions() {
         .join("root/home/project/nested.txt");
     assert_eq!(fs::read_to_string(workspace_nested).unwrap(), "nested");
 
+    if std::env::var_os("ENCLAVE_PERF_5G").is_some() {
+        let large_source = state.join("5g.sparse");
+        let large_file = fs::File::create(&large_source).expect("create 5 GiB fixture");
+        let large_bytes = 5_u64 * 1024 * 1024 * 1024;
+        large_file.set_len(large_bytes).expect("size 5 GiB fixture");
+        let started_at = std::time::Instant::now();
+        copy_workspace_path(
+            &state,
+            &sandbox.id,
+            &workspace.id,
+            large_source.to_str().unwrap(),
+            "/home/5g.sparse",
+            "host_to_workspace",
+        )
+        .expect("copy 5 GiB fixture into workspace");
+        let elapsed = started_at.elapsed().as_secs_f64();
+        println!(
+            "benchmark=workspace_cp_5g bytes={} elapsed_seconds={:.6} throughput_mib_seconds={:.3}",
+            large_bytes,
+            elapsed,
+            (large_bytes / (1024 * 1024)) as f64 / elapsed
+        );
+    }
+
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");

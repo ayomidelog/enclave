@@ -49,7 +49,7 @@ measurements below use the same host and harness as the baseline.
 | Workspace readiness | event-driven wait | `inotify` + bounded timeout; privileged start fixture pending |
 | Privileged workspace cp regression fixture | 14.00 s | Files, directories, metadata preservation, symlink rejection, and both directions passed |
 | Regular-file transfer path | kernel direct stream | `sendfile` into namespace-local receiver; privileged fixture passed |
-| Workspace cp, 5 GiB | pending privileged run | `tools/perf/bench.sh cp` |
+| Workspace cp, 5 GiB | `59.004412s` (`86.773 MiB/s`) | Privileged namespace fixture with sparse 5 GiB source, `ENCLAVE_PERF_5G=1`, August 10, 2026 |
 | Deterministic transfer fixtures | pass | `tools/perf/fixtures.sh`: 4 KiB, 1 MiB, sparse 1 GiB/5 GiB, 100,000 files by default, ten-level tree |
 | Copy progress reporting | opt-in, stderr-only | `enclave workspace cp ... --progress`; no progress text enters stdout or JSON protocol |
 
