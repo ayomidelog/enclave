@@ -140,6 +140,10 @@ case "$command_name" in
       printf 'status=SKIP reason=workspace copy benchmark requires root\n'
       exit 0
     fi
+    if [[ -n "$fixture_dir" && -z "$source_path" ]]; then
+      source_path="$fixture_dir/sparse/5g.sparse"
+      destination_path=${destination_path:-ws:/home/5g.sparse}
+    fi
     if [[ -z "$sandbox_selector" || -z "$workspace_selector" || -z "$source_path" || -z "$destination_path" ]]; then
       printf 'status=SKIP reason=--sandbox --workspace --src and --dst are required\n'
       exit 0

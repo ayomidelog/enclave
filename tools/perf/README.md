@@ -22,6 +22,10 @@ Capture syscall counts for a focused command with:
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
 
+After generating fixtures, `--fixture-dir /tmp/enclave-fixtures` defaults the
+copy benchmark to the sparse 5 GiB host-to-workspace workload unless `--src`
+and `--dst` are supplied explicitly.
+
 Add `--progress` to `enclave workspace cp` for opt-in stderr progress updates;
 the JSON control response and normal stdout remain unchanged.
 ```
