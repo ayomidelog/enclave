@@ -223,7 +223,8 @@ fn content_digest(path: &Path) -> Result<String> {
 
 fn collect_paths(path: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
     paths.push(path.to_path_buf());
-    if !path.is_dir() {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Ok(());
     }
     for entry in fs::read_dir(path)? {
