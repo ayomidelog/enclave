@@ -6,6 +6,41 @@ use std::time::Instant;
 
 use enclave::registry::{ensure_registry, with_registry, Registry};
 
+#[derive(Clone, Copy)]
+struct ResourceUsage {
+    user_seconds: f64,
+    system_seconds: f64,
+    max_rss_kib: i64,
+}
+
+fn resource_usage() -> ResourceUsage {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    assert_eq!(result, 0, "getrusage failed");
+    let usage = unsafe { usage.assume_init() };
+    ResourceUsage {
+        user_seconds: usage.ru_utime.tv_sec as f64 + usage.ru_utime.tv_usec as f64 / 1e6,
+        system_seconds: usage.ru_stime.tv_sec as f64 + usage.ru_stime.tv_usec as f64 / 1e6,
+        max_rss_kib: usage.ru_maxrss,
+    }
+}
+
+fn print_usage(prefix: &str, before: ResourceUsage, after: ResourceUsage) {
+    println!(
+        "{prefix}_cpu_seconds={:.6}",
+        (after.user_seconds - before.user_seconds) + (after.system_seconds - before.system_seconds)
+    );
+    println!(
+        "{prefix}_user_seconds={:.6}",
+        after.user_seconds - before.user_seconds
+    );
+    println!(
+        "{prefix}_system_seconds={:.6}",
+        after.system_seconds - before.system_seconds
+    );
+    println!("{prefix}_max_rss_kib={}", after.max_rss_kib);
+}
+
 fn temp_state() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "enclave-performance-{}-{}",
@@ -66,6 +101,7 @@ fn single_file_archive_benchmark() {
     let file = fs::File::create(&source).expect("create fixture");
     file.set_len(16 * 1024 * 1024).expect("size fixture");
 
+    let external_usage_before = resource_usage();
     let external_start = Instant::now();
     for _ in 0..10 {
         let status = Command::new("tar")
@@ -84,7 +120,9 @@ fn single_file_archive_benchmark() {
         assert!(status.success());
     }
     let external_elapsed = external_start.elapsed();
+    let external_usage_after = resource_usage();
 
+    let rust_usage_before = resource_usage();
     let rust_start = Instant::now();
     for _ in 0..10 {
         let output_file = fs::File::create(&output).expect("create archive output");
@@ -95,6 +133,7 @@ fn single_file_archive_benchmark() {
         archive.finish().expect("finish archive");
     }
     let rust_elapsed = rust_start.elapsed();
+    let rust_usage_after = resource_usage();
     black_box((external_elapsed, rust_elapsed));
     println!("benchmark=single_file_archive iterations=10 bytes=16777216");
     println!("external_tar_seconds={:.9}", external_elapsed.as_secs_f64());
@@ -102,6 +141,12 @@ fn single_file_archive_benchmark() {
     println!(
         "speedup={:.2}x",
         external_elapsed.as_secs_f64() / rust_elapsed.as_secs_f64()
+    );
+    print_usage("external_tar", external_usage_before, external_usage_after);
+    print_usage("rust_archive", rust_usage_before, rust_usage_after);
+    println!(
+        "rust_archive_bytes_per_second={:.3}",
+        (10.0 * 16.0 * 1024.0 * 1024.0) / rust_elapsed.as_secs_f64()
     );
     let _ = fs::remove_dir_all(state);
 }
@@ -122,6 +167,7 @@ fn many_file_archive_benchmark() {
             .expect("write many-file fixture");
     }
 
+    let external_usage_before = resource_usage();
     let external_start = Instant::now();
     for _ in 0..3 {
         let status = Command::new("tar")
@@ -140,7 +186,9 @@ fn many_file_archive_benchmark() {
         assert!(status.success());
     }
     let external_elapsed = external_start.elapsed();
+    let external_usage_after = resource_usage();
 
+    let rust_usage_before = resource_usage();
     let rust_start = Instant::now();
     for _ in 0..3 {
         let output_file = fs::File::create(&output).expect("create archive output");
@@ -151,6 +199,7 @@ fn many_file_archive_benchmark() {
         archive.finish().expect("finish archive");
     }
     let rust_elapsed = rust_start.elapsed();
+    let rust_usage_after = resource_usage();
     black_box((external_elapsed, rust_elapsed));
     println!(
         "benchmark=many_file_archive iterations=3 files={} bytes={}",
@@ -162,6 +211,12 @@ fn many_file_archive_benchmark() {
     println!(
         "speedup={:.2}x",
         external_elapsed.as_secs_f64() / rust_elapsed.as_secs_f64()
+    );
+    print_usage("external_tar", external_usage_before, external_usage_after);
+    print_usage("rust_archive", rust_usage_before, rust_usage_after);
+    println!(
+        "rust_archive_files_per_second={:.3}",
+        (3.0 * file_count as f64) / rust_elapsed.as_secs_f64()
     );
     let _ = fs::remove_dir_all(state);
 }

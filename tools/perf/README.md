@@ -7,6 +7,11 @@ user-visible CLI and records the host metadata needed to compare runs.
 ./tools/perf/bench.sh --help
 ./tools/perf/bench.sh ping --iterations 30
 ./tools/perf/bench.sh health --iterations 30
+./tools/perf/bench.sh list --iterations 30
+./tools/perf/bench.sh stats --iterations 30
+./tools/perf/bench.sh ps --iterations 30
+./tools/perf/bench.sh doctor --iterations 10
+./tools/perf/bench.sh workspace-list --iterations 30
 ./tools/perf/bench.sh registry --iterations 1000
 ./tools/perf/bench.sh many-files
 

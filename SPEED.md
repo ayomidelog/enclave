@@ -297,6 +297,12 @@ The harness should expose subcommands for:
 - doctor check;
 - doctor repair.
 
+The checked-in harness exposes the control-plane subset directly through
+`tools/perf/bench.sh`: `ping`, `health`, `list`, `stats`, `ps`, `doctor`, and
+`workspace-list`. Namespace-dependent lifecycle and copy workloads remain
+selector/fixture-driven commands so they cannot silently benchmark an empty
+or unrelated state directory.
+
 ### Timing layers
 
 Capture a monotonic timestamp in the CLI before config loading.

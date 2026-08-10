@@ -14,6 +14,8 @@ No unreleased changes.
 ### Changed
 - `workspace wipe` now uses one daemon-side batch plan with bounded cleanup workers and per-resource registry deletion after confirmed cleanup.
 - Registry generations advance on durable mutations, and workspace start/stop operations release the registry lock during namespace, storage, network, and process work before committing identity-checked results.
+- Snapshot creation releases the registry lock before mounting storage and copying workspace data, preventing multi-gigabyte snapshots from blocking unrelated metadata requests.
+- Concurrent workspace starts now serialize only shared bridge/NAT initialization, preventing duplicate host-network setup while preserving parallel per-workspace networking.
 - Global `--verbose` emits opt-in phase timing diagnostics to stderr for benchmark and troubleshooting runs.
 - Workspace creation performs filesystem, namespace-reference, metadata, and storage preparation outside the global registry lock, then commits metadata with a final identity-checked transaction.
 - Persistent command output is drained with nonblocking polling and bounded buffers so stdout/stderr cannot deadlock the helper or consume unbounded memory.

@@ -9,12 +9,18 @@ pub mod veth;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 
 static HOST_NETWORKING_READY: AtomicBool = AtomicBool::new(false);
+static HOST_NETWORKING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn ensure_host_networking() -> Result<()> {
+    let _guard = HOST_NETWORKING_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("host networking setup lock poisoned"))?;
     if HOST_NETWORKING_READY.load(Ordering::SeqCst) && bridge::bridge_is_present()? {
         return Ok(());
     }
@@ -95,6 +101,10 @@ where
 }
 
 pub fn cleanup_host_networking() {
+    let Ok(_guard) = HOST_NETWORKING_LOCK.get_or_init(|| Mutex::new(())).lock() else {
+        tracing::warn!("host networking cleanup lock poisoned");
+        return;
+    };
     let bridge_removed = match bridge::remove_bridge_if_idle() {
         Ok(removed) => removed,
         Err(err) => {

@@ -23,6 +23,7 @@ graph LR
 - Workspace creation and Enclavefile startup use bounded fan-out for independent work, while registry commits and run-command ordering remain deterministic.
 - Batch workspace wipe takes one registry snapshot, performs independent cleanup through the bounded cleanup pool, and commits each confirmed deletion separately so a later failure cannot retain already-cleaned records.
 - Registry mutations carry a monotonic generation counter used as durable evidence that a resource snapshot is not being committed over a newer lifecycle change.
+- Host bridge/NAT initialization has a daemon-wide mutex; workspace-specific veth, DNS, and namespace setup remains outside that critical section.
 - For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; host-to-workspace directories use a host `tar` stream and workspace-to-host data uses Rust-validated extraction. Both directions stage output before an atomic commit; payloads never enter the JSON control protocol.
 
 ## Isolation Model

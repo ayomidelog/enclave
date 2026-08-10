@@ -37,6 +37,7 @@ measurements below use the same host and harness as the baseline.
 | Rootfs cache index | pass | Indexed required-directory fingerprints plus suite/source/architecture/time/tool/digest metadata with invalidation tests in `sandbox::cache` |
 | Registry repeated read | `1.78x` faster (`0.020666869s` -> `0.011633155s`) | `tools/perf/bench.sh registry` |
 | Single-file archive creation | `36.14x` faster (`1.352945186s` -> `0.037432050s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 release-candidate run |
+| Archive resource profile | Rust archive CPU `0.023731s`, `3.719 GiB/s` payload rate, peak RSS `43,892 KiB` | 10 x 16 MiB fixture, release-candidate measurement with `getrusage` |
 | Many-file archive creation | `0.71x` relative to external tar (`17.856997685s` -> `25.299986690s`) | 100,000 x 4 KiB fixture, `ENCLAVE_PERF_MANY_FILES=100000 tools/perf/bench.sh many-files`; host-to-workspace uses streamed host tar while workspace-to-host remains Rust-validated extraction |
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
@@ -48,6 +49,7 @@ measurements below use the same host and harness as the baseline.
 | Kernel transfer path | `splice` attempted before `sendfile` for regular host files | short-write, EINTR, EOF, and unsupported-kernel handling covered by the direct transfer path |
 | Daemon ping, 10 CLI invocations | p50 `0.07s`, p95 `0.16s` | Current branch, `tools/perf/bench.sh ping --iterations 10` |
 | Daemon health, 8 CLI invocations | p50 `0.06s`, p95 `0.14s` | Current branch, `tools/perf/bench.sh health --iterations 8`, August 10, 2026 |
+| Control-plane benchmark matrix | list p50/p95 `0.04s`/`0.04s`; stats `0.04s`/`0.04s`; ps `0.08s`/`0.08s`; doctor `0.03s`/`0.03s`; workspace-list `0.04s`/`0.04s` | Isolated ephemeral daemon runs on August 10, 2026; `tools/perf/bench.sh` with 2–3 iterations per command |
 | Concurrent daemon control requests | 64 requests in `0.901267s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64`, August 10, 2026 |
 | Workspace readiness | event-driven wait | `inotify` + bounded timeout; covered by the privileged lifecycle fixture |
 | Privileged workspace cp regression fixture | 14.00 s | Files, directories, metadata preservation, symlink rejection, and both directions passed |
@@ -64,6 +66,8 @@ measurements below use the same host and harness as the baseline.
 | Concurrent workspace preparation | reduced registry lock scope | Filesystem and storage preparation occurs before the final registry commit, allowing independent creates to progress without holding the global registry lock |
 | Batch workspace wipe | one daemon plan and bounded cleanup | `workspace.wipe` snapshots all workspace records once, cleans independent resources with `ENCLAVE_CLEANUP_WORKERS`, and deletes each registry record immediately after confirmed cleanup |
 | Registry generation tracking | monotonic stale-commit guard | Durable registry mutations advance a generation counter; lifecycle operations revalidate resource identity before committing external-work results |
+| Snapshot lock scope | storage copy outside registry lock | Snapshot creation now snapshots workspace metadata once, then mounts/copies/validates the source without retaining the global registry lock |
+| Host network initialization | one daemon-wide setup critical section | Bridge, NAT, and IPv6 setup are serialized once; per-workspace veth and namespace configuration remains independent |
 | CLI phase timing | opt-in diagnostics | Global `--verbose` emits CLI total/config, socket connect, request write, response read, daemon request/dispatch, and named lifecycle phase timings to stderr |
 | Syscall profiling harness | pass | `tools/perf/trace.sh` wraps `strace -f -c` without making tracing a runtime dependency |
 

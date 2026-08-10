@@ -12,6 +12,11 @@ Commands:
   host       Print benchmark host metadata.
   ping       Measure daemon ping CLI latency.
   health     Measure daemon health CLI latency.
+  list       Measure sandbox list latency.
+  stats      Measure empty workspace stats latency.
+  ps         Measure empty process listing latency.
+  doctor     Measure daemon doctor latency.
+  workspace-list Measure workspace list latency.
   registry   Measure registry read throughput with the unit benchmark.
   archive    Measure single-file archive creation overhead.
   many-files Measure many-file archive creation overhead.
@@ -33,7 +38,7 @@ case "$command_name" in
     host_metadata
     exit 0
     ;;
-  ping|health|registry|archive|many-files|stress|cp) ;;
+  ping|health|list|stats|ps|doctor|workspace-list|registry|archive|many-files|stress|cp) ;;
   *) usage; exit 2 ;;
 esac
 
@@ -54,7 +59,7 @@ host_metadata
 printf 'command=%s\niterations=%s\n' "$command_name" "$iterations"
 
 case "$command_name" in
-  ping|health)
+  ping|health|list|stats|ps|doctor|workspace-list)
     if [[ $(id -u) -ne 0 ]] && ! sudo -n true 2>/dev/null; then
       printf 'status=SKIP reason=daemon benchmark requires root\n'
       exit 0
@@ -92,7 +97,15 @@ case "$command_name" in
       exit 1
     fi
     printf 'status=PASS\n'
-    run_timed_iterations "$iterations" "${runner[@]}" "$binary" --socket "$socket" "$command_name"
+    case "$command_name" in
+      ping|health|list|stats|ps|doctor)
+        benchmark_args=("$command_name")
+        ;;
+      workspace-list)
+        benchmark_args=(workspace list)
+        ;;
+    esac
+    run_timed_iterations "$iterations" "${runner[@]}" "$binary" --socket "$socket" "${benchmark_args[@]}"
     ;;
   registry)
     cargo test --test perf_suite registry_read_cache_benchmark -- --ignored --nocapture
