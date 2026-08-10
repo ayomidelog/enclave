@@ -2,12 +2,10 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 
 use super::types::SandboxMetadata;
-use super::util::command_failure_detail;
 
 pub fn ensure_rootfs_mounted(metadata: &SandboxMetadata) -> Result<()> {
     let (rootfs_path, mounted_rootfs_path) = validate_mount_paths(metadata)?;
@@ -15,32 +13,10 @@ pub fn ensure_rootfs_mounted(metadata: &SandboxMetadata) -> Result<()> {
         return Ok(());
     }
 
-    let output = Command::new("mount")
-        .arg("--bind")
-        .arg(&rootfs_path)
-        .arg(&mounted_rootfs_path)
-        .output()
-        .context("failed to run mount --bind")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "failed to mount sandbox rootfs ({}): {}",
-            output.status,
-            command_failure_detail(&output)
-        ));
-    }
-
-    let output = Command::new("mount")
-        .arg("--make-private")
-        .arg(&mounted_rootfs_path)
-        .output()
-        .context("failed to run mount --make-private")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "failed to mark mount private ({}): {}",
-            output.status,
-            command_failure_detail(&output)
-        ));
-    }
+    crate::fsutil::bind_mount(Path::new(&rootfs_path), Path::new(&mounted_rootfs_path))
+        .map_err(|error| anyhow!("failed to mount sandbox rootfs: {error}"))?;
+    crate::fsutil::make_mount_private(Path::new(&mounted_rootfs_path))
+        .map_err(|error| anyhow!("failed to mark mount private: {error}"))?;
 
     Ok(())
 }

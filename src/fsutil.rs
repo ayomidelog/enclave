@@ -1,6 +1,8 @@
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -170,6 +172,46 @@ pub fn write_file_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
 
 pub fn is_mountpoint(path: &Path) -> Result<bool> {
     Ok(MountInfoSnapshot::load()?.contains(path))
+}
+
+pub fn bind_mount(source: &Path, target: &Path) -> std::io::Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let result = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+pub fn make_mount_private(target: &Path) -> std::io::Result<()> {
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let result = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 pub fn reflink_copy_file(source: &Path, destination: &Path) -> Result<bool> {
