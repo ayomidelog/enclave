@@ -40,6 +40,7 @@ measurements below use the same host and harness as the baseline.
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
 | Worker configuration | bounded benchmark controls | `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`, each limited to 1–64 |
+| IPAM allocation | bounded bitmap scan | Pool entries are represented in four fixed words and reconstructed from reconciled registry state |
 | Runtime observability | bounded request and per-phase latency histograms plus lifecycle counters | `daemon.health` exposes named phase buckets, lock wait, mount/unmount, cleanup retry, transfer-file, cache, and process-spawn counters |
 | Cleanup mount parsing | one mountinfo snapshot per cleanup transaction | `MountInfoSnapshot` reverse-depth planning tests |
 | Namespace handoff | identity-checked descriptor reuse | runtime PID/start-time and five namespace identities key the daemon cache; helper descriptors are inherited without reopening `/proc/<pid>/ns/*` |

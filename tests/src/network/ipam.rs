@@ -17,6 +17,14 @@ fn allocate_skips_used() {
 }
 
 #[test]
+fn bitmap_allocates_and_releases_pool_entries() {
+    let mut bitmap = IpBitmap::from_used(&BTreeSet::new());
+    assert_eq!(bitmap.allocate(), Some(10));
+    bitmap.mark(10);
+    assert_eq!(bitmap.allocate(), Some(11));
+}
+
+#[test]
 fn allocate_exhausted() {
     let used: BTreeSet<u8> = (POOL_START..=POOL_END).collect();
     let result = allocate_ip(&used);
