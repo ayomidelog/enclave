@@ -33,7 +33,7 @@ measurements below use the same host and harness as the baseline.
 | Workload | Result | Evidence |
 | --- | ---: | --- |
 | Registry cache correctness | pass | `registry_cache_refreshes_after_external_atomic_replace` |
-| Rootfs cache index | pass | Indexed required-directory fingerprints with invalidation tests in `sandbox::cache` |
+| Rootfs cache index | pass | Indexed required-directory fingerprints plus suite/source/architecture/time/tool/digest metadata with invalidation tests in `sandbox::cache` |
 | Registry repeated read | `1.78x` faster (`0.020666869s` -> `0.011633155s`) | `tools/perf/bench.sh registry` |
 | Single-file archive creation | `22.04x` faster (`1.892066383s` -> `0.085836286s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 |
 | Many-file archive creation | `0.71x` relative to external tar (`17.856997685s` -> `25.299986690s`) | 100,000 x 4 KiB fixture, `ENCLAVE_PERF_MANY_FILES=100000 tools/perf/bench.sh many-files`; host-to-workspace uses streamed host tar while workspace-to-host remains Rust-validated extraction |

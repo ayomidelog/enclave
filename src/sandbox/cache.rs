@@ -21,6 +21,18 @@ struct CacheEntry {
     key: String,
     path: String,
     fingerprint: CacheFingerprint,
+    #[serde(default)]
+    suite: String,
+    #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    content_digest: String,
+    #[serde(default)]
+    tool_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -55,6 +67,12 @@ pub(crate) fn rebuild(cache_root: &Path) -> Result<()> {
                 key,
                 path: path.to_string_lossy().into_owned(),
                 fingerprint: fingerprint(&path)?,
+                suite: entry.file_name().to_string_lossy().into_owned(),
+                architecture: std::env::consts::ARCH.to_string(),
+                source: path.to_string_lossy().into_owned(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                content_digest: content_digest(&path)?,
+                tool_version: env!("CARGO_PKG_VERSION").to_string(),
             });
         }
     }
@@ -80,6 +98,12 @@ pub(crate) fn register(cache_root: &Path, key: &str, path: &Path) -> Result<()> 
             key: key.to_string(),
             path: path.to_string_lossy().into_owned(),
             fingerprint: fingerprint(path)?,
+            suite: key.to_string(),
+            architecture: std::env::consts::ARCH.to_string(),
+            source: path.to_string_lossy().into_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            content_digest: content_digest(path)?,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
         });
     }
     index
@@ -166,9 +190,51 @@ fn fingerprint(path: &Path) -> Result<CacheFingerprint> {
     })
 }
 
+fn content_digest(path: &Path) -> Result<String> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    let mut paths = Vec::new();
+    collect_paths(path, &mut paths)?;
+    paths.sort();
+    for child in paths {
+        let relative = child
+            .strip_prefix(path)
+            .unwrap_or(&child)
+            .to_string_lossy()
+            .into_owned();
+        relative.hash(&mut hasher);
+        let metadata = fs::symlink_metadata(&child)?;
+        metadata.len().hash(&mut hasher);
+        metadata.mode().hash(&mut hasher);
+        if metadata.file_type().is_file() {
+            let mut file = fs::File::open(&child)?;
+            let mut buffer = [0u8; 1024 * 1024];
+            loop {
+                let read = std::io::Read::read(&mut file, &mut buffer)?;
+                if read == 0 {
+                    break;
+                }
+                buffer[..read].hash(&mut hasher);
+            }
+        }
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+fn collect_paths(path: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
+    paths.push(path.to_path_buf());
+    if !path.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path)? {
+        collect_paths(&entry?.path(), paths)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{contains, rebuild, register};
+    use super::{contains, index_path, rebuild, register};
     use std::fs;
     use std::path::PathBuf;
 
@@ -207,6 +273,22 @@ mod tests {
         register(&cache_root, "suite", &second_path).unwrap();
         assert!(!contains(&cache_root, "suite", &first_path));
         assert!(contains(&cache_root, "suite", &second_path));
+        let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[test]
+    fn index_records_provenance_and_content_digest() {
+        let cache_root = temporary_cache();
+        rebuild(&cache_root).unwrap();
+        let raw = fs::read(index_path(&cache_root)).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let entry = &json["entries"][0];
+        assert_eq!(entry["suite"], "suite");
+        assert_eq!(entry["architecture"], std::env::consts::ARCH);
+        assert!(!entry["source"].as_str().unwrap().is_empty());
+        assert!(!entry["created_at"].as_str().unwrap().is_empty());
+        assert_eq!(entry["content_digest"].as_str().unwrap().len(), 16);
+        assert_eq!(entry["tool_version"], env!("CARGO_PKG_VERSION"));
         let _ = fs::remove_dir_all(cache_root);
     }
 }

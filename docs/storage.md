@@ -38,7 +38,7 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 - `sandboxes/rootfs-cache/` stores reusable source root filesystems.
   - `debootstrap` automatically populates a suite-specific cache like `bookworm/` after a successful bootstrap.
   - `cached_rootfs` can copy from either a suite-specific cache or the generic `base/` cache.
-  - `rootfs-cache/index.json` records indexed cache entries and required-directory fingerprints so bootstrap avoids repeated recursive discovery while still detecting stale cache roots.
+  - `rootfs-cache/index.json` records indexed cache entries, suite/source metadata, architecture, creation time, tool version, content digest, and required-directory fingerprints so bootstrap avoids repeated recursive discovery while still detecting stale cache roots.
 - `sandboxes/<sandbox-id>/rootfs/` is the sandbox's on-disk root filesystem.
 - `sandboxes/<sandbox-id>/runtime/rootfs.mnt/` is the active mount point used while the sandbox is running.
 - `sandboxes/<sandbox-id>/runtime/session-helper` caches the internal helper binary once per sandbox so workspace starts do not recopy it for every workspace.
