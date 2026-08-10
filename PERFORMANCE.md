@@ -35,7 +35,7 @@ measurements below use the same host and harness as the baseline.
 | Registry cache correctness | pass | `registry_cache_refreshes_after_external_atomic_replace` |
 | Rootfs cache index | pass | Indexed required-directory fingerprints plus suite/source/architecture/time/tool/digest metadata with invalidation tests in `sandbox::cache` |
 | Registry repeated read | `1.78x` faster (`0.020666869s` -> `0.011633155s`) | `tools/perf/bench.sh registry` |
-| Single-file archive creation | `22.04x` faster (`1.892066383s` -> `0.085836286s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 |
+| Single-file archive creation | `10.45x` faster (`1.824116700s` -> `0.174572298s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 |
 | Many-file archive creation | `0.71x` relative to external tar (`17.856997685s` -> `25.299986690s`) | 100,000 x 4 KiB fixture, `ENCLAVE_PERF_MANY_FILES=100000 tools/perf/bench.sh many-files`; host-to-workspace uses streamed host tar while workspace-to-host remains Rust-validated extraction |
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
@@ -46,7 +46,7 @@ measurements below use the same host and harness as the baseline.
 | Kernel transfer path | `splice` attempted before `sendfile` for regular host files | short-write, EINTR, EOF, and unsupported-kernel handling covered by the direct transfer path |
 | Daemon ping, 10 CLI invocations | p50 `0.07s`, p95 `0.16s` | Current branch, `tools/perf/bench.sh ping --iterations 10` |
 | Daemon health, 8 CLI invocations | p50 `0.06s`, p95 `0.14s` | Current branch, `tools/perf/bench.sh health --iterations 8`, August 10, 2026 |
-| Concurrent daemon control requests | 64 requests in `1.119924s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64` |
+| Concurrent daemon control requests | 64 requests in `1.039178s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64` |
 | Workspace readiness | event-driven wait | `inotify` + bounded timeout; privileged start fixture pending |
 | Privileged workspace cp regression fixture | 14.00 s | Files, directories, metadata preservation, symlink rejection, and both directions passed |
 | Regular-file transfer path | kernel direct stream | `sendfile` into namespace-local receiver; privileged fixture passed |
