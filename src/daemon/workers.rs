@@ -14,6 +14,7 @@ const CONTROL_WORKER_COUNT: usize = 6;
 const TRANSFER_WORKER_COUNT: usize = 2;
 const CONTROL_QUEUE_CAPACITY: usize = 128;
 const TRANSFER_QUEUE_CAPACITY: usize = 8;
+const MAX_WORKER_COUNT: usize = 64;
 
 struct RequestJob {
     stream: UnixStream,
@@ -32,14 +33,18 @@ impl RequestWorkerPool {
         rate_limiter: &Arc<RateLimiter>,
         port_publisher: &Arc<crate::network::publish::PortPublisher>,
     ) -> Result<Self> {
+        let control_count =
+            configured_worker_count("ENCLAVE_CONTROL_WORKERS", CONTROL_WORKER_COUNT);
+        let transfer_count =
+            configured_worker_count("ENCLAVE_TRANSFER_WORKERS", TRANSFER_WORKER_COUNT);
         let (control_sender, control_receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
         let (transfer_sender, transfer_receiver) = mpsc::sync_channel(TRANSFER_QUEUE_CAPACITY);
         let control_receiver = Arc::new(Mutex::new(control_receiver));
         let transfer_receiver = Arc::new(Mutex::new(transfer_receiver));
-        let mut workers = Vec::with_capacity(CONTROL_WORKER_COUNT + TRANSFER_WORKER_COUNT);
+        let mut workers = Vec::with_capacity(control_count + transfer_count);
         workers.extend(spawn_workers(
             control_receiver,
-            CONTROL_WORKER_COUNT,
+            control_count,
             "control",
             config,
             shutdown,
@@ -48,7 +53,7 @@ impl RequestWorkerPool {
         )?);
         workers.extend(spawn_workers(
             transfer_receiver,
-            TRANSFER_WORKER_COUNT,
+            transfer_count,
             "transfer",
             config,
             shutdown,
@@ -88,6 +93,14 @@ impl RequestWorkerPool {
             let _ = worker.join();
         }
     }
+}
+
+fn configured_worker_count(variable: &str, default: usize) -> usize {
+    std::env::var(variable)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=MAX_WORKER_COUNT).contains(value))
+        .unwrap_or(default)
 }
 
 fn spawn_workers(
@@ -159,7 +172,7 @@ fn stream_is_transfer(stream: &UnixStream) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::stream_is_transfer;
+    use super::{configured_worker_count, stream_is_transfer};
     use std::io::Write;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
@@ -191,5 +204,16 @@ mod tests {
             .write_all(br#"{"action":"workspace.list","params":{}}\n"#)
             .unwrap();
         assert!(!stream_is_transfer(&reader));
+    }
+
+    #[test]
+    fn worker_count_rejects_unbounded_and_invalid_values() {
+        unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "0") };
+        assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 6);
+        unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "65") };
+        assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 6);
+        unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "3") };
+        assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 3);
+        unsafe { std::env::remove_var("ENCLAVE_TEST_WORKER_COUNT") };
     }
 }

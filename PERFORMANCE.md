@@ -39,6 +39,7 @@ measurements below use the same host and harness as the baseline.
 | Many-file archive creation | `0.71x` relative to external tar (`17.856997685s` -> `25.299986690s`) | 100,000 x 4 KiB fixture, `ENCLAVE_PERF_MANY_FILES=100000 tools/perf/bench.sh many-files`; host-to-workspace uses streamed host tar while workspace-to-host remains Rust-validated extraction |
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
+| Worker configuration | bounded benchmark controls | `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`, each limited to 1–64 |
 | Runtime observability | bounded latency histograms and lifecycle counters | `daemon.health` exposes request/phase buckets, lock wait, mount/unmount, cleanup retry, transfer-file, cache, and process-spawn counters |
 | Cleanup mount parsing | one mountinfo snapshot per cleanup transaction | `MountInfoSnapshot` reverse-depth planning tests |
 | Namespace handoff | identity-checked descriptor reuse | runtime PID/start-time and five namespace identities key the daemon cache; helper descriptors are inherited without reopening `/proc/<pid>/ns/*` |
