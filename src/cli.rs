@@ -19,6 +19,8 @@ pub struct Cli {
     pub socket: PathBuf,
     #[arg(long, global = true)]
     pub start_daemon: bool,
+    #[arg(long, global = true, help = "emit phase timing diagnostics to stderr")]
+    pub verbose: bool,
     #[command(subcommand)]
     pub command: Commands,
 }

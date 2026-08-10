@@ -12,6 +12,9 @@ No unreleased changes.
 - Bounded worker pools for Enclavefile workspace startup, workspace cleanup, workspace statistics, and process-status collection.
 
 ### Changed
+- `workspace wipe` now uses one daemon-side batch plan with bounded cleanup workers and per-resource registry deletion after confirmed cleanup.
+- Registry generations advance on durable mutations, and workspace start/stop operations release the registry lock during namespace, storage, network, and process work before committing identity-checked results.
+- Global `--verbose` emits opt-in phase timing diagnostics to stderr for benchmark and troubleshooting runs.
 - Workspace creation performs filesystem, namespace-reference, metadata, and storage preparation outside the global registry lock, then commits metadata with a final identity-checked transaction.
 - Persistent command output is drained with nonblocking polling and bounded buffers so stdout/stderr cannot deadlock the helper or consume unbounded memory.
 - Persistent helper sockets use short, private runtime paths and inherited pidfds/namespace descriptors to avoid repeated `/proc` lookups and to reject reused runtime identities.

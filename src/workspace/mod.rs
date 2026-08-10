@@ -20,8 +20,8 @@ pub use crate::network::publish::PortPublisher;
 pub use control::resize_workspace_disk;
 pub(crate) use control::start_workspace_with_security;
 pub use control::{
-    destroy_workspace, list_workspace_items, list_workspaces, remove_workspace, start_workspace,
-    stop_workspace, workspace_status,
+    destroy_all_workspaces, destroy_workspace, list_workspace_items, list_workspaces,
+    remove_workspace, start_workspace, stop_workspace, workspace_status, BatchDestroyReport,
 };
 pub(crate) use control::{
     reconcile_workspace_runtime_state, resize_workspace_disk_with_security,

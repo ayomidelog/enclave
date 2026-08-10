@@ -33,6 +33,8 @@ static REGISTRY_CACHE: OnceLock<Mutex<Option<RegistryCache>>> = OnceLock::new();
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registry {
     pub version: u32,
+    #[serde(default)]
+    pub generation: u64,
     pub sandboxes: BTreeMap<String, RegistrySandbox>,
 }
 
@@ -54,6 +56,7 @@ impl Default for Registry {
     fn default() -> Self {
         Self {
             version: REGISTRY_VERSION,
+            generation: 0,
             sandboxes: BTreeMap::new(),
         }
     }
@@ -191,6 +194,7 @@ where
     crate::fsutil::with_file_lock(&lock_path, || {
         let mut registry = load_registry_unlocked(state_dir)?;
         let out = operation(&mut registry)?;
+        registry.generation = registry.generation.saturating_add(1);
         save_registry_unlocked(state_dir, &registry)?;
         update_cache(state_dir, registry);
         Ok(out)

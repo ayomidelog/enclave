@@ -197,6 +197,21 @@ pub(crate) fn dispatch(
         Action::WorkspaceDestroy => {
             dispatch_workspace_target(&request.params, config, "destroy", port_publisher)
         }
+        Action::WorkspaceWipe => {
+            let workspaces = workspace::list_workspaces(&config.state_dir, None)?;
+            for workspace in &workspaces {
+                port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
+            }
+            let report = workspace::destroy_all_workspaces(&config.state_dir)?;
+            if !report.errors.is_empty() {
+                bail!(
+                    "workspace wipe completed with {} error(s): {}",
+                    report.errors.len(),
+                    report.errors.join("; ")
+                );
+            }
+            Ok(serde_json::to_value(report)?)
+        }
         Action::WorkspaceStatus => {
             dispatch_workspace_target(&request.params, config, "status", port_publisher)
         }
@@ -831,6 +846,7 @@ enum Action {
     WorkspaceStart,
     WorkspaceStop,
     WorkspaceDestroy,
+    WorkspaceWipe,
     WorkspaceStatus,
     WorkspaceStats,
     WorkspaceStatsList,
@@ -882,6 +898,7 @@ impl Action {
             "workspace.start" => Self::WorkspaceStart,
             "workspace.stop" => Self::WorkspaceStop,
             "workspace.destroy" => Self::WorkspaceDestroy,
+            "workspace.wipe" => Self::WorkspaceWipe,
             "workspace.status" => Self::WorkspaceStatus,
             "workspace.stats" => Self::WorkspaceStats,
             "workspace.stats.list" => Self::WorkspaceStatsList,

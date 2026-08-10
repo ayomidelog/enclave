@@ -4,6 +4,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 static ENABLED: OnceLock<bool> = OnceLock::new();
+static VERBOSE: AtomicU64 = AtomicU64::new(0);
 static REQUEST_COUNT: AtomicU64 = AtomicU64::new(0);
 static TRANSFER_COUNT: AtomicU64 = AtomicU64::new(0);
 static TRANSFER_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -42,11 +43,16 @@ static NAMED_PHASE_LATENCY: OnceLock<Mutex<BTreeMap<&'static str, [u64; 8]>>> = 
 const LATENCY_BUCKETS_US: [u64; 8] = [100, 500, 1_000, 5_000, 10_000, 50_000, 250_000, u64::MAX];
 
 pub(crate) fn enabled() -> bool {
-    *ENABLED.get_or_init(|| {
-        std::env::var("ENCLAVE_PERF")
-            .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false)
-    })
+    VERBOSE.load(Ordering::Relaxed) != 0
+        || *ENABLED.get_or_init(|| {
+            std::env::var("ENCLAVE_PERF")
+                .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false)
+        })
+}
+
+pub(crate) fn set_verbose(enabled: bool) {
+    VERBOSE.store(enabled as u64, Ordering::Relaxed);
 }
 
 pub(crate) fn record_request() {
@@ -187,6 +193,7 @@ impl Drop for Timer {
             record_request_latency(elapsed_us);
         }
         if enabled() {
+            eprintln!("timing phase={} elapsed_us={}", self.name, elapsed_us);
             tracing::info!(
                 target: "enclave::perf",
                 phase = self.name,

@@ -62,6 +62,9 @@ measurements below use the same host and harness as the baseline.
 | Workspace cleanup fan-out | bounded daemon concurrency | `ENCLAVE_CLEANUP_WORKERS` defaults to 4 and replaces one unbounded cleanup thread per workspace |
 | Workspace observation | bounded collection workers | `ENCLAVE_STATS_WORKERS` and `ENCLAVE_PS_WORKERS` default to 4 and collect live runtime data from one registry snapshot |
 | Concurrent workspace preparation | reduced registry lock scope | Filesystem and storage preparation occurs before the final registry commit, allowing independent creates to progress without holding the global registry lock |
+| Batch workspace wipe | one daemon plan and bounded cleanup | `workspace.wipe` snapshots all workspace records once, cleans independent resources with `ENCLAVE_CLEANUP_WORKERS`, and deletes each registry record immediately after confirmed cleanup |
+| Registry generation tracking | monotonic stale-commit guard | Durable registry mutations advance a generation counter; lifecycle operations revalidate resource identity before committing external-work results |
+| CLI phase timing | opt-in diagnostics | Global `--verbose` emits CLI total/config, socket connect, request write, response read, daemon request/dispatch, and named lifecycle phase timings to stderr |
 | Syscall profiling harness | pass | `tools/perf/trace.sh` wraps `strace -f -c` without making tracing a runtime dependency |
 
 ## Interpretation

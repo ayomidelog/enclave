@@ -185,6 +185,7 @@ fn registry_cache_refreshes_after_external_atomic_replace() {
 
     let replacement = serde_json::to_vec(&enclave::registry::Registry {
         version: 8,
+        generation: 9,
         sandboxes: Default::default(),
     })
     .expect("serialize replacement");

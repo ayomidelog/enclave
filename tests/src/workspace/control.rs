@@ -155,6 +155,22 @@ fn cleanup_workspace_artifacts_accepts_missing_workspace_root() {
 }
 
 #[test]
+fn destroy_all_workspaces_returns_empty_plan_without_spawning_cleanup_workers() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-workspace-batch-empty-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+
+    crate::registry::ensure_registry(&temp_dir).unwrap();
+    let report = destroy_all_workspaces(&temp_dir).unwrap();
+
+    assert!(report.removed.is_empty());
+    assert!(report.errors.is_empty());
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
 fn reconcile_clears_dead_runtime_and_namespace_references() {
     let temp_dir = std::env::temp_dir().join(format!(
         "enclave-workspace-runtime-reconcile-{}",

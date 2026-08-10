@@ -19,6 +19,9 @@ Capture syscall counts for a focused command with:
 ```bash
 ./tools/perf/trace.sh target/release/enclave --help
 ```
+
+Pass `--verbose` to a daemon-backed command to emit the CLI and daemon phase
+timings to stderr without changing normal output contracts.
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
 

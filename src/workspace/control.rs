@@ -105,6 +105,79 @@ pub fn destroy_workspace(
     Ok(workspace_id)
 }
 
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct BatchDestroyReport {
+    pub removed: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+pub fn destroy_all_workspaces(state_dir: &std::path::Path) -> Result<BatchDestroyReport> {
+    let plan = with_registry(state_dir, |registry| {
+        let mut plan = Vec::new();
+        for sandbox in registry.sandboxes.values() {
+            for workspace in sandbox.workspaces.values() {
+                plan.push((sandbox.metadata.clone(), workspace.clone()));
+            }
+        }
+        Ok(plan)
+    })?;
+
+    if plan.is_empty() {
+        return Ok(BatchDestroyReport::default());
+    }
+
+    let plan = Arc::new(plan);
+    let worker_count = std::env::var("ENCLAVE_CLEANUP_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4)
+        .clamp(1, 64)
+        .min(plan.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..plan.len())));
+    let results = Arc::new(Mutex::new(
+        (0..plan.len()).map(|_| None).collect::<Vec<_>>(),
+    ));
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let plan = Arc::clone(&plan);
+            let results = Arc::clone(&results);
+            scope.spawn(move || loop {
+                let Some(index) = queue.lock().ok().and_then(|mut queue| queue.pop_front()) else {
+                    break;
+                };
+                let (sandbox, workspace) = &plan[index];
+                let result = cleanup_workspace_artifacts(sandbox, workspace).and_then(|()| {
+                    let workspace_id = workspace.id.clone();
+                    with_registry_mut(state_dir, |registry| {
+                        if let Some(sandbox) = registry.sandboxes.get_mut(&sandbox.id) {
+                            sandbox.workspaces.remove(&workspace_id);
+                        }
+                        Ok(workspace_id)
+                    })
+                });
+                if let Ok(mut results) = results.lock() {
+                    results[index] = Some(result);
+                }
+            });
+        }
+    });
+
+    let results = Arc::try_unwrap(results)
+        .map_err(|_| anyhow!("workspace cleanup result ownership leaked"))?
+        .into_inner()
+        .map_err(|_| anyhow!("workspace cleanup result lock poisoned"))?;
+    let mut report = BatchDestroyReport::default();
+    for result in results.into_iter().flatten() {
+        match result {
+            Ok(workspace_id) => report.removed.push(workspace_id),
+            Err(error) => report.errors.push(format!("{error:#}")),
+        }
+    }
+    Ok(report)
+}
+
 fn cleanup_workspace_artifacts(
     sandbox: &SandboxMetadata,
     workspace: &WorkspaceMetadata,
@@ -420,77 +493,81 @@ pub fn start_workspace_with_security(
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
 ) -> Result<WorkspaceMetadata> {
-    with_registry_mut(state_dir, |registry| {
-        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
-
-        let (workspace_id, sandbox_snapshot, workspace_snapshot, used_ips) = {
+    let (sandbox_id, workspace_id, sandbox_snapshot, mut workspace_snapshot, used_ips) =
+        with_registry(state_dir, |registry| {
+            let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
             let sandbox = registry
                 .sandboxes
-                .get_mut(&sandbox_id)
+                .get(&sandbox_id)
                 .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
-
             if sandbox.metadata.status != SandboxStatus::Running {
                 bail!(
                     "sandbox '{}' is stopped; start sandbox first",
                     sandbox.metadata.id
                 );
             }
-
             let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
-            let sandbox_rootfs_path = effective_rootfs_path(&sandbox.metadata);
-            {
-                let workspace = sandbox
-                    .workspaces
-                    .get_mut(&workspace_id)
-                    .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-                workspace.sandbox_rootfs_path = sandbox_rootfs_path.clone();
-            }
-            let current = sandbox
+            let mut workspace_snapshot = sandbox
                 .workspaces
                 .get(&workspace_id)
                 .cloned()
                 .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-
-            if current.status == WorkspaceStatus::Running {
-                if let Some((pid, starttime)) =
-                    current.runtime_pid.zip(current.runtime_starttime_ticks)
-                {
-                    if session::process_matches(pid, Some(starttime)) {
-                        let (mount_ns, pid_ns) = session::read_namespace_refs(pid)?;
-                        let workspace = sandbox
-                            .workspaces
-                            .get_mut(&workspace_id)
-                            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-                        normalize_namespace_ref_paths(workspace);
-                        session::write_namespace_ref_values(workspace, &mount_ns, &pid_ns)?;
-                        return Ok(workspace.clone());
-                    }
-                }
-                set_workspace_stopped(sandbox, &workspace_id)?;
-            }
-
-            let workspace_snapshot = sandbox
-                .workspaces
-                .get(&workspace_id)
-                .cloned()
-                .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-            (
+            workspace_snapshot.sandbox_rootfs_path = effective_rootfs_path(&sandbox.metadata);
+            Ok((
+                sandbox_id,
                 workspace_id,
                 sandbox.metadata.clone(),
                 workspace_snapshot,
                 collect_all_used_ip_octets(registry),
-            )
-        };
+            ))
+        })?;
 
-        let started = launch_workspace_runtime(
-            state_dir,
-            &sandbox_snapshot,
-            &workspace_snapshot,
-            apparmor_profile,
-            selinux_label,
-            NetworkStartPlan::AllocateFromUsedIps(used_ips),
-        )?;
+    let expected_runtime = workspace_snapshot
+        .runtime_pid
+        .zip(workspace_snapshot.runtime_starttime_ticks);
+    if workspace_snapshot.status == WorkspaceStatus::Running {
+        if let Some((pid, starttime)) = workspace_snapshot
+            .runtime_pid
+            .zip(workspace_snapshot.runtime_starttime_ticks)
+        {
+            if session::process_matches(pid, Some(starttime)) {
+                let (mount_ns, pid_ns) = session::read_namespace_refs(pid)?;
+                return with_registry_mut(state_dir, |registry| {
+                    let sandbox = registry
+                        .sandboxes
+                        .get_mut(&sandbox_id)
+                        .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+                    let workspace = sandbox
+                        .workspaces
+                        .get_mut(&workspace_id)
+                        .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+                    if workspace.runtime_pid != Some(pid)
+                        || workspace.runtime_starttime_ticks != Some(starttime)
+                    {
+                        bail!("workspace runtime identity changed while refreshing namespace refs");
+                    }
+                    normalize_namespace_ref_paths(workspace);
+                    session::write_namespace_ref_values(workspace, &mount_ns, &pid_ns)?;
+                    Ok(workspace.clone())
+                });
+            }
+        }
+        workspace_snapshot.status = WorkspaceStatus::Stopped;
+        workspace_snapshot.runtime_pid = None;
+        workspace_snapshot.runtime_starttime_ticks = None;
+        workspace_snapshot.assigned_ip = None;
+    }
 
+    let started = launch_workspace_runtime(
+        state_dir,
+        &sandbox_snapshot,
+        &workspace_snapshot,
+        apparmor_profile,
+        selinux_label,
+        NetworkStartPlan::AllocateFromUsedIps(used_ips),
+    )?;
+
+    let commit = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
             .get_mut(&sandbox_id)
@@ -499,10 +576,16 @@ pub fn start_workspace_with_security(
             .workspaces
             .get_mut(&workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+        if workspace.status == WorkspaceStatus::Running
+            && workspace.runtime_pid.zip(workspace.runtime_starttime_ticks) != expected_runtime
+        {
+            bail!("workspace became running while startup was in progress");
+        }
+        workspace.sandbox_rootfs_path = workspace_snapshot.sandbox_rootfs_path.clone();
         workspace.status = WorkspaceStatus::Running;
         workspace.runtime_pid = Some(started.pid);
         workspace.runtime_starttime_ticks = Some(started.starttime_ticks);
-        workspace.assigned_ip = Some(started.assigned_ip);
+        workspace.assigned_ip = Some(started.assigned_ip.clone());
         normalize_namespace_ref_paths(workspace);
         session::write_namespace_ref_values(workspace, &started.mount_ns, &started.pid_ns)?;
 
@@ -515,9 +598,18 @@ pub fn start_workspace_with_security(
                     metadata_path.display()
                 )
             })?;
-
         Ok(workspace.clone())
-    })
+    });
+
+    match commit {
+        Ok(metadata) => Ok(metadata),
+        Err(error) => {
+            let _ = session::stop_session(started.pid, Some(started.starttime_ticks));
+            network::teardown_workspace_network(&started.assigned_ip, &workspace_id);
+            let _ = crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
+            Err(error)
+        }
+    }
 }
 
 fn launch_workspace_runtime(
@@ -606,21 +698,42 @@ pub fn stop_workspace(
     sandbox_selector: &str,
     workspace_selector: &str,
 ) -> Result<WorkspaceMetadata> {
-    with_registry_mut(state_dir, |registry| {
+    let (sandbox_id, workspace_id, current) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
-            .get_mut(&sandbox_id)
+            .get(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
-
         let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
         let current = sandbox
             .workspaces
             .get(&workspace_id)
             .cloned()
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-        if let Some(pid) = current.runtime_pid {
-            session::stop_session(pid, current.runtime_starttime_ticks)?;
+        Ok((sandbox_id, workspace_id, current))
+    })?;
+
+    if let Some(pid) = current.runtime_pid {
+        session::stop_session(pid, current.runtime_starttime_ticks)?;
+    }
+
+    with_registry_mut(state_dir, |registry| {
+        let sandbox = registry
+            .sandboxes
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        let latest = sandbox
+            .workspaces
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+        if latest.runtime_pid != current.runtime_pid
+            || latest.runtime_starttime_ticks != current.runtime_starttime_ticks
+        {
+            bail!(
+                "workspace '{}' changed while it was stopping; refusing stale metadata commit",
+                workspace_id
+            );
         }
         set_workspace_stopped(sandbox, &workspace_id)?;
         let result = sandbox

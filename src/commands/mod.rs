@@ -22,6 +22,7 @@ use crate::cli::{Cli, Commands, DaemonCommands, InternalCommands};
 use crate::config::FileConfig;
 
 pub fn run() -> Result<()> {
+    let _cli_total = crate::perf::Timer::new("cli.total");
     let args: Vec<_> = std::env::args_os().collect();
     let first_arg_is_help = args.get(1).is_some_and(|a| a == "help");
     let first_arg_is_init = args.get(1).is_some_and(|a| a == "init");
@@ -38,6 +39,8 @@ pub fn run() -> Result<()> {
 
     let matches = Cli::command().get_matches();
     let mut cli = Cli::from_arg_matches(&matches)?;
+    crate::perf::set_verbose(cli.verbose);
+    let _config_load = crate::perf::Timer::new("cli.config_load");
     let file_config = crate::config::load_config(cli.config.as_deref())?;
     apply_config_defaults(&mut cli, &matches, &file_config);
     daemon::configure_automatic_start_defaults(&file_config, cli.start_daemon);
