@@ -14,6 +14,7 @@ Commands:
   health     Measure daemon health CLI latency.
   registry   Measure registry read throughput with the unit benchmark.
   archive    Measure single-file archive creation overhead.
+  many-files Measure many-file archive creation overhead.
   stress     Exercise concurrent daemon control requests.
   cp         Run the namespace-dependent copy benchmark (requires root and selectors).
 USAGE
@@ -32,7 +33,7 @@ case "$command_name" in
     host_metadata
     exit 0
     ;;
-  ping|health|registry|archive|stress|cp) ;;
+  ping|health|registry|archive|many-files|stress|cp) ;;
   *) usage; exit 2 ;;
 esac
 
@@ -98,6 +99,9 @@ case "$command_name" in
     ;;
   archive)
     cargo test --test perf_suite single_file_archive_benchmark -- --ignored --nocapture
+    ;;
+  many-files)
+    cargo test --test perf_suite many_file_archive_benchmark -- --ignored --nocapture
     ;;
   stress)
     if [[ $(id -u) -ne 0 ]] && ! sudo -n true 2>/dev/null; then

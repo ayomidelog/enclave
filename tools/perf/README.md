@@ -8,6 +8,7 @@ user-visible CLI and records the host metadata needed to compare runs.
 ./tools/perf/bench.sh ping --iterations 30
 ./tools/perf/bench.sh health --iterations 30
 ./tools/perf/bench.sh registry --iterations 1000
+./tools/perf/bench.sh many-files
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
 

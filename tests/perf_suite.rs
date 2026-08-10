@@ -105,3 +105,55 @@ fn single_file_archive_benchmark() {
     );
     let _ = fs::remove_dir_all(state);
 }
+
+#[test]
+#[ignore = "performance benchmark"]
+fn many_file_archive_benchmark() {
+    let state = temp_state();
+    let source = state.join("many");
+    let output = state.join("archive.tar");
+    fs::create_dir_all(&source).expect("create many-file fixture");
+    for index in 0..1_000 {
+        fs::write(source.join(format!("file-{index:04}.bin")), [0u8; 4096])
+            .expect("write many-file fixture");
+    }
+
+    let external_start = Instant::now();
+    for _ in 0..3 {
+        let status = Command::new("tar")
+            .args([
+                "-C",
+                state.to_str().expect("state path"),
+                "-cf",
+                output.to_str().expect("output path"),
+                "--",
+                "many",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run tar");
+        assert!(status.success());
+    }
+    let external_elapsed = external_start.elapsed();
+
+    let rust_start = Instant::now();
+    for _ in 0..3 {
+        let output_file = fs::File::create(&output).expect("create archive output");
+        let mut archive = tar::Builder::new(output_file);
+        archive
+            .append_dir_all("many", &source)
+            .expect("append many-file fixture");
+        archive.finish().expect("finish archive");
+    }
+    let rust_elapsed = rust_start.elapsed();
+    black_box((external_elapsed, rust_elapsed));
+    println!("benchmark=many_file_archive iterations=3 files=1000 bytes=4096000");
+    println!("external_tar_seconds={:.9}", external_elapsed.as_secs_f64());
+    println!("rust_archive_seconds={:.9}", rust_elapsed.as_secs_f64());
+    println!(
+        "speedup={:.2}x",
+        external_elapsed.as_secs_f64() / rust_elapsed.as_secs_f64()
+    );
+    let _ = fs::remove_dir_all(state);
+}

@@ -10,6 +10,7 @@
 
 ### Changed
 - Cleanup plans load and parse `/proc/self/mountinfo` once per transaction before reverse-depth unmounting.
+- Host-to-workspace directory copies stream the host archive producer directly into the namespace-local extractor after source validation, reducing metadata-heavy transfer overhead.
 
 ## 1.0.4 - 2026-08-10
 

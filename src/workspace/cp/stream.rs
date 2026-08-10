@@ -7,7 +7,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -348,26 +348,44 @@ fn run_host_archive_to_workspace(
         Stdio::null(),
         Stdio::piped(),
     )?);
-    let stdin = workspace_tar
+    let mut stdin = workspace_tar
         .child
         .stdin
         .take()
         .context("workspace tar stdin unavailable")?;
     set_pipe_capacity(stdin.as_raw_fd());
-    let mut archive = tar::Builder::new(stdin);
     if source_metadata.is_dir() {
-        archive
-            .append_dir_all(source_name, source)
-            .with_context(|| format!("failed to archive host source '{}'", source))?;
+        let parent = Path::new(source)
+            .parent()
+            .context("host directory source has no parent")?;
+        let mut host_tar = ChildGuard::new(spawn_host_tar(parent, source_name)?);
+        let mut host_stdout = host_tar
+            .child
+            .stdout
+            .take()
+            .context("host tar stdout unavailable")?;
+        std::io::copy(&mut host_stdout, &mut stdin)
+            .with_context(|| format!("failed to stream host tar for '{}'", source))?;
+        drop(host_stdout);
+        drop(stdin);
+        let status = host_tar
+            .child
+            .wait()
+            .context("failed to wait for host tar")?;
+        host_tar.disarm();
+        if !status.success() {
+            bail!("host tar failed for '{}' with status {}", source, status);
+        }
     } else {
+        let mut archive = tar::Builder::new(stdin);
         archive
             .append_path_with_name(source, source_name)
             .with_context(|| format!("failed to archive host source '{}'", source))?;
+        archive
+            .finish()
+            .context("failed to finish host tar archive")?;
+        drop(archive);
     }
-    archive
-        .finish()
-        .context("failed to finish host tar archive")?;
-    drop(archive);
     let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
         .context("failed to run workspace tar extractor")?;
     ensure_transfer_success("workspace tar", &workspace_output)?;
@@ -388,6 +406,25 @@ fn run_host_archive_to_workspace(
         logical_bytes,
         files: if source_metadata.is_dir() { 0 } else { 1 },
     })
+}
+
+fn spawn_host_tar(parent: &Path, source_name: &str) -> Result<Child> {
+    crate::perf::record_process_spawn();
+    Command::new("tar")
+        .args([
+            "-C",
+            parent
+                .to_str()
+                .context("host tar parent path is not valid UTF-8")?,
+            "-cf",
+            "-",
+            "--",
+            source_name,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to start host tar")
 }
 
 fn restore_workspace_metadata(
