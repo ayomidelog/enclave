@@ -56,6 +56,8 @@ fn workspace_cp_streams_files_and_directories_both_directions() {
     let workspace = create_workspace(&state, &sandbox.id, "cp", WorkspaceLimits::default())
         .expect("create workspace");
     let _started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let host_directory_source = state.join("source");
+    fs::create_dir(&host_directory_source).expect("create host directory source");
 
     let missing_source = copy_workspace_path(
         &state,
@@ -71,7 +73,7 @@ fn workspace_cp_streams_files_and_directories_both_directions() {
         &state,
         &sandbox.id,
         &workspace.id,
-        "/tmp/source",
+        host_directory_source.to_str().unwrap(),
         "/home/../tmp",
         "host_to_workspace",
     )
@@ -85,7 +87,7 @@ fn workspace_cp_streams_files_and_directories_both_directions() {
         &state,
         &sandbox.id,
         &workspace.id,
-        "/tmp/source",
+        host_directory_source.to_str().unwrap(),
         "/home/stopped",
         "host_to_workspace",
     )
@@ -112,7 +114,7 @@ fn workspace_cp_streams_files_and_directories_both_directions() {
         &state,
         &sandbox.id,
         &workspace.id,
-        "/tmp/source",
+        host_directory_source.to_str().unwrap(),
         "/home/link/output",
         "host_to_workspace",
     )

@@ -1,12 +1,14 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -15,8 +17,20 @@ use tar::Archive;
 use uuid::Uuid;
 
 use super::path::DestinationPlan;
-use crate::workspace::exec::spawn_workspace_command;
+use crate::workspace::exec::{spawn_workspace_command, spawn_workspace_file_receiver};
 use crate::workspace::types::WorkspaceMetadata;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct UtilityCacheKey {
+    sandbox_id: String,
+    workspace_id: String,
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    command: String,
+}
+
+static UTILITY_CACHE: OnceLock<Mutex<HashMap<UtilityCacheKey, bool>>> = OnceLock::new();
+const UTILITY_CACHE_LIMIT: usize = 512;
 
 #[derive(Debug)]
 pub(super) struct TransferOutput {
@@ -207,39 +221,215 @@ pub(super) fn run_host_to_workspace(
 ) -> Result<TransferOutput> {
     let stage =
         create_workspace_staging_directory(workspace, destination, source_name, client_stream)?;
-    let result = (|| {
-        let mut host_tar =
-            ChildGuard::new(spawn_tar(tar_create_args(source, source_name), true, None)?);
-        let stream = host_tar
-            .child
-            .stdout
-            .take()
-            .context("host tar stdout unavailable")?;
-        let mut workspace_tar = ChildGuard::new(spawn_workspace_command(
+    let result = if is_regular_file(source)? {
+        run_host_regular_file_to_workspace(
             workspace,
-            "/home",
-            &workspace_tar_command(tar_extract_args_at(&stage)),
-            Stdio::from(stream),
-            Stdio::null(),
-            Stdio::piped(),
-        )?);
-
-        let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
-            .context("failed to run workspace tar extractor")?;
-        let host_output = wait_child_output(&mut host_tar, client_stream)
-            .context("failed to wait for host tar")?;
-        ensure_transfer_success("host tar", &host_output)?;
-        ensure_transfer_success("workspace tar", &workspace_output)?;
-        move_workspace_path(
-            workspace,
-            &format!("{stage}/{source_name}"),
-            &destination.final_path(source_name).to_string_lossy(),
+            source,
+            destination,
+            source_name,
+            logical_bytes,
+            &stage,
             client_stream,
-        )?;
-        Ok(TransferOutput { logical_bytes })
-    })();
+        )
+    } else {
+        run_host_archive_to_workspace(
+            workspace,
+            source,
+            destination,
+            source_name,
+            logical_bytes,
+            &stage,
+            client_stream,
+        )
+    };
     remove_workspace_staging_directory(workspace, &stage);
     result
+}
+
+fn run_host_regular_file_to_workspace(
+    workspace: &WorkspaceMetadata,
+    source: &str,
+    destination: &DestinationPlan,
+    source_name: &str,
+    logical_bytes: u64,
+    stage: &str,
+    client_stream: Option<&UnixStream>,
+) -> Result<TransferOutput> {
+    let source_metadata =
+        fs::metadata(source).with_context(|| format!("failed to stat host source '{}'", source))?;
+    let target = format!("{stage}/{source_name}");
+    let mut workspace_writer = ChildGuard::new(spawn_workspace_file_receiver(
+        workspace,
+        &target,
+        Stdio::piped(),
+        Stdio::piped(),
+    )?);
+    let stdin = workspace_writer
+        .child
+        .stdin
+        .take()
+        .context("workspace direct-copy stdin unavailable")?;
+    set_pipe_capacity(stdin.as_raw_fd());
+    let mut source_file =
+        File::open(source).with_context(|| format!("failed to open host source '{}'", source))?;
+    sendfile_to_pipe(&mut source_file, stdin.as_raw_fd(), logical_bytes)?;
+    drop(stdin);
+    let workspace_output = wait_child_output(&mut workspace_writer, client_stream)
+        .context("failed to run workspace direct file writer")?;
+    ensure_transfer_success("workspace direct file writer", &workspace_output)?;
+    restore_workspace_metadata(workspace, &target, &source_metadata)?;
+    move_workspace_path(
+        workspace,
+        &target,
+        &destination.final_path(source_name).to_string_lossy(),
+        client_stream,
+    )?;
+    Ok(TransferOutput { logical_bytes })
+}
+
+fn is_regular_file(path: &str) -> Result<bool> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("host source '{}' does not exist", path))?;
+    Ok(metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+fn sendfile_to_pipe(source: &mut File, destination_fd: i32, expected_bytes: u64) -> Result<()> {
+    let mut transferred = 0u64;
+    while transferred < expected_bytes {
+        let remaining = expected_bytes - transferred;
+        let amount = unsafe {
+            libc::sendfile(
+                destination_fd,
+                source.as_raw_fd(),
+                std::ptr::null_mut(),
+                remaining.min(4 * 1024 * 1024) as usize,
+            )
+        };
+        if amount > 0 {
+            transferred = transferred.saturating_add(amount as u64);
+            continue;
+        }
+        if amount == 0 {
+            bail!(
+                "host source ended before expected size ({} of {} bytes)",
+                transferred,
+                expected_bytes
+            );
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error).context("failed to stream host file with sendfile");
+    }
+    Ok(())
+}
+
+fn run_host_archive_to_workspace(
+    workspace: &WorkspaceMetadata,
+    source: &str,
+    destination: &DestinationPlan,
+    source_name: &str,
+    logical_bytes: u64,
+    stage: &str,
+    client_stream: Option<&UnixStream>,
+) -> Result<TransferOutput> {
+    let source_metadata =
+        fs::metadata(source).with_context(|| format!("failed to stat host source '{}'", source))?;
+    let mut workspace_tar = ChildGuard::new(spawn_workspace_command(
+        workspace,
+        "/home",
+        &workspace_tar_command(tar_extract_args_at(stage)),
+        Stdio::piped(),
+        Stdio::null(),
+        Stdio::piped(),
+    )?);
+    let stdin = workspace_tar
+        .child
+        .stdin
+        .take()
+        .context("workspace tar stdin unavailable")?;
+    set_pipe_capacity(stdin.as_raw_fd());
+    let mut archive = tar::Builder::new(stdin);
+    if source_metadata.is_dir() {
+        archive
+            .append_dir_all(source_name, source)
+            .with_context(|| format!("failed to archive host source '{}'", source))?;
+    } else {
+        archive
+            .append_path_with_name(source, source_name)
+            .with_context(|| format!("failed to archive host source '{}'", source))?;
+    }
+    archive
+        .finish()
+        .context("failed to finish host tar archive")?;
+    drop(archive);
+    let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
+        .context("failed to run workspace tar extractor")?;
+    ensure_transfer_success("workspace tar", &workspace_output)?;
+    if source_metadata.is_file() {
+        restore_workspace_metadata(
+            workspace,
+            &format!("{stage}/{source_name}"),
+            &source_metadata,
+        )?;
+    }
+    move_workspace_path(
+        workspace,
+        &format!("{stage}/{source_name}"),
+        &destination.final_path(source_name).to_string_lossy(),
+        client_stream,
+    )?;
+    Ok(TransferOutput { logical_bytes })
+}
+
+fn restore_workspace_metadata(
+    workspace: &WorkspaceMetadata,
+    path: &str,
+    metadata: &fs::Metadata,
+) -> Result<()> {
+    let relative = Path::new(path)
+        .strip_prefix("/home")
+        .context("workspace staging path is outside /home")?;
+    let base = workspace
+        .home_mount_source_path
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&workspace.filesystem_path));
+    let target = base.join(relative);
+    fs::set_permissions(
+        &target,
+        fs::Permissions::from_mode(metadata.permissions().mode()),
+    )
+    .with_context(|| format!("failed to restore workspace permissions {}", path))?;
+    let accessed = metadata
+        .accessed()
+        .context("failed to read host source access time")?
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("host source access time predates Unix epoch")?;
+    let modified = metadata
+        .modified()
+        .context("failed to read host source modification time")?
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("host source modification time predates Unix epoch")?;
+    let target = CString::new(target.as_os_str().as_bytes())
+        .context("workspace staging path contains an interior NUL byte")?;
+    let times = [
+        libc::timespec {
+            tv_sec: accessed.as_secs() as libc::time_t,
+            tv_nsec: accessed.subsec_nanos() as libc::c_long,
+        },
+        libc::timespec {
+            tv_sec: modified.as_secs() as libc::time_t,
+            tv_nsec: modified.subsec_nanos() as libc::c_long,
+        },
+    ];
+    let result = unsafe { libc::utimensat(libc::AT_FDCWD, target.as_ptr(), times.as_ptr(), 0) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("failed to restore workspace timestamp {}", path));
+    }
+    Ok(())
 }
 
 pub(super) fn run_workspace_to_host(
@@ -263,6 +453,7 @@ pub(super) fn run_workspace_to_host(
         .stdout
         .take()
         .context("workspace tar stdout unavailable")?;
+    set_pipe_capacity(stream.as_raw_fd());
     let logical_bytes = extract_workspace_archive(stream, &stage, source_name)
         .context("failed to validate workspace tar archive")?;
     let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
@@ -299,7 +490,7 @@ fn remove_workspace_staging_directory(workspace: &WorkspaceMetadata, stage: &str
     let _ = run_workspace_utility(workspace, &["rm", "-rf", "--", stage], None);
 }
 
-fn workspace_path_exists(
+pub(super) fn workspace_path_exists(
     workspace: &WorkspaceMetadata,
     path: &str,
     client_stream: Option<&UnixStream>,
@@ -503,26 +694,6 @@ fn cstring_os(value: &std::ffi::OsStr) -> Result<CString> {
     CString::new(value.as_bytes()).map_err(|_| anyhow!("path contains an interior NUL byte"))
 }
 
-fn spawn_tar(args: Vec<String>, creating: bool, input: Option<Stdio>) -> Result<Child> {
-    let mut command = Command::new("tar");
-    let extracting = !creating;
-    command
-        .args(args)
-        .stdin(if extracting {
-            input.unwrap_or_else(Stdio::piped)
-        } else {
-            Stdio::null()
-        })
-        .stdout(if creating {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to start tar")
-}
-
 fn tar_create_args(source: &str, source_name: &str) -> Vec<String> {
     let parent = Path::new(source)
         .parent()
@@ -575,13 +746,25 @@ fn run_workspace_utility(
     command: &[&str],
     client_stream: Option<&UnixStream>,
 ) -> Result<Output> {
+    let key = UtilityCacheKey {
+        sandbox_id: workspace.sandbox_id.clone(),
+        workspace_id: workspace.id.clone(),
+        runtime_pid: workspace.runtime_pid.unwrap_or_default(),
+        runtime_starttime_ticks: workspace.runtime_starttime_ticks.unwrap_or_default(),
+        command: command.first().copied().unwrap_or_default().to_string(),
+    };
+    if utility_uses_busybox(&key) {
+        return run_busybox_utility(workspace, command, client_stream);
+    }
+
+    let primary_command = command
+        .iter()
+        .map(|item| (*item).to_string())
+        .collect::<Vec<_>>();
     let primary = spawn_workspace_command(
         workspace,
         "/home",
-        &command
-            .iter()
-            .map(|item| (*item).to_string())
-            .collect::<Vec<_>>(),
+        &primary_command,
         Stdio::null(),
         Stdio::null(),
         Stdio::piped(),
@@ -589,9 +772,19 @@ fn run_workspace_utility(
     let mut primary = ChildGuard::new(primary);
     let output = wait_child_output(&mut primary, client_stream)?;
     if output.status.code() != Some(127) {
+        cache_utility_choice(key, false);
         return Ok(output);
     }
 
+    cache_utility_choice(key, true);
+    run_busybox_utility(workspace, command, client_stream)
+}
+
+fn run_busybox_utility(
+    workspace: &WorkspaceMetadata,
+    command: &[&str],
+    client_stream: Option<&UnixStream>,
+) -> Result<Output> {
     let mut fallback_command = vec!["/bin/busybox".to_string()];
     fallback_command.extend(command.iter().map(|item| (*item).to_string()));
     let fallback = spawn_workspace_command(
@@ -606,36 +799,41 @@ fn run_workspace_utility(
     wait_child_output(&mut fallback, client_stream)
 }
 
+fn utility_uses_busybox(key: &UtilityCacheKey) -> bool {
+    UTILITY_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(key).copied())
+        .unwrap_or(false)
+}
+
+fn cache_utility_choice(key: UtilityCacheKey, uses_busybox: bool) {
+    let Ok(mut cache) = UTILITY_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    else {
+        return;
+    };
+    if cache.len() >= UTILITY_CACHE_LIMIT && !cache.contains_key(&key) {
+        if let Some(oldest) = cache.keys().next().cloned() {
+            cache.remove(&oldest);
+        }
+    }
+    cache.insert(key, uses_busybox);
+}
+
 pub(super) fn wait_child_output(
     child: &mut ChildGuard,
     client_stream: Option<&UnixStream>,
 ) -> Result<Output> {
-    let stderr_reader = child.child.stderr.take().map(|mut pipe| {
+    let mut stderr_reader = child.child.stderr.take().map(|mut pipe| {
         thread::spawn(move || {
             let mut stderr = Vec::new();
             pipe.read_to_end(&mut stderr).map(|_| stderr)
         })
     });
-    let status = loop {
-        match child
-            .child
-            .try_wait()
-            .context("failed to poll child process")?
-        {
-            Some(status) => break status,
-            None => {
-                if client_stream.is_some_and(|stream| !client_is_connected(stream)) {
-                    let _ = child.child.kill();
-                    let _ = child.child.wait();
-                    if let Some(reader) = stderr_reader {
-                        let _ = reader.join();
-                    }
-                    bail!("workspace cp client disconnected; transfer cancelled")
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-        }
-    };
+    let status = wait_for_child_or_disconnect(child, client_stream, &mut stderr_reader)?;
     let stderr = match stderr_reader {
         Some(reader) => reader
             .join()
@@ -648,6 +846,95 @@ pub(super) fn wait_child_output(
         stdout: Vec::new(),
         stderr,
     })
+}
+
+fn wait_for_child_or_disconnect(
+    child: &mut ChildGuard,
+    client_stream: Option<&UnixStream>,
+    stderr_reader: &mut Option<thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+) -> Result<std::process::ExitStatus> {
+    if client_stream.is_none() {
+        return child
+            .child
+            .wait()
+            .context("failed to wait for child process");
+    }
+
+    if let Some(pidfd) = open_pidfd(child.child.id()) {
+        let client_fd = client_stream
+            .expect("client stream checked above")
+            .as_raw_fd();
+        let mut descriptors = [
+            libc::pollfd {
+                fd: pidfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: client_fd,
+                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+                revents: 0,
+            },
+        ];
+        loop {
+            let poll_result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+            if poll_result < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                unsafe { libc::close(pidfd) };
+                return Err(error).context("failed waiting for child or client disconnect");
+            }
+            if descriptors[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                unsafe { libc::close(pidfd) };
+                let _ = child.child.kill();
+                let _ = child.child.wait();
+                if let Some(reader) = stderr_reader.take() {
+                    let _ = reader.join();
+                }
+                bail!("workspace cp client disconnected; transfer cancelled");
+            }
+            if descriptors[0].revents & libc::POLLIN != 0 {
+                unsafe { libc::close(pidfd) };
+                return child.child.wait().context("failed to reap child process");
+            }
+        }
+    }
+
+    loop {
+        match child
+            .child
+            .try_wait()
+            .context("failed to poll child process")?
+        {
+            Some(status) => return Ok(status),
+            None => {
+                if client_stream.is_some_and(|stream| !client_is_connected(stream)) {
+                    let _ = child.child.kill();
+                    let _ = child.child.wait();
+                    if let Some(reader) = stderr_reader.take() {
+                        let _ = reader.join();
+                    }
+                    bail!("workspace cp client disconnected; transfer cancelled")
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+fn open_pidfd(pid: u32) -> Option<i32> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_uint, 0) as i32 };
+    (fd >= 0).then_some(fd)
+}
+
+fn set_pipe_capacity(fd: std::os::fd::RawFd) {
+    let requested = 1024 * 1024;
+    let result = unsafe { libc::fcntl(fd, libc::F_SETPIPE_SZ, requested) };
+    if result < 0 {
+        tracing::debug!(fd, error = ?std::io::Error::last_os_error(), "unable to enlarge transfer pipe");
+    }
 }
 
 fn client_is_connected(stream: &UnixStream) -> bool {

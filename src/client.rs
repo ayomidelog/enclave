@@ -18,9 +18,16 @@ struct ResponsePayload {
 }
 
 pub fn send_request(socket_path: &Path, action: &str, params: Value) -> Result<Value> {
+    let _total = crate::perf::Timer::new("cli.total");
+    let _connect = crate::perf::Timer::new("cli.connect");
     let mut stream = connect_daemon(socket_path)?;
+    drop(_connect);
+    let _write = crate::perf::Timer::new("cli.request_write");
     write_request(&mut stream, action, params)?;
+    drop(_write);
+    let _read = crate::perf::Timer::new("cli.response_read");
     let line = read_response_line(stream)?;
+    drop(_read);
     parse_response_payload(&line)
 }
 

@@ -1,9 +1,29 @@
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{bail, Context, Result};
 
 use super::types::{Policy, PolicyRule};
+
+#[derive(Clone)]
+struct PolicyCacheEntry {
+    path: PathBuf,
+    fingerprint: PolicyFingerprint,
+    policy: Policy,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PolicyFingerprint {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanos: i64,
+}
+
+static POLICY_CACHE: OnceLock<Mutex<Option<PolicyCacheEntry>>> = OnceLock::new();
 
 pub fn ensure_policy(state_dir: &Path) -> Result<()> {
     fs::create_dir_all(state_dir)
@@ -203,9 +223,14 @@ where
     F: FnOnce(&Policy) -> Result<T>,
 {
     ensure_policy(state_dir)?;
+    let path = policy_path(state_dir);
+    if let Some(policy) = cached_policy(&path)? {
+        return operation(&policy);
+    }
     let lock_path = policy_lock_path(state_dir);
     crate::fsutil::with_file_lock(&lock_path, || {
         let policy = load_policy_unlocked(state_dir)?;
+        update_policy_cache(&path, &policy)?;
         operation(&policy)
     })
 }
@@ -220,7 +245,43 @@ where
         let mut policy = load_policy_unlocked(state_dir)?;
         let result = operation(&mut policy)?;
         save_policy_unlocked(state_dir, &policy)?;
+        update_policy_cache(&policy_path(state_dir), &policy)?;
         Ok(result)
+    })
+}
+
+fn cached_policy(path: &Path) -> Result<Option<Policy>> {
+    let fingerprint = policy_fingerprint(path)?;
+    let cache = POLICY_CACHE.get_or_init(|| Mutex::new(None));
+    let Ok(cache) = cache.lock() else {
+        return Ok(None);
+    };
+    Ok(cache.as_ref().and_then(|entry| {
+        (entry.path == path && entry.fingerprint == fingerprint).then(|| entry.policy.clone())
+    }))
+}
+
+fn update_policy_cache(path: &Path, policy: &Policy) -> Result<()> {
+    let entry = PolicyCacheEntry {
+        path: path.to_path_buf(),
+        fingerprint: policy_fingerprint(path)?,
+        policy: policy.clone(),
+    };
+    if let Ok(mut cache) = POLICY_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(entry);
+    }
+    Ok(())
+}
+
+fn policy_fingerprint(path: &Path) -> Result<PolicyFingerprint> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat policy {}", path.display()))?;
+    Ok(PolicyFingerprint {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanos: metadata.mtime_nsec(),
     })
 }
 

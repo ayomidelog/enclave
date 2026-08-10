@@ -139,6 +139,7 @@ pub(crate) fn spawn_workspace_command(
         )
     })?;
     let current_exe = crate::workspace::session::resolve_session_helper_source();
+    crate::perf::record_process_spawn();
     Command::new(&current_exe)
         .args(runtime_exec_command_args(
             runtime_pid,
@@ -153,6 +154,47 @@ pub(crate) fn spawn_workspace_command(
         .stderr(stderr)
         .spawn()
         .context("failed to execute workspace command via internal helper")
+}
+
+pub(crate) fn spawn_workspace_file_receiver(
+    workspace: &WorkspaceMetadata,
+    target: &str,
+    stdin: Stdio,
+    stderr: Stdio,
+) -> Result<Child> {
+    let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime pid; restart workspace",
+            workspace.id
+        )
+    })?;
+    let runtime_starttime_ticks = workspace.runtime_starttime_ticks.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime starttime; restart workspace",
+            workspace.id
+        )
+    })?;
+    if !session::process_matches(runtime_pid, Some(runtime_starttime_ticks)) {
+        bail!("workspace '{}' runtime pid is not alive", workspace.id);
+    }
+    let current_exe = crate::workspace::session::resolve_session_helper_source();
+    crate::perf::record_process_spawn();
+    Command::new(current_exe)
+        .args([
+            "internal",
+            "workspace-file-receive",
+            "--runtime-pid",
+            &runtime_pid.to_string(),
+            "--runtime-starttime-ticks",
+            &runtime_starttime_ticks.to_string(),
+            "--target",
+            target,
+        ])
+        .stdin(stdin)
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .context("failed to execute workspace file receiver")
 }
 
 fn runtime_exec_command_args(

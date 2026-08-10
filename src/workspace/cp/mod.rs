@@ -18,7 +18,7 @@ use self::path::{
     validate_direction_paths, validate_host_destination, validate_host_source, Direction,
 };
 use self::stream::{
-    run_host_to_workspace, run_workspace_to_host, validate_workspace_source,
+    run_host_to_workspace, run_workspace_to_host, validate_workspace_source, workspace_path_exists,
     workspace_path_has_symlink, workspace_path_is_directory,
 };
 
@@ -66,7 +66,7 @@ pub(crate) fn copy_workspace_path_with_connection(
     let transfer = crate::workspace::with_workspace_storage_mounted(&workspace, || {
         if direction == Direction::HostToWorkspace {
             workspace_path_has_symlink(&workspace, dst, client_stream)?;
-        } else {
+        } else if workspace_path_exists(&workspace, src, client_stream)? {
             validate_workspace_source(&workspace, src, client_stream)?;
         }
         let source_is_dir = match direction {
@@ -101,6 +101,8 @@ pub(crate) fn copy_workspace_path_with_connection(
             }
         }
     })?;
+
+    crate::perf::record_transfer(transfer.logical_bytes);
 
     Ok(WorkspaceCpResult {
         workspace_id: workspace.id,

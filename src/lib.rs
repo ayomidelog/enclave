@@ -15,5 +15,6 @@ mod daemon;
 mod doctor;
 mod network;
 mod paths;
+mod perf;
 mod protocol;
 mod resource_limits;

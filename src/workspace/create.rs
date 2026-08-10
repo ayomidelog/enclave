@@ -185,7 +185,18 @@ pub fn create_workspace_with_options(
                     metadata_path.display()
                 )
             })?;
-        crate::workspace::create_workspace_storage(&metadata)?;
+        if let Err(err) = crate::workspace::create_workspace_storage(&metadata)
+            .and_then(|()| crate::workspace::ensure_workspace_storage_ready(&metadata))
+        {
+            let _ = crate::workspace::ensure_workspace_storage_unmounted(&metadata);
+            let _ = fs::remove_dir_all(&workspace_dir);
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to initialize workspace storage {}",
+                    workspace_dir.display()
+                )
+            });
+        }
 
         sandbox_entry
             .workspaces

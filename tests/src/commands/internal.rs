@@ -1,4 +1,7 @@
-use super::{open_ready_file_via_old_root, runtime_tmpfs_mount_flags, RUNTIME_TMPFS_DATA};
+use super::{
+    open_ready_file_via_old_root, runtime_tmpfs_mount_flags, validate_workspace_file_target,
+    RUNTIME_TMPFS_DATA,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -88,4 +91,11 @@ fn runtime_tmpfs_mount_options_split_vfs_flags_from_fs_data() {
     assert!(flags.contains(nix::mount::MsFlags::MS_NOSUID));
     assert!(flags.contains(nix::mount::MsFlags::MS_NOEXEC));
     assert_eq!(RUNTIME_TMPFS_DATA, "mode=700");
+}
+
+#[test]
+fn workspace_file_target_requires_safe_home_path() {
+    assert!(validate_workspace_file_target("/home/stage/file").is_ok());
+    assert!(validate_workspace_file_target("/tmp/file").is_err());
+    assert!(validate_workspace_file_target("/home/../tmp/file").is_err());
 }

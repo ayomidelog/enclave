@@ -121,7 +121,7 @@ fn cleanup_workspace_artifacts(
         remove_workspace_cgroups(sandbox, pid);
     }
     if let Some(ip) = workspace.assigned_ip.as_deref() {
-        network::teardown_workspace_network(ip);
+        network::teardown_workspace_network(ip, &workspace.id);
     }
 
     let storage_unmounted = match crate::workspace::ensure_workspace_storage_unmounted(workspace) {
@@ -332,6 +332,13 @@ pub fn resize_workspace_disk_with_security(
             }
             set_workspace_stopped(sandbox, &workspace_id)?;
         }
+
+        crate::workspace::ensure_workspace_storage_unmounted(&current).with_context(|| {
+            format!(
+                "failed to unmount workspace '{}' before resizing",
+                current.name
+            )
+        })?;
 
         let resize = super::storage::increase_workspace_disk_allocation(&current, new_disk_bytes)?;
         let resized_workspace = {
@@ -559,7 +566,12 @@ fn launch_workspace_runtime(
     let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
     let assigned_ip = match network_plan {
         NetworkStartPlan::AllocateFromUsedIps(used_ips) => {
-            match network::setup_workspace_network(session_info.pid, &used_ips, &workspace_rootfs) {
+            match network::setup_workspace_network(
+                session_info.pid,
+                &used_ips,
+                &workspace_rootfs,
+                &workspace_snapshot.id,
+            ) {
                 Ok(ip) => ip,
                 Err(err) => {
                     remove_workspace_cgroups(sandbox_snapshot, session_info.pid);
@@ -975,7 +987,7 @@ fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
     }
 
     if let Some(ref ip) = workspace.assigned_ip {
-        network::teardown_workspace_network(ip);
+        network::teardown_workspace_network(ip, &workspace.id);
     }
     if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
         tracing::warn!(

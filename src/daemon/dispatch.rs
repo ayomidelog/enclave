@@ -144,6 +144,7 @@ pub(crate) fn dispatch(
             "pid": std::process::id(),
             "state_dir": config.state_dir.to_string_lossy(),
             "socket_path": config.socket_path.to_string_lossy(),
+            "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {
             let report = crate::doctor::run_doctor(&config.state_dir)?;

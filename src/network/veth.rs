@@ -14,7 +14,7 @@ pub fn setup_workspace_networking(
     veth_host: &str,
     veth_peer: &str,
 ) -> Result<()> {
-    let tmp_peer = format!("{veth_host}-p");
+    let tmp_peer = temporary_peer_name(veth_host);
     let result: Result<()> = (|| {
         configure_host_veth(veth_host, &tmp_peer, pid)?;
         configure_workspace_netns(pid, &tmp_peer, veth_peer, workspace_ip)?;
@@ -33,8 +33,24 @@ pub fn setup_workspace_networking(
     Ok(())
 }
 
-pub fn veth_names(host_octet: u8) -> (String, String) {
-    (format!("veth-encl{host_octet}"), "eth0".to_string())
+fn temporary_peer_name(veth_host: &str) -> String {
+    let hash = veth_host.bytes().fold(0x811c9dc5u32, |hash, byte| {
+        hash.wrapping_mul(0x01000193) ^ u32::from(byte)
+    });
+    format!("vp{hash:08x}")
+}
+
+pub fn veth_names(host_octet: u8, workspace_id: &str) -> (String, String) {
+    (
+        format!("veth-{host_octet}-{:06x}", workspace_id_hash(workspace_id)),
+        "eth0".to_string(),
+    )
+}
+
+fn workspace_id_hash(workspace_id: &str) -> u32 {
+    workspace_id.bytes().fold(0x811c9dc5u32, |hash, byte| {
+        hash.wrapping_mul(0x01000193) ^ u32::from(byte)
+    }) & 0x00ff_ffff
 }
 
 fn configure_host_veth(host: &str, peer: &str, pid: u32) -> Result<()> {

@@ -106,6 +106,7 @@ pub enum InternalCommands {
     WorkspaceSessionBootstrap(WorkspaceSessionBootstrapArgs),
     WorkspaceSessionLoop(WorkspaceSessionLoopArgs),
     WorkspaceCommand(WorkspaceCommandInternalArgs),
+    WorkspaceFileReceive(WorkspaceFileReceiveArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -442,6 +443,16 @@ pub struct WorkspaceCommandInternalArgs {
     pub workspace_id: String,
     #[arg(value_name = "COMMAND", required = true, num_args = 1.., trailing_var_arg = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceFileReceiveArgs {
+    #[arg(long)]
+    pub runtime_pid: u32,
+    #[arg(long)]
+    pub runtime_starttime_ticks: u64,
+    #[arg(long)]
+    pub target: String,
 }
 
 #[derive(Args, Debug)]

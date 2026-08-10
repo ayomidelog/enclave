@@ -53,6 +53,9 @@ pub fn run() -> Result<()> {
                 internal::run_workspace_session_loop(args)
             }
             InternalCommands::WorkspaceCommand(args) => internal::run_workspace_command(args),
+            InternalCommands::WorkspaceFileReceive(args) => {
+                internal::run_workspace_file_receive(args)
+            }
         },
         Commands::Daemon { command } => daemon::run_daemon_command(&cli.socket, command),
         Commands::Ping => {

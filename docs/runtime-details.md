@@ -35,6 +35,8 @@ Each workspace runs in its own network namespace with full port isolation and ou
 - **Cross-workspace isolation**: direct workspace-to-workspace forwarding is blocked by default on the Enclave bridge.
 - **Host-service isolation**: direct access from a workspace to host-local services and the cloud metadata endpoint is blocked by default.
 - **Clean teardown**: Stopping/destroying a workspace removes its veth pair and releases its IP.
+- **Collision-resistant interface names**: Host-side veth names include the workspace identity, and temporary peer names stay within Linux's 15-character interface-name limit.
+- **Runtime metrics**: `daemon.health` includes request, transfer-byte, cache, and helper-process counters; phase timing remains opt-in through `ENCLAVE_PERF=1`.
 
 ### Additional network guards
 

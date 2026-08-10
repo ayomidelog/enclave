@@ -168,3 +168,31 @@ fn partial_write_requires_explicit_repair_before_mutation() {
     assert_eq!(version, 1);
     let _ = fs::remove_dir_all(state);
 }
+
+#[test]
+fn registry_cache_refreshes_after_external_atomic_replace() {
+    let state = state_dir("enclave-registry-cache-refresh");
+    ensure_registry(&state).expect("registry init");
+
+    with_registry_mut(&state, |registry| {
+        registry.version = 7;
+        Ok(())
+    })
+    .expect("initial registry write");
+
+    let observed = with_registry(&state, |registry| Ok(registry.version)).expect("cached read");
+    assert_eq!(observed, 7);
+
+    let replacement = serde_json::to_vec(&enclave::registry::Registry {
+        version: 8,
+        sandboxes: Default::default(),
+    })
+    .expect("serialize replacement");
+    let replacement_path = state.join("registry.replacement");
+    fs::write(&replacement_path, replacement).expect("write replacement");
+    fs::rename(&replacement_path, state.join("registry.json")).expect("replace registry");
+
+    let refreshed = with_registry(&state, |registry| Ok(registry.version)).expect("refresh read");
+    assert_eq!(refreshed, 8);
+    let _ = fs::remove_dir_all(state);
+}

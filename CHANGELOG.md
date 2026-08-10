@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 1.0.4 - 2026-08-10
+
+### Added
+- Rootfs cache indexing with fingerprint validation, atomic index updates, and cache hit/miss metrics.
+- Separate bounded daemon control and workspace-transfer queues so long copies cannot monopolize control requests.
+- Kernel-assisted regular-file workspace copies using `sendfile`, with secure namespace-local receiving and atomic destination commits.
+- `copy_file_range` acceleration for snapshot file copies where the filesystem supports it.
+- Daemon health metrics for requests, transfers, bytes, cache hits/misses, and helper process launches.
+- Performance regression gating and repeatable stress/transfer benchmark commands under `tools/perf`.
+
+### Changed
+- Workspace directory archives now use a single controlled Rust tar traversal and preserve file mode and timestamps without a second recursive accounting pass.
+- Snapshot cloning prefers reflinks and then `copy_file_range` before using the portable file-copy path.
+- Performance documentation now records implementation evidence, benchmark results, and remaining privileged workload gaps in `PERFORMANCE.md`.
+- CI and release verification run the archive performance threshold in addition to formatting, lint, and test checks.
+
+### Fixed
+- Workspace file receiving now rejects unsafe targets, parent traversal, symlink components, and pre-existing destination entries inside the workspace namespace.
+- Tar-style wrapped arguments remain separated from the internal command executable, including flags such as `-C`.
+
+
 ## 1.0.3 - 2026-08-06
 
 ### Added

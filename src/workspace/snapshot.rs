@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -206,19 +207,43 @@ pub fn gc_workspace_snapshots(
     sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let to_remove = sorted.split_off(keep);
-    let mut removed = Vec::new();
-    for snapshot in &to_remove {
-        let path = PathBuf::from(&snapshot.path);
-        if let Err(err) = fs::remove_dir_all(&path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(err)
-                    .with_context(|| format!("failed to remove snapshot {}", path.display()));
-            }
-        }
-        removed.push(snapshot.clone());
-    }
-
-    Ok(removed)
+    let worker_count = to_remove.len().min(4);
+    let chunk_size = to_remove.len().div_ceil(worker_count);
+    let chunks = to_remove
+        .chunks(chunk_size)
+        .map(|chunk| chunk.to_vec())
+        .collect::<Vec<_>>();
+    let results = thread::scope(|scope| {
+        let handles = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut removed = Vec::with_capacity(chunk.len());
+                    for snapshot in chunk {
+                        let path = PathBuf::from(&snapshot.path);
+                        if let Err(error) = fs::remove_dir_all(&path) {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                return Err(error).with_context(|| {
+                                    format!("failed to remove snapshot {}", path.display())
+                                });
+                            }
+                        }
+                        removed.push(snapshot);
+                    }
+                    Ok::<_, anyhow::Error>(removed)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow!("snapshot garbage collection worker panicked"))?
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    Ok(results.into_iter().flatten().collect())
 }
 
 pub fn export_workspace_snapshot_archive(
@@ -575,7 +600,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
                 bail!("refusing to copy symlink {}", src_path.display());
             } else if file_type.is_dir() {
                 stack.push((src_path, dst_path));
-            } else if file_type.is_file() {
+            } else if file_type.is_file()
+                && !crate::fsutil::reflink_copy_file(&src_path, &dst_path)?
+                && !crate::fsutil::copy_file_range_file(&src_path, &dst_path)?
+            {
                 fs::copy(&src_path, &dst_path).with_context(|| {
                     format!(
                         "failed to copy file {} -> {}",

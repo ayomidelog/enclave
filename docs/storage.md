@@ -8,7 +8,7 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 <state_dir>/
 ├── auth/
 │   └── <provider>.token         # Stored provider tokens (0600)
-├── registry.json                # Sandbox & workspace metadata
+├── registry.json                # Compact sandbox & workspace metadata index
 ├── registry.lock                # Advisory file lock
 ├── daemon.lock                  # Exclusive daemon owner record while the daemon runs
 ├── policy.json                  # Authorization rules
@@ -38,9 +38,11 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 - `sandboxes/rootfs-cache/` stores reusable source root filesystems.
   - `debootstrap` automatically populates a suite-specific cache like `bookworm/` after a successful bootstrap.
   - `cached_rootfs` can copy from either a suite-specific cache or the generic `base/` cache.
+  - `rootfs-cache/index.json` records indexed cache entries and required-directory fingerprints so bootstrap avoids repeated recursive discovery while still detecting stale cache roots.
 - `sandboxes/<sandbox-id>/rootfs/` is the sandbox's on-disk root filesystem.
 - `sandboxes/<sandbox-id>/runtime/rootfs.mnt/` is the active mount point used while the sandbox is running.
 - `sandboxes/<sandbox-id>/runtime/session-helper` caches the internal helper binary once per sandbox so workspace starts do not recopy it for every workspace.
+- `registry.json` is written as compact JSON to reduce serialization and atomic-write overhead; use the per-sandbox and per-workspace metadata files for human-readable inspection.
 
 ## Workspace writable data
 
@@ -52,6 +54,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - `workspaces/<workspace-id>/home-merged/` is the merged OverlayFS view.
 - `workspaces/<workspace-id>/fs/` is the default workspace source directory mounted into `/home` inside the workspace.
 - When `disk_mb` is configured, that `fs/` mount target is backed by the workspace's `fs.img` loop-mounted ext4 image, and the workspace-private `/tmp` is bind-mounted from the same filesystem so both paths consume the same quota.
+- Quota-backed workspace storage is initialized and mounted when the workspace is created so the returned `filesystem_path` always refers to the actual ext4 data volume, even before the runtime is started.
 - An existing quota-backed allocation can be increased with `enclave workspace resize <sandbox> <workspace> --disk-mb N`; the command grows both the sparse image and its ext4 filesystem and updates the persisted workspace limit.
 - Resizing a running workspace temporarily stops and restarts its runtime through the normal lifecycle cleanup and hardening path. Host-backed workspace directories and allocation decreases are intentionally unsupported.
 - If `workspace_dir` is configured, Enclave mounts that directory instead.
@@ -66,6 +69,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - `workspaces/<workspace-id>/snapshots/` stores copy-based workspace snapshots.
 - `snapshot export` packages one of those snapshot directories as a tar or tar.gz archive for transfer or backup.
 - Snapshot data is currently a full copy of the workspace overlay data, which is why snapshot retention matters for disk usage.
+- Regular snapshot files use reflink or `copy_file_range` acceleration when the filesystem supports it, while preserving the existing staged copy semantics.
 
 ## Repairing stale state
 

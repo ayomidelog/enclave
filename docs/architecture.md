@@ -16,8 +16,9 @@ graph LR
 
 - **CLI** serializes commands as JSON requests: `{ "action": "...", "params": { ... } }`
 - **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "..." }`
+- The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
 - For `workspace enter` and `workspace exec`, the daemon returns runtime metadata and the CLI launches an internal helper that joins the runtime namespaces directly. Stdout/stderr still stream in real-time without passing through the daemon.
-- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run `tar` in the workspace and pipes it to a host-side `tar`. File payloads stream across the namespace boundary rather than being buffered in the JSON control protocol.
+- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; directories use the Rust tar stream. Workspace-to-host data is validated and staged before an atomic commit; payloads never enter the JSON control protocol.
 
 ## Isolation Model
 
