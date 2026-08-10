@@ -1,6 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -966,9 +967,25 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
         return;
     }
 
-    let handles = cleanups
-        .into_iter()
-        .map(|cleanup| thread::spawn(move || run_workspace_stop_cleanup(cleanup)))
+    let worker_count = cleanup_worker_count(cleanups.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from(cleanups)));
+    let handles = (0..worker_count)
+        .map(|worker_id| {
+            let queue = Arc::clone(&queue);
+            thread::Builder::new()
+                .name(format!("enclave-workspace-cleanup-{worker_id}"))
+                .spawn(move || loop {
+                    let cleanup = match queue.lock() {
+                        Ok(mut queue) => queue.pop_front(),
+                        Err(_) => return,
+                    };
+                    let Some(cleanup) = cleanup else {
+                        return;
+                    };
+                    run_workspace_stop_cleanup(cleanup);
+                })
+                .expect("failed to spawn workspace cleanup worker")
+        })
         .collect::<Vec<_>>();
 
     for handle in handles {
@@ -976,6 +993,15 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
             tracing::warn!("workspace cleanup thread panicked: {:?}", err);
         }
     }
+}
+
+fn cleanup_worker_count(job_count: usize) -> usize {
+    std::env::var("ENCLAVE_CLEANUP_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=64).contains(value))
+        .unwrap_or(4)
+        .min(job_count)
 }
 
 fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {

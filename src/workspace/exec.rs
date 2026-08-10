@@ -53,24 +53,12 @@ pub fn exec_workspace_command(
 
     let effective_cwd = sanitize_workspace_cwd(cwd);
     let output = crate::workspace::with_workspace_storage_mounted(&workspace, || {
-        spawn_workspace_command(
-            &workspace,
-            &effective_cwd,
-            command,
-            Stdio::null(),
-            Stdio::piped(),
-            Stdio::piped(),
-        )?
-        .wait_with_output()
-        .context("failed to execute workspace command via internal helper")
+        session::execute_persistent_command(&workspace, &effective_cwd, command)
     })?;
 
-    let exit_code = output
-        .status
-        .code()
-        .unwrap_or(if output.status.success() { 0 } else { 1 });
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.exit_code;
+    let stdout = output.stdout;
+    let stderr = output.stderr;
     let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
         anyhow!(
             "workspace '{}' has no runtime pid after command execution",

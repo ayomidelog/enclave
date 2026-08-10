@@ -100,6 +100,18 @@ fn workspace_tar_command_includes_executable_before_flags() {
 }
 
 #[test]
+fn gzip_tar_commands_use_compressed_archive_flags() {
+    assert_eq!(
+        super::stream::tar_create_args("/home/project", "project", true),
+        vec!["-C", "/home", "-czf", "-", "--", "project"]
+    );
+    assert_eq!(
+        super::stream::tar_extract_args_at("/home/.stage", true),
+        vec!["-C", "/home/.stage", "-xzpf", "-", "-o", "--"]
+    );
+}
+
+#[test]
 fn host_source_rejects_fifo() {
     let root = std::env::temp_dir().join(format!("enclave-cp-fifo-test-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

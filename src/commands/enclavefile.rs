@@ -1,4 +1,7 @@
+use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -215,82 +218,32 @@ fn destroy_sandbox(socket: &Path, name: &str) -> Result<()> {
 }
 
 fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Result<()> {
-    for (key, ws) in &ef.workspace {
-        let workspace_dir = match (ws.workspace_dir.as_deref(), ws.path.as_deref()) {
-            (Some(raw), _) => Some(
-                crate::enclavefile::resolve_workspace_host_dir(ef_path, raw, "workspace_dir")
-                    .with_context(|| format!("failed to resolve workspace '{}'", key))?,
-            ),
-            (None, Some(raw)) => Some(
-                crate::enclavefile::resolve_workspace_host_dir(ef_path, raw, "path")
-                    .with_context(|| format!("failed to resolve workspace '{}'", key))?,
-            ),
-            (None, None) => None,
-        };
-        tracing::info!("creating workspace '{}'...", ws.name);
-        let create_result = send_managed(
-            socket,
-            "workspace.create",
-            json!({
-                "sandbox_id": ef.sandbox.name,
-                "name": ws.name,
-                "path": workspace_dir,
-                "cpu_seconds": ws.cpu_seconds,
-                "cpu_percent": ws.cpu_percent,
-                "memory_mb": ws.memory_mb,
-                "max_procs": ws.max_procs,
-                "max_open_files": ws.max_open_files,
-                "disk_mb": ws.disk_mb,
-                "auth": ws.auth.clone(),
-                "env_tokens": ws.env_tokens.clone(),
-                "ports": ws.ports.clone(),
-            }),
-        );
-        match create_result {
-            Ok(_) => {}
-            Err(err) => {
-                let msg = format!("{err:#}");
-                if msg.contains("already exists") {
-                    tracing::info!("  workspace '{}' already exists, starting...", ws.name);
+    let definitions = ef
+        .workspace
+        .iter()
+        .enumerate()
+        .map(|(index, (key, workspace))| {
+            let workspace_dir = match (
+                workspace.workspace_dir.as_deref(),
+                workspace.path.as_deref(),
+            ) {
+                (Some(raw), _) => Some(
+                    crate::enclavefile::resolve_workspace_host_dir(ef_path, raw, "workspace_dir")
+                        .with_context(|| format!("failed to resolve workspace '{}'", key))?,
+                ),
+                (None, Some(raw)) => Some(
+                    crate::enclavefile::resolve_workspace_host_dir(ef_path, raw, "path")
+                        .with_context(|| format!("failed to resolve workspace '{}'", key))?,
+                ),
+                (None, None) => None,
+            };
+            Ok::<_, anyhow::Error>((index, key.as_str(), workspace, workspace_dir))
+        })
+        .collect::<Result<Vec<_>>>()?;
 
-                    if let Err(err) = send_managed(
-                        socket,
-                        "workspace.update",
-                        json!({
-                            "sandbox": ef.sandbox.name,
-                            "workspace": ws.name,
-                            "cpu_seconds": ws.cpu_seconds,
-                            "cpu_percent": ws.cpu_percent,
-                            "memory_mb": ws.memory_mb,
-                            "max_procs": ws.max_procs,
-                            "max_open_files": ws.max_open_files,
-                            "disk_mb": ws.disk_mb,
-                            "auth": ws.auth.clone(),
-                            "env_tokens": ws.env_tokens.clone(),
-                            "ports": ws.ports.clone(),
-                        }),
-                    ) {
-                        tracing::warn!(
-                            "failed to update auth providers for workspace '{}': {err:#}",
-                            key
-                        );
-                    }
-                    send_managed(
-                        socket,
-                        "workspace.start",
-                        json!({
-                            "sandbox": ef.sandbox.name,
-                            "workspace": ws.name,
-                        }),
-                    )
-                    .with_context(|| format!("failed to start workspace '{}'", key))?;
-                } else {
-                    return Err(err)
-                        .with_context(|| format!("failed to create workspace '{}'", key));
-                }
-            }
-        }
+    start_workspace_definitions(socket, &ef.sandbox.name, &definitions)?;
 
+    for (_, key, ws, _) in definitions {
         if let Some(run_cmd) = &ws.run {
             tracing::info!("  executing: {}", run_cmd);
             let exec_result = send(
@@ -310,4 +263,137 @@ fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Resul
     }
 
     Ok(())
+}
+
+fn start_workspace_definitions(
+    socket: &Path,
+    sandbox_name: &str,
+    definitions: &[(
+        usize,
+        &str,
+        &crate::enclavefile::WorkspaceSection,
+        Option<String>,
+    )],
+) -> Result<()> {
+    if definitions.is_empty() {
+        return Ok(());
+    }
+
+    let worker_count = std::env::var("ENCLAVE_UP_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=64).contains(value))
+        .unwrap_or(4)
+        .min(definitions.len());
+    let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..definitions.len())));
+    let (result_sender, result_receiver) = std::sync::mpsc::channel();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = Arc::clone(&queue);
+            let result_sender = result_sender.clone();
+            scope.spawn(move || loop {
+                let job_index = match queue.lock() {
+                    Ok(mut queue) => queue.pop_front(),
+                    Err(_) => return,
+                };
+                let Some(job_index) = job_index else {
+                    return;
+                };
+                let (_, key, workspace, workspace_dir) = &definitions[job_index];
+                let result = ensure_workspace_started(
+                    socket,
+                    sandbox_name,
+                    key,
+                    workspace,
+                    workspace_dir.as_deref(),
+                );
+                let _ = result_sender.send((job_index, result));
+            });
+        }
+        drop(result_sender);
+
+        let mut results = (0..definitions.len())
+            .map(|_| None)
+            .collect::<Vec<Option<Result<()>>>>();
+        for (index, result) in result_receiver {
+            results[index] = Some(result);
+        }
+        for (index, result) in results.into_iter().enumerate() {
+            if let Some(Err(error)) = result {
+                return Err(error).with_context(|| {
+                    format!("failed to start workspace '{}'", definitions[index].1)
+                });
+            }
+        }
+        Ok(())
+    })
+}
+
+fn ensure_workspace_started(
+    socket: &Path,
+    sandbox_name: &str,
+    key: &str,
+    workspace: &crate::enclavefile::WorkspaceSection,
+    workspace_dir: Option<&str>,
+) -> Result<()> {
+    tracing::info!("creating workspace '{}'...", workspace.name);
+    let create_result = send_managed(
+        socket,
+        "workspace.create",
+        json!({
+            "sandbox_id": sandbox_name,
+            "name": workspace.name,
+            "path": workspace_dir,
+            "cpu_seconds": workspace.cpu_seconds,
+            "cpu_percent": workspace.cpu_percent,
+            "memory_mb": workspace.memory_mb,
+            "max_procs": workspace.max_procs,
+            "max_open_files": workspace.max_open_files,
+            "disk_mb": workspace.disk_mb,
+            "auth": workspace.auth.clone(),
+            "env_tokens": workspace.env_tokens.clone(),
+            "ports": workspace.ports.clone(),
+        }),
+    );
+    match create_result {
+        Ok(_) => Ok(()),
+        Err(error) if format!("{error:#}").contains("already exists") => {
+            tracing::info!(
+                "  workspace '{}' already exists, starting...",
+                workspace.name
+            );
+            if let Err(update_error) = send_managed(
+                socket,
+                "workspace.update",
+                json!({
+                    "sandbox": sandbox_name,
+                    "workspace": workspace.name,
+                    "cpu_seconds": workspace.cpu_seconds,
+                    "cpu_percent": workspace.cpu_percent,
+                    "memory_mb": workspace.memory_mb,
+                    "max_procs": workspace.max_procs,
+                    "max_open_files": workspace.max_open_files,
+                    "disk_mb": workspace.disk_mb,
+                    "auth": workspace.auth.clone(),
+                    "env_tokens": workspace.env_tokens.clone(),
+                }),
+            ) {
+                tracing::warn!(
+                    "failed to update auth providers for workspace '{}': {update_error:#}",
+                    key
+                );
+            }
+            send_managed(
+                socket,
+                "workspace.start",
+                json!({
+                    "sandbox": sandbox_name,
+                    "workspace": workspace.name,
+                }),
+            )
+            .map(|_| ())
+        }
+        Err(error) => Err(error),
+    }
 }

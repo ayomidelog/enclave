@@ -13,12 +13,20 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use tar::Archive;
 use uuid::Uuid;
 
 use super::path::DestinationPlan;
 use crate::workspace::exec::{spawn_workspace_command, spawn_workspace_file_receiver};
 use crate::workspace::types::WorkspaceMetadata;
+
+struct TransferContext<'a> {
+    gzip: bool,
+    client_stream: Option<&'a UnixStream>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct UtilityCacheKey {
@@ -218,6 +226,7 @@ pub(super) fn run_host_to_workspace(
     destination: &DestinationPlan,
     source_name: &str,
     logical_bytes: u64,
+    gzip: bool,
     client_stream: Option<&UnixStream>,
 ) -> Result<TransferOutput> {
     let stage =
@@ -240,7 +249,10 @@ pub(super) fn run_host_to_workspace(
             source_name,
             logical_bytes,
             &stage,
-            client_stream,
+            TransferContext {
+                gzip,
+                client_stream,
+            },
         )
     };
     remove_workspace_staging_directory(workspace, &stage);
@@ -378,14 +390,14 @@ fn run_host_archive_to_workspace(
     source_name: &str,
     logical_bytes: u64,
     stage: &str,
-    client_stream: Option<&UnixStream>,
+    context: TransferContext<'_>,
 ) -> Result<TransferOutput> {
     let source_metadata =
         fs::metadata(source).with_context(|| format!("failed to stat host source '{}'", source))?;
     let mut workspace_tar = ChildGuard::new(spawn_workspace_command(
         workspace,
         "/home",
-        &workspace_tar_command(tar_extract_args_at(stage)),
+        &workspace_tar_command(tar_extract_args_at(stage, context.gzip)),
         Stdio::piped(),
         Stdio::null(),
         Stdio::piped(),
@@ -406,8 +418,15 @@ fn run_host_archive_to_workspace(
             .stdout
             .take()
             .context("host tar stdout unavailable")?;
-        std::io::copy(&mut host_stdout, &mut stdin)
-            .with_context(|| format!("failed to stream host tar for '{}'", source))?;
+        if context.gzip {
+            let mut encoder = GzEncoder::new(stdin, Compression::default());
+            std::io::copy(&mut host_stdout, &mut encoder)
+                .with_context(|| format!("failed to compress host tar for '{}'", source))?;
+            stdin = encoder.finish().context("failed to finish gzip stream")?;
+        } else {
+            std::io::copy(&mut host_stdout, &mut stdin)
+                .with_context(|| format!("failed to stream host tar for '{}'", source))?;
+        }
         drop(host_stdout);
         drop(stdin);
         let status = host_tar
@@ -428,7 +447,7 @@ fn run_host_archive_to_workspace(
             .context("failed to finish host tar archive")?;
         drop(archive);
     }
-    let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
+    let workspace_output = wait_child_output(&mut workspace_tar, context.client_stream)
         .context("failed to run workspace tar extractor")?;
     ensure_transfer_success("workspace tar", &workspace_output)?;
     if source_metadata.is_file() {
@@ -442,7 +461,7 @@ fn run_host_archive_to_workspace(
         workspace,
         &format!("{stage}/{source_name}"),
         &destination.final_path(source_name).to_string_lossy(),
-        client_stream,
+        context.client_stream,
     )?;
     Ok(TransferOutput {
         logical_bytes,
@@ -523,13 +542,14 @@ pub(super) fn run_workspace_to_host(
     source: &str,
     destination: &DestinationPlan,
     source_name: &str,
+    gzip: bool,
     client_stream: Option<&UnixStream>,
 ) -> Result<TransferOutput> {
     let stage = HostStagingDirectory::create(&destination.parent)?;
     let mut workspace_tar = ChildGuard::new(spawn_workspace_command(
         workspace,
         "/home",
-        &workspace_tar_command(tar_create_args(source, source_name)),
+        &workspace_tar_command(tar_create_args(source, source_name, gzip)),
         Stdio::null(),
         Stdio::piped(),
         Stdio::piped(),
@@ -540,8 +560,12 @@ pub(super) fn run_workspace_to_host(
         .take()
         .context("workspace tar stdout unavailable")?;
     set_pipe_capacity(stream.as_raw_fd());
-    let (logical_bytes, files) = extract_workspace_archive_with_stats(stream, &stage, source_name)
-        .context("failed to validate workspace tar archive")?;
+    let (logical_bytes, files) = if gzip {
+        extract_workspace_archive_with_stats(GzDecoder::new(stream), &stage, source_name)
+    } else {
+        extract_workspace_archive_with_stats(stream, &stage, source_name)
+    }
+    .context("failed to validate workspace tar archive")?;
     let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
         .context("failed to wait for workspace tar")?;
     ensure_transfer_success("workspace tar", &workspace_output)?;
@@ -794,7 +818,7 @@ fn cstring_os(value: &std::ffi::OsStr) -> Result<CString> {
     CString::new(value.as_bytes()).map_err(|_| anyhow!("path contains an interior NUL byte"))
 }
 
-fn tar_create_args(source: &str, source_name: &str) -> Vec<String> {
+pub(super) fn tar_create_args(source: &str, source_name: &str, gzip: bool) -> Vec<String> {
     let parent = Path::new(source)
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -802,18 +826,18 @@ fn tar_create_args(source: &str, source_name: &str) -> Vec<String> {
     vec![
         "-C".into(),
         parent.to_string_lossy().into_owned(),
-        "-cf".into(),
+        if gzip { "-czf" } else { "-cf" }.into(),
         "-".into(),
         "--".into(),
         source_name.into(),
     ]
 }
 
-fn tar_extract_args_at(destination: &str) -> Vec<String> {
+pub(super) fn tar_extract_args_at(destination: &str, gzip: bool) -> Vec<String> {
     vec![
         "-C".into(),
         destination.into(),
-        "-xpf".into(),
+        if gzip { "-xzpf" } else { "-xpf" }.into(),
         "-".into(),
         "-o".into(),
         "--".into(),

@@ -610,6 +610,7 @@ fn dispatch_workspace_cp(
     let src = require_param_str(params, &["src"])?;
     let dst = require_param_str(params, &["dst"])?;
     let direction = require_param_str(params, &["direction"])?;
+    let gzip = params.get("gzip").and_then(Value::as_bool).unwrap_or(false);
     let result = workspace::copy_workspace_path_with_connection(
         &config.state_dir,
         sandbox,
@@ -617,7 +618,10 @@ fn dispatch_workspace_cp(
         src,
         dst,
         direction,
-        client_stream,
+        workspace::CopyOptions {
+            gzip,
+            client_stream,
+        },
     )?;
     Ok(serde_json::to_value(result)?)
 }

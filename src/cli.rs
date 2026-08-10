@@ -105,6 +105,7 @@ pub enum InternalCommands {
     WorkspaceSessionLaunch(Box<WorkspaceSessionLaunchArgs>),
     WorkspaceSessionBootstrap(WorkspaceSessionBootstrapArgs),
     WorkspaceSessionLoop(WorkspaceSessionLoopArgs),
+    WorkspaceSessionPersistentHelper(WorkspaceSessionPersistentHelperArgs),
     WorkspaceCommand(WorkspaceCommandInternalArgs),
     WorkspaceFileReceive(WorkspaceFileReceiveArgs),
 }
@@ -351,6 +352,8 @@ pub struct WorkspaceCpArgs {
     pub dst: String,
     #[arg(long, default_value_t = false)]
     pub progress: bool,
+    #[arg(long, default_value_t = false)]
+    pub gzip: bool,
 }
 
 #[derive(Args, Debug)]
@@ -429,6 +432,36 @@ pub struct WorkspaceSessionLoopArgs {
     pub old_root: String,
     #[arg(long, value_name = "PATH")]
     pub ready_file: String,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceSessionPersistentHelperArgs {
+    #[arg(long = "helper-socket")]
+    pub helper_socket: String,
+    #[arg(long)]
+    pub runtime_pid: u32,
+    #[arg(long)]
+    pub runtime_starttime_ticks: u64,
+    #[arg(long)]
+    pub runtime_pidfd: i32,
+    #[arg(long)]
+    pub sandbox_id: String,
+    #[arg(long)]
+    pub workspace_id: String,
+    #[arg(long)]
+    pub auth_token: String,
+    #[arg(long)]
+    pub root_fd: i32,
+    #[arg(long)]
+    pub user_ns_fd: i32,
+    #[arg(long)]
+    pub mount_ns_fd: i32,
+    #[arg(long)]
+    pub pid_ns_fd: i32,
+    #[arg(long)]
+    pub net_ns_fd: i32,
+    #[arg(long)]
+    pub uts_ns_fd: i32,
 }
 
 #[derive(Args, Debug)]

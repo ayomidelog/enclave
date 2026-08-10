@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{SecondsFormat, Utc};
 use uuid::Uuid;
 
-use crate::registry::with_registry_mut;
+use crate::registry::{with_registry, with_registry_mut};
 use crate::sandbox::{effective_rootfs_path, resolve_sandbox_id, SandboxStatus};
 
 use super::ports::PublishedPortSpec;
@@ -61,11 +61,11 @@ pub fn create_workspace_with_options(
         limits.disk_bytes,
     )?;
 
-    with_registry_mut(state_dir, |registry| {
+    let sandbox = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox_entry = registry
             .sandboxes
-            .get_mut(&sandbox_id)
+            .get(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
 
         if sandbox_entry.metadata.status != SandboxStatus::Running {
@@ -87,66 +87,69 @@ pub fn create_workspace_with_options(
             }
         }
 
-        let sandbox = sandbox_entry.metadata.clone();
-        let workspace_id = generate_workspace_id(name);
-        let sandbox_dir = PathBuf::from(&sandbox.sandbox_path);
-        let workspaces_root = crate::fsutil::ensure_path_within(
+        Ok(sandbox_entry.metadata.clone())
+    })?;
+
+    let workspace_id = generate_workspace_id(name);
+    let sandbox_dir = PathBuf::from(&sandbox.sandbox_path);
+    let workspaces_root = crate::fsutil::ensure_path_within(
+        &sandbox_dir,
+        Path::new(&sandbox.workspaces_path),
+        "sandbox workspaces root",
+    )?;
+    let workspace_dir = crate::fsutil::ensure_path_within(
+        &workspaces_root,
+        &workspaces_root.join(&workspace_id),
+        "workspace directory",
+    )?;
+    let filesystem_dir = workspace_dir.join("fs");
+    let overlay_upper = workspace_dir.join("home-upper");
+    let overlay_work = workspace_dir.join("home-work");
+    let overlay_merged = workspace_dir.join("home-merged");
+    let namespaces_dir = workspace_dir.join("ns");
+    let mount_ns_ref = namespaces_dir.join("mnt.ref");
+    let pid_ns_ref = namespaces_dir.join("pid.ref");
+
+    let create_result = (|| {
+        fs::create_dir(&workspace_dir)
+            .with_context(|| format!("failed to create {}", workspace_dir.display()))?;
+        fs::create_dir(&filesystem_dir)
+            .with_context(|| format!("failed to create {}", filesystem_dir.display()))?;
+        ensure_traversable_directory_permissions(&filesystem_dir)?;
+        fs::create_dir(&overlay_upper)
+            .with_context(|| format!("failed to create {}", overlay_upper.display()))?;
+        fs::create_dir(&overlay_work)
+            .with_context(|| format!("failed to create {}", overlay_work.display()))?;
+        fs::create_dir(&overlay_merged)
+            .with_context(|| format!("failed to create {}", overlay_merged.display()))?;
+        fs::create_dir(&namespaces_dir)
+            .with_context(|| format!("failed to create {}", namespaces_dir.display()))?;
+
+        crate::fsutil::write_file_atomic(&mount_ns_ref, b"unassigned\n", 0o600)
+            .with_context(|| format!("failed to write {}", mount_ns_ref.display()))?;
+        crate::fsutil::write_file_atomic(&pid_ns_ref, b"unassigned\n", 0o600)
+            .with_context(|| format!("failed to write {}", pid_ns_ref.display()))?;
+        let home_base = crate::fsutil::ensure_path_within(
             &sandbox_dir,
-            Path::new(&sandbox.workspaces_path),
-            "sandbox workspaces root",
+            Path::new(&sandbox.home_base_path),
+            "sandbox home base",
         )?;
-        let workspace_dir = crate::fsutil::ensure_path_within(
-            &workspaces_root,
-            &workspaces_root.join(&workspace_id),
-            "workspace directory",
-        )?;
-        let filesystem_dir = workspace_dir.join("fs");
-        let overlay_upper = workspace_dir.join("home-upper");
-        let overlay_work = workspace_dir.join("home-work");
-        let overlay_merged = workspace_dir.join("home-merged");
-        let namespaces_dir = workspace_dir.join("ns");
-        let mount_ns_ref = namespaces_dir.join("mnt.ref");
-        let pid_ns_ref = namespaces_dir.join("pid.ref");
-
-        let create_result = (|| {
-            fs::create_dir(&workspace_dir)
-                .with_context(|| format!("failed to create {}", workspace_dir.display()))?;
-            fs::create_dir(&filesystem_dir)
-                .with_context(|| format!("failed to create {}", filesystem_dir.display()))?;
-            ensure_traversable_directory_permissions(&filesystem_dir)?;
-            fs::create_dir(&overlay_upper)
-                .with_context(|| format!("failed to create {}", overlay_upper.display()))?;
-            fs::create_dir(&overlay_work)
-                .with_context(|| format!("failed to create {}", overlay_work.display()))?;
-            fs::create_dir(&overlay_merged)
-                .with_context(|| format!("failed to create {}", overlay_merged.display()))?;
-            fs::create_dir(&namespaces_dir)
-                .with_context(|| format!("failed to create {}", namespaces_dir.display()))?;
-
-            crate::fsutil::write_file_atomic(&mount_ns_ref, b"unassigned\n", 0o600)
-                .with_context(|| format!("failed to write {}", mount_ns_ref.display()))?;
-            crate::fsutil::write_file_atomic(&pid_ns_ref, b"unassigned\n", 0o600)
-                .with_context(|| format!("failed to write {}", pid_ns_ref.display()))?;
-            let home_base = crate::fsutil::ensure_path_within(
-                &sandbox_dir,
-                Path::new(&sandbox.home_base_path),
-                "sandbox home base",
-            )?;
-            ensure_home_base_skeleton(&home_base)?;
-            Ok::<(), anyhow::Error>(())
-        })();
-        if let Err(err) = create_result {
-            if workspace_dir.exists() {
-                fs::remove_dir_all(&workspace_dir).with_context(|| {
-                    format!(
-                        "failed to clean up partial workspace at {}",
-                        workspace_dir.display()
-                    )
-                })?;
-            }
-            return Err(err);
+        ensure_home_base_skeleton(&home_base)?;
+        Ok::<(), anyhow::Error>(())
+    })();
+    if let Err(err) = create_result {
+        if workspace_dir.exists() {
+            fs::remove_dir_all(&workspace_dir).with_context(|| {
+                format!(
+                    "failed to clean up partial workspace at {}",
+                    workspace_dir.display()
+                )
+            })?;
         }
+        return Err(err);
+    }
 
+    let preparation = (|| {
         let home_mount_source_path = resolve_home_mount_source(home_mount_source.as_deref())?;
         let metadata = WorkspaceMetadata {
             id: workspace_id.clone(),
@@ -162,9 +165,9 @@ pub fn create_workspace_with_options(
             overlay_home_upper_path: overlay_upper.to_string_lossy().to_string(),
             overlay_home_work_path: overlay_work.to_string_lossy().to_string(),
             overlay_home_merged_path: overlay_merged.to_string_lossy().to_string(),
-            auth_providers,
-            env_tokens,
-            published_ports,
+            auth_providers: auth_providers.clone(),
+            env_tokens: env_tokens.clone(),
+            published_ports: published_ports.clone(),
             status: WorkspaceStatus::Stopped,
             runtime_pid: None,
             runtime_starttime_ticks: None,
@@ -172,7 +175,7 @@ pub fn create_workspace_with_options(
                 mount: mount_ns_ref.to_string_lossy().to_string(),
                 pid: pid_ns_ref.to_string_lossy().to_string(),
             },
-            limits,
+            limits: limits.clone(),
             assigned_ip: None,
         };
 
@@ -189,7 +192,6 @@ pub fn create_workspace_with_options(
             .and_then(|()| crate::workspace::ensure_workspace_storage_ready(&metadata))
         {
             let _ = crate::workspace::ensure_workspace_storage_unmounted(&metadata);
-            let _ = fs::remove_dir_all(&workspace_dir);
             return Err(err).with_context(|| {
                 format!(
                     "failed to initialize workspace storage {}",
@@ -197,12 +199,50 @@ pub fn create_workspace_with_options(
                 )
             });
         }
+        Ok::<WorkspaceMetadata, anyhow::Error>(metadata)
+    })();
+    let metadata = match preparation {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&workspace_dir);
+            return Err(error);
+        }
+    };
 
+    let commit_result = with_registry_mut(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox_entry = registry
+            .sandboxes
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        if sandbox_entry.metadata.status != SandboxStatus::Running {
+            bail!(
+                "sandbox '{}' is stopped; start it before creating workspaces",
+                sandbox_entry.metadata.id
+            );
+        }
+        if sandbox_entry
+            .workspaces
+            .values()
+            .any(|existing| existing.name == name)
+        {
+            bail!(
+                "workspace name '{}' already exists in sandbox '{}'",
+                name,
+                sandbox_entry.metadata.id
+            );
+        }
         sandbox_entry
             .workspaces
             .insert(workspace_id.clone(), metadata.clone());
-        Ok(metadata)
-    })
+        Ok(metadata.clone())
+    });
+    if let Err(err) = commit_result {
+        let _ = crate::workspace::ensure_workspace_storage_unmounted(&metadata);
+        let _ = fs::remove_dir_all(&workspace_dir);
+        return Err(err).context("failed to commit workspace metadata");
+    }
+    commit_result
 }
 
 fn resolve_home_mount_source(home_mount_source: Option<&str>) -> Result<Option<String>> {

@@ -1,5 +1,6 @@
 mod idmap;
 mod namespace_cache;
+mod persistent;
 mod process;
 mod script;
 mod security;
@@ -21,6 +22,9 @@ use super::types::WorkspaceMetadata;
 
 pub(crate) use idmap::workspace_bind_mount_idmap_option;
 pub(crate) use namespace_cache::{duplicate_for_child, raw_fds};
+pub(crate) use persistent::{
+    execute_persistent_command, output_to_string, MAX_HELPER_OUTPUT_BYTES,
+};
 pub use process::{
     count_processes_in_pid_namespace, process_alive, process_matches, process_resource_usage,
     process_starttime_ticks, read_namespace_refs,
@@ -436,6 +440,9 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
         if !process_matches(pid, expected_starttime_ticks) {
             result.stopped_pids.insert(pid);
             namespace_cache::invalidate(pid, expected_starttime_ticks);
+            if let Some(starttime_ticks) = expected_starttime_ticks {
+                persistent::invalidate(pid, starttime_ticks);
+            }
             continue;
         }
         match process::verify_signal_target(pid, expected_starttime_ticks) {
@@ -449,6 +456,9 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
                     );
                     result.stopped_pids.insert(pid);
                     namespace_cache::invalidate(pid, expected_starttime_ticks);
+                    if let Some(starttime_ticks) = expected_starttime_ticks {
+                        persistent::invalidate(pid, starttime_ticks);
+                    }
                     continue;
                 }
                 return Err(err);
@@ -473,6 +483,9 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
         } else {
             result.stopped_pids.insert(pid);
             namespace_cache::invalidate(pid, expected_starttime_ticks);
+            if let Some(starttime_ticks) = expected_starttime_ticks {
+                persistent::invalidate(pid, starttime_ticks);
+            }
         }
     }
 

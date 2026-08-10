@@ -27,6 +27,8 @@ copy benchmark to the sparse 5 GiB host-to-workspace workload unless `--src`
 and `--dst` are supplied explicitly.
 
 Add `--progress` to `enclave workspace cp` for opt-in stderr progress updates;
+add `--gzip` for directory archive compression when CPU-for-bandwidth trade-offs
+are favorable;
 the JSON control response and normal stdout remain unchanged.
 ```
 

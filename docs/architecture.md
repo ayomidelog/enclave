@@ -18,8 +18,9 @@ graph LR
 - **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "..." }`
 - The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
 - Worker counts are bounded and benchmark-configurable with `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`; default production values remain 6 and 2.
-- For `workspace enter` and `workspace exec`, the daemon returns runtime metadata and the CLI launches an internal helper that joins the runtime namespaces directly. Stdout/stderr still stream in real-time without passing through the daemon.
+- For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly. Daemon-managed `workspace exec` uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. Stdout/stderr remain outside the daemon JSON control response.
 - Repeated daemon-managed namespace operations reuse an identity-checked descriptor cache keyed by runtime PID and start time. Cached descriptors are duplicated only for the helper process and invalidated when namespace identities change.
+- Workspace creation and Enclavefile startup use bounded fan-out for independent work, while registry commits and run-command ordering remain deterministic.
 - For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; host-to-workspace directories use a host `tar` stream and workspace-to-host data uses Rust-validated extraction. Both directions stage output before an atomic commit; payloads never enter the JSON control protocol.
 
 ## Isolation Model

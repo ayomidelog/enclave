@@ -30,6 +30,7 @@ pub(crate) use control::{
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;
+pub(crate) use cp::CopyOptions;
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
 pub use exec::exec_workspace_command;
 pub use logs::workspace_logs;

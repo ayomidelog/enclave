@@ -4,6 +4,24 @@
 
 No unreleased changes.
 
+## 1.0.6 - 2026-08-10
+
+### Added
+- Persistent workspace session helpers for daemon-managed `workspace exec` requests, reusing validated namespace descriptors and runtime identity checks across repeated commands.
+- Optional `enclave workspace cp --gzip` compression for directory transfers in either direction.
+- Bounded worker pools for Enclavefile workspace startup, workspace cleanup, workspace statistics, and process-status collection.
+
+### Changed
+- Workspace creation performs filesystem, namespace-reference, metadata, and storage preparation outside the global registry lock, then commits metadata with a final identity-checked transaction.
+- Persistent command output is drained with nonblocking polling and bounded buffers so stdout/stderr cannot deadlock the helper or consume unbounded memory.
+- Persistent helper sockets use short, private runtime paths and inherited pidfds/namespace descriptors to avoid repeated `/proc` lookups and to reject reused runtime identities.
+- Directory archive transfers use gzip-aware tar flags only when requested; regular-file transfers retain the direct kernel streaming path.
+- Performance documentation now records the new helper, worker-pool, gzip, and release-candidate validation paths.
+
+### Fixed
+- A malformed or unauthorized persistent-helper request no longer terminates the helper process; it is rejected and logged while the helper remains available for the owning client.
+- Dead pidfds reporting error or hangup events are no longer treated as live workspace runtimes.
+
 ## 1.0.5 - 2026-08-10
 
 ### Added

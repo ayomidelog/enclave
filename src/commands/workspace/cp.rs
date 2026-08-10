@@ -39,6 +39,7 @@ pub(super) fn run_workspace_cp(
             PathSide::Host => "host_to_workspace",
             PathSide::Workspace => "workspace_to_host",
         },
+        "gzip": args.gzip,
     });
     let response = if args.progress {
         send_with_progress(ctx.socket, request)?

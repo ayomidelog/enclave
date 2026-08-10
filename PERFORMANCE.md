@@ -36,7 +36,7 @@ measurements below use the same host and harness as the baseline.
 | Registry cache correctness | pass | `registry_cache_refreshes_after_external_atomic_replace` |
 | Rootfs cache index | pass | Indexed required-directory fingerprints plus suite/source/architecture/time/tool/digest metadata with invalidation tests in `sandbox::cache` |
 | Registry repeated read | `1.78x` faster (`0.020666869s` -> `0.011633155s`) | `tools/perf/bench.sh registry` |
-| Single-file archive creation | `10.45x` faster (`1.824116700s` -> `0.174572298s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 |
+| Single-file archive creation | `36.14x` faster (`1.352945186s` -> `0.037432050s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 release-candidate run |
 | Many-file archive creation | `0.71x` relative to external tar (`17.856997685s` -> `25.299986690s`) | 100,000 x 4 KiB fixture, `ENCLAVE_PERF_MANY_FILES=100000 tools/perf/bench.sh many-files`; host-to-workspace uses streamed host tar while workspace-to-host remains Rust-validated extraction |
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
@@ -48,7 +48,7 @@ measurements below use the same host and harness as the baseline.
 | Kernel transfer path | `splice` attempted before `sendfile` for regular host files | short-write, EINTR, EOF, and unsupported-kernel handling covered by the direct transfer path |
 | Daemon ping, 10 CLI invocations | p50 `0.07s`, p95 `0.16s` | Current branch, `tools/perf/bench.sh ping --iterations 10` |
 | Daemon health, 8 CLI invocations | p50 `0.06s`, p95 `0.14s` | Current branch, `tools/perf/bench.sh health --iterations 8`, August 10, 2026 |
-| Concurrent daemon control requests | 64 requests in `1.039178s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64` |
+| Concurrent daemon control requests | 64 requests in `0.901267s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64`, August 10, 2026 |
 | Workspace readiness | event-driven wait | `inotify` + bounded timeout; covered by the privileged lifecycle fixture |
 | Privileged workspace cp regression fixture | 14.00 s | Files, directories, metadata preservation, symlink rejection, and both directions passed |
 | Privileged integration suite | 12/12 passed in `59.80s` | Auth, lifecycle, snapshot, quota, resize, tmp isolation, workspace copy, and host-mount fixtures; August 10, 2026 |
@@ -56,6 +56,12 @@ measurements below use the same host and harness as the baseline.
 | Workspace cp, 5 GiB | `59.004412s` (`86.773 MiB/s`) | Privileged namespace fixture with sparse 5 GiB source, `ENCLAVE_PERF_5G=1`, August 10, 2026 |
 | Deterministic transfer fixtures | pass | `tools/perf/fixtures.sh`: 4 KiB, 1 MiB, sparse 1 GiB/5 GiB, 100,000 files by default, ten-level tree |
 | Copy progress reporting | opt-in, stderr-only | `enclave workspace cp ... --progress`; no progress text enters stdout or JSON protocol |
+| Directory transfer compression | opt-in gzip stream | `enclave workspace cp ... --gzip`; gzip is applied only to directory tar streams and tar-flag coverage is unit-tested |
+| Persistent workspace exec | one helper per live runtime | Repeated daemon-managed commands reuse one identity-checked helper, inherited namespace descriptors, and a pidfd; output draining is poll-based and capped at 16 MiB per stream |
+| Workspace startup fan-out | bounded client concurrency | `ENCLAVE_UP_WORKERS` defaults to 4 and parallelizes independent workspace requests while preserving definition-order errors and run-command order |
+| Workspace cleanup fan-out | bounded daemon concurrency | `ENCLAVE_CLEANUP_WORKERS` defaults to 4 and replaces one unbounded cleanup thread per workspace |
+| Workspace observation | bounded collection workers | `ENCLAVE_STATS_WORKERS` and `ENCLAVE_PS_WORKERS` default to 4 and collect live runtime data from one registry snapshot |
+| Concurrent workspace preparation | reduced registry lock scope | Filesystem and storage preparation occurs before the final registry commit, allowing independent creates to progress without holding the global registry lock |
 | Syscall profiling harness | pass | `tools/perf/trace.sh` wraps `strace -f -c` without making tracing a runtime dependency |
 
 ## Interpretation
@@ -64,7 +70,9 @@ The build time is compilation time, not application runtime, and is not treated 
 an optimization success metric. Ping remains within subprocess and host noise in
 this ten-sample run; the measured speedup claim is limited to registry reads.
 The 5 GiB transfer and workspace lifecycle rows now have measurements from the
-privileged namespace fixture. The many-file workspace-to-host direction remains
+privileged namespace fixture. The release-candidate privileged suite for 1.0.6
+passed all 12 tests in `51.13s` after adding the persistent helper and bounded
+fan-out paths. The many-file workspace-to-host direction remains
 slower than external tar because it retains Rust-side archive validation and
 staging; that safety boundary is intentional and is the next focused tuning
 target. Correctness and safety gates remain higher priority than a favorable

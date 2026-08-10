@@ -63,7 +63,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 
 ## Runtime and snapshot data
 
-- `workspaces/<workspace-id>/runtime/` stores runtime metadata such as PID, logs, and readiness markers.
+- `workspaces/<workspace-id>/runtime/` stores runtime metadata such as PID, logs, and readiness markers. Persistent `workspace exec` diagnostics are appended to `session-helper.log`; the helper socket itself uses a short private path under `/run/enclave` and is removed when the runtime identity is invalidated.
 - `workspaces/<workspace-id>/ns/` stores mount and PID namespace references while a runtime is active. Enclave validates these references with the recorded runtime PID and start time before treating a workspace as active.
 - `daemon.lock` is held exclusively while the daemon owns the state directory. Its JSON record identifies the daemon PID, socket, binary version, binary path, and start time; the file is removed when the owning daemon exits normally.
 - `workspaces/<workspace-id>/snapshots/` stores copy-based workspace snapshots.

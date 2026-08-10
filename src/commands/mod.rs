@@ -52,6 +52,9 @@ pub fn run() -> Result<()> {
             InternalCommands::WorkspaceSessionLoop(args) => {
                 internal::run_workspace_session_loop(args)
             }
+            InternalCommands::WorkspaceSessionPersistentHelper(args) => {
+                internal::run_workspace_session_persistent_helper(args)
+            }
             InternalCommands::WorkspaceCommand(args) => internal::run_workspace_command(args),
             InternalCommands::WorkspaceFileReceive(args) => {
                 internal::run_workspace_file_receive(args)
