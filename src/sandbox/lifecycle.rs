@@ -11,6 +11,7 @@ use crate::registry::{
 
 use super::bootstrap;
 use super::mounts;
+use super::setup_cache;
 use super::types::{
     BootstrapMethod, SandboxLimits, SandboxLimitsUpdate, SandboxListItem, SandboxMetadata,
     SandboxStatus, SandboxStatusReport,
@@ -443,13 +444,10 @@ pub fn exec_setup_command(
     let cache_marker = if cache_setup {
         let digest = setup_digest.ok_or_else(|| anyhow!("cached setup requires setup_digest"))?;
         let index = setup_index.ok_or_else(|| anyhow!("cached setup requires setup_index"))?;
-        let marker = PathBuf::from(&rootfs_path)
-            .join("../runtime/setup-cache")
-            .join(format!("{digest}-{index}.done"));
-        if marker.exists() {
+        if setup_cache::is_complete(Path::new(&rootfs_path), digest, index)? {
             return Ok(serde_json::json!({"cached": true, "exit_code": 0}));
         }
-        Some(marker)
+        Some((digest.to_string(), index))
     } else {
         None
     };
@@ -479,12 +477,8 @@ pub fn exec_setup_command(
         );
     }
 
-    if let Some(marker) = cache_marker {
-        if let Some(parent) = marker.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create setup cache {}", parent.display()))?;
-        }
-        crate::fsutil::write_file_atomic(&marker, b"completed\n", 0o600)?;
+    if let Some((digest, index)) = cache_marker {
+        setup_cache::mark_complete(Path::new(&rootfs_path), &digest, index)?;
     }
 
     Ok(serde_json::json!({

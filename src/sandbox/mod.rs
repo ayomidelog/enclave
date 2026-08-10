@@ -5,6 +5,7 @@ pub mod cgroup;
 mod features;
 mod lifecycle;
 mod mounts;
+mod setup_cache;
 mod types;
 mod util;
 
