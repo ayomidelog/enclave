@@ -16,8 +16,17 @@ graph LR
 
 - **CLI** serializes commands as JSON requests: `{ "action": "...", "params": { ... } }`
 - **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "..." }`
-- For `workspace enter` and `workspace exec`, the daemon returns runtime metadata and the CLI launches an internal helper that joins the runtime namespaces directly. Stdout/stderr still stream in real-time without passing through the daemon.
-- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run `tar` in the workspace and pipes it to a host-side `tar`. File payloads stream across the namespace boundary rather than being buffered in the JSON control protocol.
+- The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
+- Worker counts are bounded and benchmark-configurable with `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`; default production values remain 6 and 2.
+- For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly. Daemon-managed `workspace exec` uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. Stdout/stderr remain outside the daemon JSON control response.
+- Repeated daemon-managed namespace operations reuse an identity-checked descriptor cache keyed by runtime PID and start time. Cached descriptors are duplicated only for the helper process and invalidated when namespace identities change.
+- Workspace creation and Enclavefile startup use bounded fan-out for independent work, while registry commits and run-command ordering remain deterministic.
+- Batch workspace wipe takes one registry snapshot, performs independent cleanup through the bounded cleanup pool, and commits each confirmed deletion separately so a later failure cannot retain already-cleaned records.
+- Registry mutations carry a monotonic generation counter used as durable evidence that a resource snapshot is not being committed over a newer lifecycle change.
+- Host bridge/NAT initialization has a daemon-wide mutex; workspace-specific veth, DNS, and namespace setup remains outside that critical section.
+- Setup caching is an explicit CLI opt-in. The daemon stores per-command completion markers under the sandbox runtime directory and only writes them after successful setup execution.
+- For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; host-to-workspace directories use a Rust-controlled tar stream and workspace-to-host data uses Rust-validated extraction. Both directions stage output before an atomic commit; payloads never enter the JSON control protocol.
+- Host-to-workspace directory archives are produced by a single Rust traversal that validates entry types while writing the stream; workspace-to-host extraction retains independent archive validation before its atomic commit.
 
 ## Isolation Model
 
@@ -75,7 +84,7 @@ flowchart LR
 
 ## Namespace Handoff (workspace enter / exec)
 
-Both `workspace enter` and `workspace exec` use a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that opens `/proc/<pid>/ns/*`, calls `setns()`, and executes directly inside the workspace namespaces. This means output streams in real-time and the daemon does not proxy process stdio.
+Both `workspace enter` and `workspace exec` use a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that uses identity-checked cached descriptors when available, calls `setns()`, and executes directly inside the workspace namespaces. Descriptors are reopened when the PID start time or namespace identities change. This means output streams in real-time and the daemon does not proxy process stdio.
 
 The sequence for `workspace enter`:
 

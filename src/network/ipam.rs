@@ -11,11 +11,48 @@ const POOL_START: u8 = 10;
 
 const POOL_END: u8 = 254;
 
-pub fn allocate_ip(used: &BTreeSet<u8>) -> Result<String> {
-    for octet in POOL_START..=POOL_END {
-        if !used.contains(&octet) {
-            return Ok(format_ip(octet));
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpBitmap {
+    bits: [u64; 4],
+}
+
+impl IpBitmap {
+    pub fn from_used(used: &BTreeSet<u8>) -> Self {
+        let mut bitmap = Self { bits: [0; 4] };
+        for &octet in used {
+            bitmap.mark(octet);
         }
+        bitmap
+    }
+
+    pub fn mark(&mut self, octet: u8) {
+        if !(POOL_START..=POOL_END).contains(&octet) {
+            return;
+        }
+        let index = (octet - POOL_START) as usize;
+        self.bits[index / 64] |= 1_u64 << (index % 64);
+    }
+
+    pub fn allocate(&self) -> Option<u8> {
+        for (word_index, &word) in self.bits.iter().enumerate() {
+            let available = !word;
+            if available == 0 {
+                continue;
+            }
+            let bit = available.trailing_zeros() as usize;
+            let index = word_index * 64 + bit;
+            let octet = POOL_START as usize + index;
+            if octet <= POOL_END as usize {
+                return Some(octet as u8);
+            }
+        }
+        None
+    }
+}
+
+pub fn allocate_ip(used: &BTreeSet<u8>) -> Result<String> {
+    if let Some(octet) = IpBitmap::from_used(used).allocate() {
+        return Ok(format_ip(octet));
     }
     bail!(
         "IP address pool exhausted ({}.{}.{}.{}–{}.{}.{}.{})",

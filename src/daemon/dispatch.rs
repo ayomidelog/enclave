@@ -144,6 +144,7 @@ pub(crate) fn dispatch(
             "pid": std::process::id(),
             "state_dir": config.state_dir.to_string_lossy(),
             "socket_path": config.socket_path.to_string_lossy(),
+            "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {
             let report = crate::doctor::run_doctor(&config.state_dir)?;
@@ -178,7 +179,21 @@ pub(crate) fn dispatch(
         Action::SandboxExecSetup => {
             let selector = require_param_str(&request.params, &["sandbox", "sandbox_id"])?;
             let command = require_param_str(&request.params, &["command"])?;
-            sandbox::exec_setup_command(&config.state_dir, selector, command)
+            let cache_setup = request
+                .params
+                .get("cache_setup")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let setup_digest = request.params.get("setup_digest").and_then(Value::as_str);
+            let setup_index = request.params.get("setup_index").and_then(Value::as_u64);
+            sandbox::exec_setup_command(
+                &config.state_dir,
+                selector,
+                command,
+                cache_setup,
+                setup_digest,
+                setup_index,
+            )
         }
         Action::ProcessList => {
             let entries = workspace::list_process_status(&config.state_dir)?;
@@ -195,6 +210,21 @@ pub(crate) fn dispatch(
         }
         Action::WorkspaceDestroy => {
             dispatch_workspace_target(&request.params, config, "destroy", port_publisher)
+        }
+        Action::WorkspaceWipe => {
+            let workspaces = workspace::list_workspaces(&config.state_dir, None)?;
+            for workspace in &workspaces {
+                port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
+            }
+            let report = workspace::destroy_all_workspaces(&config.state_dir)?;
+            if !report.errors.is_empty() {
+                bail!(
+                    "workspace wipe completed with {} error(s): {}",
+                    report.errors.len(),
+                    report.errors.join("; ")
+                );
+            }
+            Ok(serde_json::to_value(report)?)
         }
         Action::WorkspaceStatus => {
             dispatch_workspace_target(&request.params, config, "status", port_publisher)
@@ -609,6 +639,7 @@ fn dispatch_workspace_cp(
     let src = require_param_str(params, &["src"])?;
     let dst = require_param_str(params, &["dst"])?;
     let direction = require_param_str(params, &["direction"])?;
+    let gzip = params.get("gzip").and_then(Value::as_bool).unwrap_or(false);
     let result = workspace::copy_workspace_path_with_connection(
         &config.state_dir,
         sandbox,
@@ -616,7 +647,10 @@ fn dispatch_workspace_cp(
         src,
         dst,
         direction,
-        client_stream,
+        workspace::CopyOptions {
+            gzip,
+            client_stream,
+        },
     )?;
     Ok(serde_json::to_value(result)?)
 }
@@ -826,6 +860,7 @@ enum Action {
     WorkspaceStart,
     WorkspaceStop,
     WorkspaceDestroy,
+    WorkspaceWipe,
     WorkspaceStatus,
     WorkspaceStats,
     WorkspaceStatsList,
@@ -877,6 +912,7 @@ impl Action {
             "workspace.start" => Self::WorkspaceStart,
             "workspace.stop" => Self::WorkspaceStop,
             "workspace.destroy" => Self::WorkspaceDestroy,
+            "workspace.wipe" => Self::WorkspaceWipe,
             "workspace.status" => Self::WorkspaceStatus,
             "workspace.stats" => Self::WorkspaceStats,
             "workspace.stats.list" => Self::WorkspaceStatsList,

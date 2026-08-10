@@ -32,6 +32,9 @@ jobs:
         run: |
           cargo test --all-targets -- --skip integration:: --skip stress::
 
+      - name: Performance regression gate
+        run: tools/perf/check-thresholds.sh
+
   build-and-release:
     needs: verify
     runs-on: ubuntu-latest

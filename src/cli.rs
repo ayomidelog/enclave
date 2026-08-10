@@ -19,6 +19,8 @@ pub struct Cli {
     pub socket: PathBuf,
     #[arg(long, global = true)]
     pub start_daemon: bool,
+    #[arg(long, global = true, help = "emit phase timing diagnostics to stderr")]
+    pub verbose: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -105,7 +107,9 @@ pub enum InternalCommands {
     WorkspaceSessionLaunch(Box<WorkspaceSessionLaunchArgs>),
     WorkspaceSessionBootstrap(WorkspaceSessionBootstrapArgs),
     WorkspaceSessionLoop(WorkspaceSessionLoopArgs),
+    WorkspaceSessionPersistentHelper(WorkspaceSessionPersistentHelperArgs),
     WorkspaceCommand(WorkspaceCommandInternalArgs),
+    WorkspaceFileReceive(WorkspaceFileReceiveArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -225,12 +229,16 @@ pub struct DoctorArgs {
 pub struct UpArgs {
     #[arg(long)]
     pub rebuild: bool,
+    #[arg(long)]
+    pub cache_setup: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct RestartArgs {
     #[arg(long)]
     pub rebuild: bool,
+    #[arg(long)]
+    pub cache_setup: bool,
 }
 
 #[derive(Args, Debug)]
@@ -348,6 +356,10 @@ pub struct WorkspaceCpArgs {
     pub src: String,
     #[arg(value_parser = parse_non_empty_arg)]
     pub dst: String,
+    #[arg(long, default_value_t = false)]
+    pub progress: bool,
+    #[arg(long, default_value_t = false)]
+    pub gzip: bool,
 }
 
 #[derive(Args, Debug)]
@@ -429,6 +441,36 @@ pub struct WorkspaceSessionLoopArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct WorkspaceSessionPersistentHelperArgs {
+    #[arg(long = "helper-socket")]
+    pub helper_socket: String,
+    #[arg(long)]
+    pub runtime_pid: u32,
+    #[arg(long)]
+    pub runtime_starttime_ticks: u64,
+    #[arg(long)]
+    pub runtime_pidfd: i32,
+    #[arg(long)]
+    pub sandbox_id: String,
+    #[arg(long)]
+    pub workspace_id: String,
+    #[arg(long)]
+    pub auth_token: String,
+    #[arg(long)]
+    pub root_fd: i32,
+    #[arg(long)]
+    pub user_ns_fd: i32,
+    #[arg(long)]
+    pub mount_ns_fd: i32,
+    #[arg(long)]
+    pub pid_ns_fd: i32,
+    #[arg(long)]
+    pub net_ns_fd: i32,
+    #[arg(long)]
+    pub uts_ns_fd: i32,
+}
+
+#[derive(Args, Debug)]
 pub struct WorkspaceCommandInternalArgs {
     #[arg(long)]
     pub runtime_pid: u32,
@@ -440,8 +482,42 @@ pub struct WorkspaceCommandInternalArgs {
     pub sandbox_id: String,
     #[arg(long)]
     pub workspace_id: String,
+    #[arg(long)]
+    pub root_fd: Option<i32>,
+    #[arg(long)]
+    pub user_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub mount_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub pid_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub net_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub uts_ns_fd: Option<i32>,
     #[arg(value_name = "COMMAND", required = true, num_args = 1.., trailing_var_arg = true)]
     pub command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceFileReceiveArgs {
+    #[arg(long)]
+    pub runtime_pid: u32,
+    #[arg(long)]
+    pub runtime_starttime_ticks: u64,
+    #[arg(long)]
+    pub target: String,
+    #[arg(long)]
+    pub root_fd: Option<i32>,
+    #[arg(long)]
+    pub user_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub mount_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub pid_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub net_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub uts_ns_fd: Option<i32>,
 }
 
 #[derive(Args, Debug)]

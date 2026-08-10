@@ -3,6 +3,7 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use anyhow::{bail, Context, Result};
 
@@ -10,6 +11,7 @@ use super::types::WorkspaceMetadata;
 
 const DISK_IMAGE_NAME: &str = "fs.img";
 const MIN_DISK_BYTES: u64 = 32 * 1024 * 1024;
+static DISK_BACKEND_CHECK: OnceLock<Result<(), String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WorkspaceDiskResize {
@@ -56,10 +58,8 @@ pub fn ensure_workspace_storage_ready(workspace: &WorkspaceMetadata) -> Result<(
 
 pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Result<()> {
     let workspace_root = Path::new(&workspace.workspace_path);
-    let mut mountpoints = mountpoints_at_or_below(workspace_root)?;
-    if mountpoints.is_empty() && is_mountpoint(workspace_root)? {
-        mountpoints.push(workspace_root.to_path_buf());
-    }
+    let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
+    let mountpoints = snapshot.at_or_below(workspace_root);
 
     let owner_is_dead = workspace_owner_is_dead(workspace);
     for path in mountpoints {
@@ -72,7 +72,7 @@ pub(crate) fn unmount_mounts_at_or_below_excluding(
     root: &Path,
     excluded_roots: &[PathBuf],
 ) -> Result<usize> {
-    let mountpoints = mountpoints_at_or_below(root)?;
+    let mountpoints = crate::fsutil::MountInfoSnapshot::load()?.at_or_below(root);
     let mut unmounted = 0usize;
     for path in mountpoints {
         if excluded_roots
@@ -96,15 +96,23 @@ fn workspace_owner_is_dead(workspace: &WorkspaceMetadata) -> bool {
         })
 }
 
+#[cfg(test)]
+fn parse_mountinfo_mountpoints(mountinfo: &str) -> Vec<PathBuf> {
+    crate::fsutil::MountInfoSnapshot::parse(mountinfo).at_or_below(Path::new("/"))
+}
+
 fn unmount_workspace_path(path: &Path, owner_is_dead: bool) -> Result<()> {
     match unmount_path(path, 0) {
         Ok(()) => Ok(()),
         Err(error) if is_already_unmounted_errno(error.raw_os_error()) => Ok(()),
-        Err(_) if owner_is_dead => match unmount_path(path, libc::MNT_DETACH) {
-            Ok(()) => Ok(()),
-            Err(error) if is_already_unmounted_errno(error.raw_os_error()) => Ok(()),
-            Err(error) => Err(unmount_error(path, &error)),
-        },
+        Err(_) if owner_is_dead => {
+            crate::perf::record_cleanup_retry();
+            match unmount_path(path, libc::MNT_DETACH) {
+                Ok(()) => Ok(()),
+                Err(error) if is_already_unmounted_errno(error.raw_os_error()) => Ok(()),
+                Err(error) => Err(unmount_error(path, &error)),
+            }
+        }
         Err(error) => Err(unmount_error(path, &error)),
     }
 }
@@ -114,6 +122,7 @@ fn unmount_path(path: &Path, flags: i32) -> std::io::Result<()> {
         .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
     let result = unsafe { libc::umount2(path.as_ptr(), flags) };
     if result == 0 {
+        crate::perf::record_unmount();
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
@@ -156,10 +165,7 @@ fn mount_holders(path: &Path) -> Vec<String> {
         let Ok(mountinfo) = fs::read_to_string(mountinfo_path) else {
             continue;
         };
-        if !parse_mountinfo_mountpoints(&mountinfo)
-            .iter()
-            .any(|mount| mount == path)
-        {
+        if !crate::fsutil::MountInfoSnapshot::parse(&mountinfo).contains(path) {
             continue;
         }
         let namespace = fs::read_link(entry.path().join("ns/mnt"))
@@ -182,49 +188,6 @@ fn format_errno(errno: Option<i32>) -> String {
         Some(value) => format!("errno({value})"),
         None => "unknown".to_string(),
     }
-}
-
-fn mountpoints_at_or_below(root: &Path) -> Result<Vec<PathBuf>> {
-    let mountinfo = fs::read_to_string("/proc/self/mountinfo")
-        .context("failed to read /proc/self/mountinfo")?;
-    let mut mountpoints = parse_mountinfo_mountpoints(&mountinfo)
-        .into_iter()
-        .filter(|mountpoint| mountpoint == root || mountpoint.starts_with(root))
-        .collect::<Vec<_>>();
-    mountpoints.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    mountpoints.dedup();
-    Ok(mountpoints)
-}
-
-fn parse_mountinfo_mountpoints(mountinfo: &str) -> Vec<PathBuf> {
-    mountinfo
-        .lines()
-        .filter_map(|line| line.split_whitespace().nth(4))
-        .map(unescape_mountinfo_path)
-        .map(PathBuf::from)
-        .collect()
-}
-
-fn unescape_mountinfo_path(path: &str) -> String {
-    let mut result = String::with_capacity(path.len());
-    let bytes = path.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\'
-            && index + 3 < bytes.len()
-            && bytes[index + 1..=index + 3].iter().all(u8::is_ascii_digit)
-        {
-            let value = (bytes[index + 1] - b'0') * 64
-                + (bytes[index + 2] - b'0') * 8
-                + (bytes[index + 3] - b'0');
-            result.push(value as char);
-            index += 4;
-        } else {
-            result.push(bytes[index] as char);
-            index += 1;
-        }
-    }
-    result
 }
 
 pub fn increase_workspace_disk_allocation(
@@ -286,10 +249,30 @@ pub fn increase_workspace_disk_allocation(
             image.display()
         );
     }
-    if is_mountpoint(Path::new(&workspace.filesystem_path))? {
+    if crate::fsutil::is_mountpoint(Path::new(&workspace.filesystem_path))? {
         bail!(
             "workspace disk image {} is still mounted; stop the workspace and retry",
             image.display()
+        );
+    }
+
+    let check = Command::new("e2fsck")
+        .args(["-p"])
+        .arg(&image)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to check workspace ext4 filesystem {}",
+                image.display()
+            )
+        })?;
+    if !matches!(check.status.code(), Some(0 | 1)) {
+        let stderr = String::from_utf8_lossy(&check.stderr);
+        bail!(
+            "failed to check workspace ext4 filesystem {} ({}): {}",
+            image.display(),
+            check.status,
+            stderr.trim()
         );
     }
 
@@ -350,7 +333,7 @@ where
     }
 
     let mountpoint = Path::new(&workspace.filesystem_path);
-    let was_mounted = is_mountpoint(mountpoint)?;
+    let was_mounted = crate::fsutil::is_mountpoint(mountpoint)?;
     if !was_mounted {
         ensure_workspace_storage_ready(workspace)?;
     }
@@ -366,7 +349,7 @@ where
 
 fn mount_disk_image_if_needed(workspace: &WorkspaceMetadata) -> Result<()> {
     let mountpoint = Path::new(&workspace.filesystem_path);
-    if is_mountpoint(mountpoint)? {
+    if crate::fsutil::is_mountpoint(mountpoint)? {
         return Ok(());
     }
     fs::create_dir_all(mountpoint)
@@ -441,35 +424,25 @@ fn initialize_disk_image(workspace: &WorkspaceMetadata) -> Result<()> {
 }
 
 fn ensure_disk_backend_available() -> Result<()> {
-    for command in [
-        "truncate",
-        "mkfs.ext4",
-        "resize2fs",
-        "mount",
-        "umount",
-        "mountpoint",
-    ] {
-        let status = Command::new("sh")
-            .args(["-c", &format!("command -v {command} >/dev/null 2>&1")])
-            .status()
-            .with_context(|| format!("failed to probe availability of {}", command))?;
-        if !status.success() {
-            bail!(
-                "workspace disk quota requires '{}' to be available on the host",
-                command
-            );
+    let result = DISK_BACKEND_CHECK.get_or_init(|| {
+        for command in ["truncate", "mkfs.ext4", "resize2fs", "e2fsck", "mount"] {
+            let status = Command::new("sh")
+                .args(["-c", &format!("command -v {command} >/dev/null 2>&1")])
+                .status()
+                .map_err(|error| format!("failed to probe availability of {command}: {error}"))?;
+            if !status.success() {
+                return Err(format!(
+                    "workspace disk quota requires '{}' to be available on the host",
+                    command
+                ));
+            }
         }
-    }
-    Ok(())
-}
-
-fn is_mountpoint(path: &Path) -> Result<bool> {
-    let status = Command::new("mountpoint")
-        .arg("-q")
-        .arg(path)
-        .status()
-        .with_context(|| format!("failed to check mountpoint {}", path.display()))?;
-    Ok(status.success())
+        Ok(())
+    });
+    result
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!(error))
+        .copied()
 }
 
 pub(crate) fn workspace_disk_image_path(workspace: &WorkspaceMetadata) -> PathBuf {

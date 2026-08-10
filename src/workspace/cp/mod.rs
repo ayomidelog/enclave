@@ -18,9 +18,15 @@ use self::path::{
     validate_direction_paths, validate_host_destination, validate_host_source, Direction,
 };
 use self::stream::{
-    run_host_to_workspace, run_workspace_to_host, validate_workspace_source,
+    run_host_to_workspace, run_workspace_to_host, validate_workspace_source, workspace_path_exists,
     workspace_path_has_symlink, workspace_path_is_directory,
 };
+
+#[derive(Clone, Copy)]
+pub(crate) struct CopyOptions<'a> {
+    pub(crate) gzip: bool,
+    pub(crate) client_stream: Option<&'a UnixStream>,
+}
 
 pub fn copy_workspace_path(
     state_dir: &Path,
@@ -37,7 +43,10 @@ pub fn copy_workspace_path(
         src,
         dst,
         direction,
-        None,
+        CopyOptions {
+            gzip: false,
+            client_stream: None,
+        },
     )
 }
 
@@ -48,8 +57,10 @@ pub(crate) fn copy_workspace_path_with_connection(
     src: &str,
     dst: &str,
     direction: &str,
-    client_stream: Option<&UnixStream>,
+    options: CopyOptions<'_>,
 ) -> Result<WorkspaceCpResult> {
+    let gzip = options.gzip;
+    let client_stream = options.client_stream;
     let direction = Direction::parse(direction)?;
     validate_direction_paths(src, dst, direction)?;
     let workspace = load_workspace(state_dir, sandbox_selector, workspace_selector)?;
@@ -66,7 +77,7 @@ pub(crate) fn copy_workspace_path_with_connection(
     let transfer = crate::workspace::with_workspace_storage_mounted(&workspace, || {
         if direction == Direction::HostToWorkspace {
             workspace_path_has_symlink(&workspace, dst, client_stream)?;
-        } else {
+        } else if workspace_path_exists(&workspace, src, client_stream)? {
             validate_workspace_source(&workspace, src, client_stream)?;
         }
         let source_is_dir = match direction {
@@ -75,6 +86,9 @@ pub(crate) fn copy_workspace_path_with_connection(
                 workspace_path_is_directory(&workspace, src, client_stream)?
             }
         };
+        if gzip && !source_is_dir {
+            bail!("--gzip is supported only for directory workspace copies");
+        }
         let destination_is_dir = match direction {
             Direction::HostToWorkspace => {
                 workspace_path_is_directory(&workspace, dst, client_stream)?
@@ -94,13 +108,22 @@ pub(crate) fn copy_workspace_path_with_connection(
                 &destination,
                 &source_name,
                 host_source_bytes.unwrap_or_default(),
+                gzip,
                 client_stream,
             ),
-            Direction::WorkspaceToHost => {
-                run_workspace_to_host(&workspace, src, &destination, &source_name, client_stream)
-            }
+            Direction::WorkspaceToHost => run_workspace_to_host(
+                &workspace,
+                src,
+                &destination,
+                &source_name,
+                gzip,
+                client_stream,
+            ),
         }
     })?;
+
+    crate::perf::record_transfer(transfer.logical_bytes);
+    crate::perf::record_transfer_files(transfer.files);
 
     Ok(WorkspaceCpResult {
         workspace_id: workspace.id,

@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+No unreleased changes.
+
+## 1.0.7 - 2026-08-10
+
+### Added
+- Explicit `--cache-setup` opt-in for `enclave up` and `enclave restart`. Successful setup commands are recorded independently using a digest of the sandbox identity, bootstrap method, suite, and ordered command list.
+- Additional repeatable performance-harness workloads for sandbox and workspace listing, workspace statistics, process status, and diagnostics, plus opt-in daemon phase timing through global `--verbose`.
+
+### Changed
+- Sandbox rootfs bind mounting now uses direct `mount(2)` calls with the existing validation and propagation behavior, avoiding repeated mount-utility process launches on the common workspace lifecycle path.
+- Workspace lifecycle operations use bounded workers and identity-checked registry commits so independent setup, startup, cleanup, statistics, and status work can progress without holding the global registry lock during slow filesystem, namespace, network, or process operations.
+- `workspace wipe` plans cleanup from one registry snapshot, processes independent work concurrently, and commits each confirmed deletion individually.
+- Shared bridge and NAT initialization is serialized separately from workspace-specific networking, preventing duplicate host setup without unnecessarily serializing workspace starts.
+- Host-to-workspace directory copies validate archive entries while producing the Rust-controlled tar stream in a single traversal, eliminating the host `tar` subprocess and a second metadata walk.
+- Generated `SPEED.md` and `PERFORMANCE.md` benchmark reports are now ignored; repeatable commands and operational guidance live in `tools/perf/README.md`.
+
+### Fixed
+- Setup-cache filesystem policy is isolated behind validated marker-path and atomic-write helpers, preventing invalid digests or command indexes from escaping the sandbox cache root.
+- The lifecycle integration benchmark reports warm workspace-start and persistent-exec timings without changing lifecycle assertions or normal command output contracts.
+
+## 1.0.6 - 2026-08-10
+
+### Added
+- Persistent workspace session helpers for daemon-managed `workspace exec` requests, reusing validated namespace descriptors and runtime identity checks across repeated commands.
+- Optional `enclave workspace cp --gzip` compression for directory transfers in either direction.
+- Bounded worker pools for Enclavefile workspace startup, workspace cleanup, workspace statistics, and process-status collection.
+
+### Changed
+- `workspace wipe` now uses one daemon-side batch plan with bounded cleanup workers and per-resource registry deletion after confirmed cleanup.
+- Registry generations advance on durable mutations, and workspace start/stop operations release the registry lock during namespace, storage, network, and process work before committing identity-checked results.
+- Snapshot creation releases the registry lock before mounting storage and copying workspace data, preventing multi-gigabyte snapshots from blocking unrelated metadata requests.
+- Concurrent workspace starts now serialize only shared bridge/NAT initialization, preventing duplicate host-network setup while preserving parallel per-workspace networking.
+- `enclave up --cache-setup` and `enclave restart --cache-setup` add an explicit digest-keyed setup cache; successful commands are marked individually and default setup behavior remains uncached.
+- Host-to-workspace directory copies now combine source safety validation and archive generation in one Rust traversal, removing a host `tar` process and duplicate metadata walk.
+- Global `--verbose` emits opt-in phase timing diagnostics to stderr for benchmark and troubleshooting runs.
+- Workspace creation performs filesystem, namespace-reference, metadata, and storage preparation outside the global registry lock, then commits metadata with a final identity-checked transaction.
+- Persistent command output is drained with nonblocking polling and bounded buffers so stdout/stderr cannot deadlock the helper or consume unbounded memory.
+- Persistent helper sockets use short, private runtime paths and inherited pidfds/namespace descriptors to avoid repeated `/proc` lookups and to reject reused runtime identities.
+- Directory archive transfers use gzip-aware tar flags only when requested; regular-file transfers retain the direct kernel streaming path.
+- Performance documentation now records the new helper, worker-pool, gzip, and release-candidate validation paths.
+
+### Fixed
+- A malformed or unauthorized persistent-helper request no longer terminates the helper process; it is rejected and logged while the helper remains available for the owning client.
+- Dead pidfds reporting error or hangup events are no longer treated as live workspace runtimes.
+
+## 1.0.5 - 2026-08-10
+
+### Added
+- Identity-checked namespace descriptor reuse for daemon-managed workspace commands and transfers, with explicit invalidation after session shutdown.
+- Bounded daemon health histograms and lifecycle counters for request latency, phase latency, lock wait, transfers, files, mounts, unmounts, and cleanup retries.
+- Opt-in `enclave workspace cp --progress` status output on stderr.
+- Deterministic performance fixtures for 4 KiB, 1 MiB, sparse 1 GiB/5 GiB, many-file, and deep-tree workloads.
+- Bounded bitmap IP allocation for deterministic network address selection under registry reconciliation.
+
+### Changed
+- Cleanup plans load and parse `/proc/self/mountinfo` once per transaction before reverse-depth unmounting.
+- Host-to-workspace directory copies stream the host archive producer directly into the namespace-local extractor after source validation, reducing metadata-heavy transfer overhead.
+- Regular host-file transfers attempt `splice` before `sendfile` to reduce kernel/userspace copying on supported filesystems and pipes.
+- Performance documentation now includes privileged 5 GiB transfer and full lifecycle measurements.
+
+## 1.0.4 - 2026-08-10
+
+### Added
+- Rootfs cache indexing with fingerprint validation, atomic index updates, and cache hit/miss metrics.
+- Separate bounded daemon control and workspace-transfer queues so long copies cannot monopolize control requests.
+- Kernel-assisted regular-file workspace copies using `sendfile`, with secure namespace-local receiving and atomic destination commits.
+- `copy_file_range` acceleration for snapshot file copies where the filesystem supports it.
+- Daemon health metrics for requests, transfers, bytes, cache hits/misses, and helper process launches.
+- Performance regression gating and repeatable stress/transfer benchmark commands under `tools/perf`.
+
+### Changed
+- Workspace directory archives now use a single controlled Rust tar traversal and preserve file mode and timestamps without a second recursive accounting pass.
+- Snapshot cloning prefers reflinks and then `copy_file_range` before using the portable file-copy path.
+- Performance documentation now records implementation evidence, benchmark results, and remaining privileged workload gaps in `PERFORMANCE.md`.
+- CI and release verification run the archive performance threshold in addition to formatting, lint, and test checks.
+
+### Fixed
+- Workspace file receiving now rejects unsafe targets, parent traversal, symlink components, and pre-existing destination entries inside the workspace namespace.
+- Tar-style wrapped arguments remain separated from the internal command executable, including flags such as `-C`.
+
+
 ## 1.0.3 - 2026-08-06
 
 ### Added

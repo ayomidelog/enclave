@@ -227,24 +227,9 @@ fn run_workspace_wipe(ctx: &WorkspaceCommandContext<'_>) -> Result<()> {
         return Ok(());
     }
 
-    let total = workspaces.len();
-    for workspace in workspaces {
-        tracing::info!(
-            "destroying workspace '{}' in sandbox '{}'...",
-            workspace.id,
-            workspace.sandbox_id
-        );
-        send_managed(
-            ctx.socket,
-            "workspace.destroy",
-            json!({
-                "sandbox": workspace.sandbox_id,
-                "workspace": workspace.id,
-            }),
-        )?;
-    }
-
-    println!("deleted {total} workspaces");
+    let response = send_managed(ctx.socket, "workspace.wipe", json!({}))?;
+    let report: crate::workspace::BatchDestroyReport = serde_json::from_value(response)?;
+    println!("deleted {} workspaces", report.removed.len());
     Ok(())
 }
 

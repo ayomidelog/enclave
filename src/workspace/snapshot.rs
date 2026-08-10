@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -41,88 +42,88 @@ pub fn create_workspace_snapshot(
     workspace_selector: &str,
     snapshot_name: Option<&str>,
 ) -> Result<WorkspaceSnapshotInfo> {
-    with_registry(state_dir, |registry| {
+    let workspace = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
             .get(&sandbox_id)
-            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
         let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
-        let workspace = sandbox
+        sandbox
             .workspaces
             .get(&workspace_id)
             .cloned()
-            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_selector))
+    })?;
 
-        let snapshot_name = snapshot_name
-            .map(str::to_string)
-            .unwrap_or_else(default_snapshot_name);
-        validate_snapshot_name(&snapshot_name)?;
-        let workspace_dir = PathBuf::from(&workspace.workspace_path);
-        let workspace_dir =
-            crate::fsutil::ensure_path_within(&workspace_dir, &workspace_dir, "workspace path")?;
+    let snapshot_name = snapshot_name
+        .map(str::to_string)
+        .unwrap_or_else(default_snapshot_name);
+    validate_snapshot_name(&snapshot_name)?;
+    let workspace_dir = PathBuf::from(&workspace.workspace_path);
+    let workspace_dir =
+        crate::fsutil::ensure_path_within(&workspace_dir, &workspace_dir, "workspace path")?;
 
-        let snapshots_dir = workspace_dir.join("snapshots");
-        fs::create_dir_all(&snapshots_dir)
-            .with_context(|| format!("failed to create {}", snapshots_dir.display()))?;
-        let snapshot_dir = crate::fsutil::ensure_path_within(
+    let snapshots_dir = workspace_dir.join("snapshots");
+    fs::create_dir_all(&snapshots_dir)
+        .with_context(|| format!("failed to create {}", snapshots_dir.display()))?;
+    let snapshot_dir = crate::fsutil::ensure_path_within(
+        &workspace_dir,
+        &snapshot_path(&workspace, &snapshot_name),
+        "snapshot path",
+    )?;
+    if snapshot_dir.exists() {
+        bail!("snapshot '{}' already exists", snapshot_name);
+    }
+    fs::create_dir_all(&snapshot_dir)
+        .with_context(|| format!("failed to create {}", snapshot_dir.display()))?;
+
+    let snapshot_result = crate::workspace::with_workspace_storage_mounted(&workspace, || {
+        let snapshot_fs = snapshot_dir.join("fs");
+        let snapshot_home_upper = snapshot_dir.join("home-upper");
+        let filesystem_path = crate::fsutil::ensure_path_within(
             &workspace_dir,
-            &snapshot_path(&workspace, &snapshot_name),
-            "snapshot path",
+            Path::new(&workspace.filesystem_path),
+            "workspace filesystem path",
         )?;
+        let overlay_upper_path = crate::fsutil::ensure_path_within(
+            &workspace_dir,
+            Path::new(&workspace.overlay_home_upper_path),
+            "workspace home upper path",
+        )?;
+        copy_dir_recursive(&filesystem_path, &snapshot_fs)?;
+        copy_dir_recursive(&overlay_upper_path, &snapshot_home_upper)?;
+
+        let metadata = SnapshotMetadata {
+            name: snapshot_name.clone(),
+            created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+        };
+        let metadata_path = snapshot_dir.join("snapshot.json");
+        crate::fsutil::write_file_atomic(
+            &metadata_path,
+            serde_json::to_string_pretty(&metadata)?.as_bytes(),
+            0o600,
+        )
+        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+
+        Ok::<WorkspaceSnapshotInfo, anyhow::Error>(WorkspaceSnapshotInfo {
+            name: metadata.name,
+            created_at: metadata.created_at,
+            path: snapshot_dir.to_string_lossy().to_string(),
+        })
+    });
+    if let Err(err) = snapshot_result {
         if snapshot_dir.exists() {
-            bail!("snapshot '{}' already exists", snapshot_name);
+            fs::remove_dir_all(&snapshot_dir).with_context(|| {
+                format!(
+                    "failed to clean up partial snapshot directory {}",
+                    snapshot_dir.display()
+                )
+            })?;
         }
-        fs::create_dir_all(&snapshot_dir)
-            .with_context(|| format!("failed to create {}", snapshot_dir.display()))?;
-
-        let snapshot_result = crate::workspace::with_workspace_storage_mounted(&workspace, || {
-            let snapshot_fs = snapshot_dir.join("fs");
-            let snapshot_home_upper = snapshot_dir.join("home-upper");
-            let filesystem_path = crate::fsutil::ensure_path_within(
-                &workspace_dir,
-                Path::new(&workspace.filesystem_path),
-                "workspace filesystem path",
-            )?;
-            let overlay_upper_path = crate::fsutil::ensure_path_within(
-                &workspace_dir,
-                Path::new(&workspace.overlay_home_upper_path),
-                "workspace home upper path",
-            )?;
-            copy_dir_recursive(&filesystem_path, &snapshot_fs)?;
-            copy_dir_recursive(&overlay_upper_path, &snapshot_home_upper)?;
-
-            let metadata = SnapshotMetadata {
-                name: snapshot_name.clone(),
-                created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
-            };
-            let metadata_path = snapshot_dir.join("snapshot.json");
-            crate::fsutil::write_file_atomic(
-                &metadata_path,
-                serde_json::to_string_pretty(&metadata)?.as_bytes(),
-                0o600,
-            )
-            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-
-            Ok::<WorkspaceSnapshotInfo, anyhow::Error>(WorkspaceSnapshotInfo {
-                name: metadata.name,
-                created_at: metadata.created_at,
-                path: snapshot_dir.to_string_lossy().to_string(),
-            })
-        });
-        if let Err(err) = snapshot_result {
-            if snapshot_dir.exists() {
-                fs::remove_dir_all(&snapshot_dir).with_context(|| {
-                    format!(
-                        "failed to clean up partial snapshot directory {}",
-                        snapshot_dir.display()
-                    )
-                })?;
-            }
-            return Err(err);
-        }
-        snapshot_result
-    })
+        return Err(err);
+    }
+    snapshot_result
 }
 
 pub fn list_workspace_snapshots(
@@ -206,19 +207,43 @@ pub fn gc_workspace_snapshots(
     sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let to_remove = sorted.split_off(keep);
-    let mut removed = Vec::new();
-    for snapshot in &to_remove {
-        let path = PathBuf::from(&snapshot.path);
-        if let Err(err) = fs::remove_dir_all(&path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                return Err(err)
-                    .with_context(|| format!("failed to remove snapshot {}", path.display()));
-            }
-        }
-        removed.push(snapshot.clone());
-    }
-
-    Ok(removed)
+    let worker_count = to_remove.len().min(4);
+    let chunk_size = to_remove.len().div_ceil(worker_count);
+    let chunks = to_remove
+        .chunks(chunk_size)
+        .map(|chunk| chunk.to_vec())
+        .collect::<Vec<_>>();
+    let results = thread::scope(|scope| {
+        let handles = chunks
+            .into_iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut removed = Vec::with_capacity(chunk.len());
+                    for snapshot in chunk {
+                        let path = PathBuf::from(&snapshot.path);
+                        if let Err(error) = fs::remove_dir_all(&path) {
+                            if error.kind() != std::io::ErrorKind::NotFound {
+                                return Err(error).with_context(|| {
+                                    format!("failed to remove snapshot {}", path.display())
+                                });
+                            }
+                        }
+                        removed.push(snapshot);
+                    }
+                    Ok::<_, anyhow::Error>(removed)
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow!("snapshot garbage collection worker panicked"))?
+            })
+            .collect::<Result<Vec<_>>>()
+    })?;
+    Ok(results.into_iter().flatten().collect())
 }
 
 pub fn export_workspace_snapshot_archive(
@@ -228,31 +253,30 @@ pub fn export_workspace_snapshot_archive(
     snapshot_name: &str,
     output: &Path,
 ) -> Result<WorkspaceSnapshotArchiveInfo> {
-    with_registry(state_dir, |registry| {
+    let workspace = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
             .get(&sandbox_id)
-            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
         let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
-        let workspace = sandbox
+        sandbox
             .workspaces
             .get(&workspace_id)
             .cloned()
-            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-        validate_snapshot_name(snapshot_name)?;
-
-        let snapshot_dir = snapshot_directory(&workspace, snapshot_name)?;
-        ensure_snapshot_layout(&snapshot_dir, snapshot_name)?;
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        export_snapshot_archive(&snapshot_dir, snapshot_name, output)?;
-        Ok(WorkspaceSnapshotArchiveInfo {
-            name: snapshot_name.to_string(),
-            archive_path: output.to_string_lossy().to_string(),
-        })
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_selector))
+    })?;
+    validate_snapshot_name(snapshot_name)?;
+    let snapshot_dir = snapshot_directory(&workspace, snapshot_name)?;
+    ensure_snapshot_layout(&snapshot_dir, snapshot_name)?;
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    export_snapshot_archive(&snapshot_dir, snapshot_name, output)?;
+    Ok(WorkspaceSnapshotArchiveInfo {
+        name: snapshot_name.to_string(),
+        archive_path: output.to_string_lossy().to_string(),
     })
 }
 
@@ -264,73 +288,73 @@ pub fn import_workspace_snapshot_archive(
     snapshot_name: Option<&str>,
     replace: bool,
 ) -> Result<WorkspaceSnapshotInfo> {
-    with_registry(state_dir, |registry| {
+    let workspace = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
             .get(&sandbox_id)
-            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
         let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
-        let workspace = sandbox
+        sandbox
             .workspaces
             .get(&workspace_id)
             .cloned()
-            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_selector))
+    })?;
 
-        let workspace_dir = PathBuf::from(&workspace.workspace_path);
-        let workspace_dir =
-            crate::fsutil::ensure_path_within(&workspace_dir, &workspace_dir, "workspace path")?;
-        let snapshots_dir = workspace_dir.join("snapshots");
-        fs::create_dir_all(&snapshots_dir)
-            .with_context(|| format!("failed to create {}", snapshots_dir.display()))?;
+    let workspace_dir = PathBuf::from(&workspace.workspace_path);
+    let workspace_dir =
+        crate::fsutil::ensure_path_within(&workspace_dir, &workspace_dir, "workspace path")?;
+    let snapshots_dir = workspace_dir.join("snapshots");
+    fs::create_dir_all(&snapshots_dir)
+        .with_context(|| format!("failed to create {}", snapshots_dir.display()))?;
 
-        let temp_dir = temporary_workspace("snapshot-import");
-        fs::create_dir_all(&temp_dir)
-            .with_context(|| format!("failed to create {}", temp_dir.display()))?;
+    let temp_dir = temporary_workspace("snapshot-import");
+    fs::create_dir_all(&temp_dir)
+        .with_context(|| format!("failed to create {}", temp_dir.display()))?;
 
-        let outcome = (|| {
-            extract_archive(archive, &temp_dir)?;
-            let extracted_root = locate_extracted_snapshot(&temp_dir)?;
-            let metadata = read_snapshot_metadata(&extracted_root)?;
-            let target_name = snapshot_name.unwrap_or(&metadata.name);
-            validate_snapshot_name(target_name)?;
+    let outcome = (|| {
+        extract_archive(archive, &temp_dir)?;
+        let extracted_root = locate_extracted_snapshot(&temp_dir)?;
+        let metadata = read_snapshot_metadata(&extracted_root)?;
+        let target_name = snapshot_name.unwrap_or(&metadata.name);
+        validate_snapshot_name(target_name)?;
 
-            let destination = snapshots_dir.join(target_name);
-            if destination.exists() {
-                if !replace {
-                    bail!(
-                        "snapshot '{}' already exists for workspace '{}'; pass --replace to overwrite it",
-                        target_name,
-                        workspace.name
-                    );
-                }
-                fs::remove_dir_all(&destination)
-                    .with_context(|| format!("failed to remove {}", destination.display()))?;
+        let destination = snapshots_dir.join(target_name);
+        if destination.exists() {
+            if !replace {
+                bail!(
+                    "snapshot '{}' already exists for workspace '{}'; pass --replace to overwrite it",
+                    target_name,
+                    workspace.name
+                );
             }
-            copy_dir_recursive(&extracted_root, &destination)?;
+            fs::remove_dir_all(&destination)
+                .with_context(|| format!("failed to remove {}", destination.display()))?;
+        }
+        copy_dir_recursive(&extracted_root, &destination)?;
 
-            let final_metadata = SnapshotMetadata {
-                name: target_name.to_string(),
-                created_at: metadata.created_at,
-            };
-            let metadata_path = destination.join("snapshot.json");
-            crate::fsutil::write_file_atomic(
-                &metadata_path,
-                serde_json::to_string_pretty(&final_metadata)?.as_bytes(),
-                0o600,
-            )
-            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+        let final_metadata = SnapshotMetadata {
+            name: target_name.to_string(),
+            created_at: metadata.created_at,
+        };
+        let metadata_path = destination.join("snapshot.json");
+        crate::fsutil::write_file_atomic(
+            &metadata_path,
+            serde_json::to_string_pretty(&final_metadata)?.as_bytes(),
+            0o600,
+        )
+        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
 
-            Ok::<WorkspaceSnapshotInfo, anyhow::Error>(WorkspaceSnapshotInfo {
-                name: final_metadata.name,
-                created_at: final_metadata.created_at,
-                path: destination.to_string_lossy().to_string(),
-            })
-        })();
+        Ok::<WorkspaceSnapshotInfo, anyhow::Error>(WorkspaceSnapshotInfo {
+            name: final_metadata.name,
+            created_at: final_metadata.created_at,
+            path: destination.to_string_lossy().to_string(),
+        })
+    })();
 
-        let _ = fs::remove_dir_all(&temp_dir);
-        outcome
-    })
+    let _ = fs::remove_dir_all(&temp_dir);
+    outcome
 }
 
 pub fn restore_workspace_snapshot(
@@ -575,7 +599,10 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
                 bail!("refusing to copy symlink {}", src_path.display());
             } else if file_type.is_dir() {
                 stack.push((src_path, dst_path));
-            } else if file_type.is_file() {
+            } else if file_type.is_file()
+                && !crate::fsutil::reflink_copy_file(&src_path, &dst_path)?
+                && !crate::fsutil::copy_file_range_file(&src_path, &dst_path)?
+            {
                 fs::copy(&src_path, &dst_path).with_context(|| {
                     format!(
                         "failed to copy file {} -> {}",

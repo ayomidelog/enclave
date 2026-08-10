@@ -23,5 +23,6 @@ fn registry_roundtrip_serialization() {
     let raw = serde_json::to_string_pretty(&registry).expect("serialize");
     let decoded: Registry = serde_json::from_str(&raw).expect("deserialize");
     assert_eq!(decoded.version, REGISTRY_VERSION);
+    assert_eq!(decoded.generation, 0);
     assert!(decoded.sandboxes.is_empty());
 }

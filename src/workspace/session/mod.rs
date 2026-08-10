@@ -1,4 +1,6 @@
 mod idmap;
+mod namespace_cache;
+mod persistent;
 mod process;
 mod script;
 mod security;
@@ -7,6 +9,7 @@ mod userns;
 use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,6 +21,10 @@ use anyhow::{bail, Context, Result};
 use super::types::WorkspaceMetadata;
 
 pub(crate) use idmap::workspace_bind_mount_idmap_option;
+pub(crate) use namespace_cache::{duplicate_for_child, raw_fds};
+pub(crate) use persistent::{
+    execute_persistent_command, output_to_string, MAX_HELPER_OUTPUT_BYTES,
+};
 pub use process::{
     count_processes_in_pid_namespace, process_alive, process_matches, process_resource_usage,
     process_starttime_ticks, read_namespace_refs,
@@ -179,58 +186,115 @@ pub fn start_session(
         bail!("failed to launch workspace session (status {status})");
     }
 
-    let started = Instant::now();
-    while started.elapsed() < START_TIMEOUT {
-        if ready_file.exists() {
-            let pid = match process::read_pid_file(&pid_file) {
-                Ok(pid) => pid,
-                Err(_) if !pid_file.exists() => {
-                    thread::sleep(Duration::from_millis(50));
-                    continue;
-                }
-                Err(other_err) => return Err(other_err),
-            };
-            if !process_alive(pid) {
-                let tail = process::read_log_tail(&log_file, 20).unwrap_or_default();
-                let rendered_tail = if tail.trim().is_empty() {
-                    "<empty>".to_string()
-                } else {
-                    tail
-                };
-                bail!(
-                    "workspace session pid {} exited before startup completed. log file: {}. recent log:\n{}",
-                    pid,
-                    log_file.display(),
-                    rendered_tail
-                );
-            }
-
-            let starttime_ticks = process_starttime_ticks(pid)?;
-            let (mount_ns, pid_ns) = read_namespace_refs(pid)?;
-            return Ok(SessionInfo {
-                pid,
-                starttime_ticks,
-                mount_ns,
-                pid_ns,
-            });
-        }
-        thread::sleep(Duration::from_millis(50));
+    wait_for_session_ready(&ready_file, &pid_file, &log_file, START_TIMEOUT)?;
+    let pid = process::read_pid_file(&pid_file)?;
+    if !process_alive(pid) {
+        let tail = process::read_log_tail(&log_file, 20).unwrap_or_default();
+        let rendered_tail = if tail.trim().is_empty() {
+            "<empty>".to_string()
+        } else {
+            tail
+        };
+        bail!(
+            "workspace session pid {} exited before startup completed. log file: {}. recent log:\n{}",
+            pid,
+            log_file.display(),
+            rendered_tail
+        );
     }
 
-    let tail = process::read_log_tail(&log_file, 20).unwrap_or_default();
-    let rendered_tail = if tail.trim().is_empty() {
-        "<empty>".to_string()
-    } else {
-        tail
+    let starttime_ticks = process_starttime_ticks(pid)?;
+    let (mount_ns, pid_ns) = read_namespace_refs(pid)?;
+    Ok(SessionInfo {
+        pid,
+        starttime_ticks,
+        mount_ns,
+        pid_ns,
+    })
+}
+
+fn wait_for_session_ready(
+    ready_file: &Path,
+    pid_file: &Path,
+    log_file: &Path,
+    timeout: Duration,
+) -> Result<()> {
+    let parent = ready_file
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("session ready path has no parent"))?;
+    let parent_cstr = std::ffi::CString::new(parent.as_os_str().as_bytes())
+        .context("session ready path contains an interior NUL byte")?;
+    let inotify_fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+    if inotify_fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to initialize inotify");
+    }
+    let watch = unsafe {
+        libc::inotify_add_watch(
+            inotify_fd,
+            parent_cstr.as_ptr(),
+            libc::IN_CLOSE_WRITE | libc::IN_CREATE | libc::IN_MOVED_TO,
+        )
     };
-    bail!(
-        "workspace session did not become ready within {}s (expected files: {}, {}). log file: {}. recent log:\n{}",
-        START_TIMEOUT.as_secs(),
-        pid_file.display(),
-        ready_file.display(),
-        log_file.display(),
-        rendered_tail
-    )
+    if watch < 0 {
+        let error = std::io::Error::last_os_error();
+        unsafe { libc::close(inotify_fd) };
+        return Err(error).context("failed to watch session readiness directory");
+    }
+
+    let started = Instant::now();
+    let mut events = [0u8; 4096];
+    loop {
+        if ready_file.exists() && pid_file.exists() {
+            unsafe {
+                libc::inotify_rm_watch(inotify_fd, watch);
+                libc::close(inotify_fd);
+            }
+            return Ok(());
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            unsafe {
+                libc::inotify_rm_watch(inotify_fd, watch);
+                libc::close(inotify_fd);
+            }
+            let tail = process::read_log_tail(log_file, 20).unwrap_or_default();
+            let rendered_tail = if tail.trim().is_empty() {
+                "<empty>".to_string()
+            } else {
+                tail
+            };
+            bail!(
+                "workspace session did not become ready within {}s (expected files: {}, {}). log file: {}. recent log:\n{}",
+                timeout.as_secs(),
+                pid_file.display(),
+                ready_file.display(),
+                log_file.display(),
+                rendered_tail
+            );
+        }
+
+        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+        let mut descriptor = libc::pollfd {
+            fd: inotify_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let poll_result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if poll_result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            unsafe {
+                libc::inotify_rm_watch(inotify_fd, watch);
+                libc::close(inotify_fd);
+            }
+            return Err(error).context("failed waiting for session readiness");
+        }
+        if poll_result > 0 {
+            let _ = unsafe { libc::read(inotify_fd, events.as_mut_ptr().cast(), events.len()) };
+        }
+    }
 }
 
 fn session_helper_path(workspace: &WorkspaceMetadata) -> PathBuf {
@@ -375,6 +439,10 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
     for (pid, expected_starttime_ticks) in targets.iter().copied() {
         if !process_matches(pid, expected_starttime_ticks) {
             result.stopped_pids.insert(pid);
+            namespace_cache::invalidate(pid, expected_starttime_ticks);
+            if let Some(starttime_ticks) = expected_starttime_ticks {
+                persistent::invalidate(pid, starttime_ticks);
+            }
             continue;
         }
         match process::verify_signal_target(pid, expected_starttime_ticks) {
@@ -387,6 +455,10 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
                         pid
                     );
                     result.stopped_pids.insert(pid);
+                    namespace_cache::invalidate(pid, expected_starttime_ticks);
+                    if let Some(starttime_ticks) = expected_starttime_ticks {
+                        persistent::invalidate(pid, starttime_ticks);
+                    }
                     continue;
                 }
                 return Err(err);
@@ -410,6 +482,10 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
             result.failed_pids.insert(pid);
         } else {
             result.stopped_pids.insert(pid);
+            namespace_cache::invalidate(pid, expected_starttime_ticks);
+            if let Some(starttime_ticks) = expected_starttime_ticks {
+                persistent::invalidate(pid, starttime_ticks);
+            }
         }
     }
 

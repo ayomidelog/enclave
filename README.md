@@ -20,6 +20,7 @@ One file, one command, entire environment running.
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
 - [Roadmap](docs/roadmap.md)
+- [Performance Harness](tools/perf/README.md)
 
 ## Runtime recovery
 

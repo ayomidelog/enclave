@@ -21,6 +21,7 @@ fn action_parse_known_actions() {
         "workspace.start",
         "workspace.stop",
         "workspace.destroy",
+        "workspace.wipe",
         "workspace.status",
         "workspace.stats",
         "workspace.stats.list",

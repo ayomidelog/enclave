@@ -4,8 +4,8 @@ use super::path::{
 };
 use super::stream::{
     extract_workspace_archive, open_host_directory, validate_archive_entry_type,
-    validate_archive_path, wait_child_output, workspace_tar_command, ChildGuard,
-    HostStagingDirectory,
+    validate_archive_path, wait_child_output, workspace_tar_command, write_host_directory_archive,
+    ChildGuard, HostStagingDirectory,
 };
 
 #[test]
@@ -13,6 +13,26 @@ fn source_name_rejects_root_and_parent_entries() {
     assert!(source_name("/").is_err());
     assert!(source_name("/tmp/..").is_err());
     assert_eq!(source_name("/tmp/source.txt").unwrap(), "source.txt");
+}
+
+#[test]
+fn host_directory_archive_validates_entries_and_reports_stats() {
+    let root = std::env::temp_dir().join(format!(
+        "enclave-cp-archive-walk-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(root.join("nested")).unwrap();
+    std::fs::write(root.join("nested/file.txt"), b"payload").unwrap();
+    let mut archive = Vec::new();
+    let (bytes, files) =
+        write_host_directory_archive(root.to_str().unwrap(), "project", &mut archive).unwrap();
+    assert_eq!(bytes, 7);
+    assert_eq!(files, 1);
+    let mut reader = tar::Archive::new(archive.as_slice());
+    let entries = reader.entries().unwrap().count();
+    assert_eq!(entries, 3);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -96,6 +116,18 @@ fn workspace_tar_command_includes_executable_before_flags() {
     assert_eq!(
         workspace_tar_command(vec!["-C".into(), "/home".into(), "-cf".into(), "-".into()]),
         vec!["tar", "-C", "/home", "-cf", "-"]
+    );
+}
+
+#[test]
+fn gzip_tar_commands_use_compressed_archive_flags() {
+    assert_eq!(
+        super::stream::tar_create_args("/home/project", "project", true),
+        vec!["-C", "/home", "-czf", "-", "--", "project"]
+    );
+    assert_eq!(
+        super::stream::tar_extract_args_at("/home/.stage", true),
+        vec!["-C", "/home/.stage", "-xzpf", "-", "-o", "--"]
     );
 }
 

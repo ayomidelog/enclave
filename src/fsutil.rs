@@ -1,6 +1,8 @@
-use std::fs::{self, OpenOptions};
+use std::ffi::CString;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -11,6 +13,49 @@ use uuid::Uuid;
 
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
+
+#[derive(Debug, Clone)]
+pub(crate) struct MountInfoSnapshot {
+    mountpoints: Vec<PathBuf>,
+}
+
+impl MountInfoSnapshot {
+    pub(crate) fn load() -> Result<Self> {
+        let raw = match fs::read_to_string("/proc/self/mountinfo") {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error).context("failed to read /proc/self/mountinfo"),
+        };
+        Ok(Self::parse(&raw))
+    }
+
+    pub(crate) fn parse(raw: &str) -> Self {
+        Self {
+            mountpoints: raw
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(4))
+                .map(unescape_mountinfo_path)
+                .map(PathBuf::from)
+                .collect(),
+        }
+    }
+
+    pub(crate) fn contains(&self, path: &Path) -> bool {
+        self.mountpoints.iter().any(|mountpoint| mountpoint == path)
+    }
+
+    pub(crate) fn at_or_below(&self, root: &Path) -> Vec<PathBuf> {
+        let mut mountpoints = self
+            .mountpoints
+            .iter()
+            .filter(|mountpoint| *mountpoint == root || mountpoint.starts_with(root))
+            .cloned()
+            .collect::<Vec<_>>();
+        mountpoints.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        mountpoints.dedup();
+        mountpoints
+    }
+}
 
 pub fn with_file_lock<T, F>(lock_path: &Path, operation: F) -> Result<T>
 where
@@ -48,6 +93,7 @@ where
         return Err(anyhow!("failed to lock {}: {}", lock_path.display(), err));
     }
 
+    crate::perf::record_registry_lock_wait(started.elapsed().as_micros() as u64);
     let result = operation();
 
     let unlock_rc = unsafe { libc::flock(fd, libc::LOCK_UN) };
@@ -122,6 +168,184 @@ pub fn write_file_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
         .sync_all()
         .with_context(|| format!("failed to fsync directory {}", parent.display()))?;
     Ok(())
+}
+
+pub fn is_mountpoint(path: &Path) -> Result<bool> {
+    Ok(MountInfoSnapshot::load()?.contains(path))
+}
+
+pub fn bind_mount(source: &Path, target: &Path) -> std::io::Result<()> {
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let result = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_BIND,
+            std::ptr::null(),
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+pub fn make_mount_private(target: &Path) -> std::io::Result<()> {
+    let target = CString::new(target.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from_raw_os_error(libc::EINVAL))?;
+    let result = unsafe {
+        libc::mount(
+            std::ptr::null(),
+            target.as_ptr(),
+            std::ptr::null(),
+            libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+pub fn reflink_copy_file(source: &Path, destination: &Path) -> Result<bool> {
+    let source_file = File::open(source)
+        .with_context(|| format!("failed to open reflink source {}", source.display()))?;
+    let destination_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)
+        .with_context(|| {
+            format!(
+                "failed to create reflink destination {}",
+                destination.display()
+            )
+        })?;
+    let result = unsafe {
+        libc::ioctl(
+            destination_file.as_raw_fd(),
+            libc::FICLONE as libc::c_ulong,
+            source_file.as_raw_fd(),
+        )
+    };
+    if result == 0 {
+        let mode = source_file
+            .metadata()
+            .with_context(|| format!("failed to stat {}", source.display()))?
+            .permissions();
+        fs::set_permissions(destination, mode)
+            .with_context(|| format!("failed to preserve mode on {}", destination.display()))?;
+        return Ok(true);
+    }
+
+    let error = std::io::Error::last_os_error();
+    drop(destination_file);
+    let _ = fs::remove_file(destination);
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL | libc::ENOTTY)
+    ) {
+        return Ok(false);
+    }
+    Err(error).with_context(|| {
+        format!(
+            "failed to clone {} to {} with FICLONE",
+            source.display(),
+            destination.display()
+        )
+    })
+}
+
+pub fn copy_file_range_file(source: &Path, destination: &Path) -> Result<bool> {
+    let source_file = File::open(source)
+        .with_context(|| format!("failed to open copy source {}", source.display()))?;
+    let source_metadata = source_file
+        .metadata()
+        .with_context(|| format!("failed to stat copy source {}", source.display()))?;
+    let destination_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)
+        .with_context(|| {
+            format!(
+                "failed to create copy destination {}",
+                destination.display()
+            )
+        })?;
+    let mut copied = 0u64;
+    while copied < source_metadata.len() {
+        let amount = unsafe {
+            libc::copy_file_range(
+                source_file.as_raw_fd(),
+                std::ptr::null_mut(),
+                destination_file.as_raw_fd(),
+                std::ptr::null_mut(),
+                (source_metadata.len() - copied).min(4 * 1024 * 1024) as usize,
+                0,
+            )
+        };
+        if amount > 0 {
+            copied = copied.saturating_add(amount as u64);
+            continue;
+        }
+        if amount == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        drop(destination_file);
+        let _ = fs::remove_file(destination);
+        if matches!(
+            error.raw_os_error(),
+            Some(libc::EOPNOTSUPP | libc::EXDEV | libc::EINVAL | libc::ENOSYS)
+        ) {
+            return Ok(false);
+        }
+        return Err(error).with_context(|| {
+            format!(
+                "failed to copy {} to {} with copy_file_range",
+                source.display(),
+                destination.display()
+            )
+        });
+    }
+    if copied != source_metadata.len() {
+        drop(destination_file);
+        let _ = fs::remove_file(destination);
+        return Ok(false);
+    }
+    fs::set_permissions(destination, source_metadata.permissions())
+        .with_context(|| format!("failed to preserve mode on {}", destination.display()))?;
+    Ok(true)
+}
+
+fn unescape_mountinfo_path(path: &str) -> String {
+    let mut result = String::with_capacity(path.len());
+    let bytes = path.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..=index + 3].iter().all(u8::is_ascii_digit)
+        {
+            let value = (bytes[index + 1] - b'0') * 64
+                + (bytes[index + 2] - b'0') * 8
+                + (bytes[index + 3] - b'0');
+            result.push(value as char);
+            index += 4;
+        } else {
+            result.push(bytes[index] as char);
+            index += 1;
+        }
+    }
+    result
 }
 
 pub fn ensure_secure_dir(path: &Path) -> Result<()> {

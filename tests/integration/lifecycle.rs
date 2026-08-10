@@ -1,12 +1,14 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
 };
 use enclave::workspace::{
-    create_workspace, destroy_workspace, start_workspace, stop_workspace, WorkspaceLimits,
+    create_workspace, destroy_workspace, exec_workspace_command, start_workspace, stop_workspace,
+    WorkspaceLimits,
 };
 
 fn root_only() -> bool {
@@ -18,7 +20,10 @@ fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
     fs::create_dir_all(cache.join("bin")).expect("create bin");
     fs::create_dir_all(cache.join("etc")).expect("create etc");
     fs::create_dir_all(cache.join("usr")).expect("create usr");
-    fs::write(cache.join("bin/sh"), "#!/bin/sh\nexit 0\n").expect("write shell");
+    fs::create_dir_all(cache.join("usr/bin")).expect("create usr bin");
+    fs::copy("/usr/bin/busybox", cache.join("bin/busybox")).expect("copy busybox");
+    std::os::unix::fs::symlink("busybox", cache.join("bin/sh")).expect("link shell");
+    std::os::unix::fs::symlink("../../bin/busybox", cache.join("usr/bin/env")).expect("link env");
 }
 
 fn state_dir(name: &str) -> std::path::PathBuf {
@@ -80,7 +85,33 @@ fn workspace_lifecycle_create_start_stop_destroy() {
 
     let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
         .expect("create workspace");
+    let start_started = Instant::now();
     let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    println!(
+        "benchmark=workspace_start_warm elapsed_seconds={:.6}",
+        start_started.elapsed().as_secs_f64()
+    );
+    let exec_started = Instant::now();
+    for _ in 0..3 {
+        let result = exec_workspace_command(
+            &state,
+            &sandbox.id,
+            &workspace.id,
+            "/home",
+            &["sh".into(), "-c".into(), "exit 0".into()],
+        )
+        .expect("persistent workspace exec should succeed");
+        assert_eq!(
+            result.exit_code, 0,
+            "stdout={} stderr={}",
+            result.stdout, result.stderr
+        );
+    }
+    println!(
+        "benchmark=workspace_exec_persistent iterations=3 elapsed_seconds={:.6} average_seconds={:.6}",
+        exec_started.elapsed().as_secs_f64(),
+        exec_started.elapsed().as_secs_f64() / 3.0
+    );
     let runtime_pid = started.runtime_pid.expect("runtime pid should be set");
     let route_table = Command::new("nsenter")
         .arg("--net")

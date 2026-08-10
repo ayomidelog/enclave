@@ -52,15 +52,7 @@ pub(super) fn validate_host_source(path: &str) -> Result<u64> {
     if !metadata.is_dir() {
         bail!("refusing to copy unsupported host source type '{}'", path);
     }
-
-    let mut logical_bytes = 0u64;
-    for entry in
-        fs::read_dir(path).with_context(|| format!("failed to read host source '{}'", path))?
-    {
-        logical_bytes =
-            logical_bytes.saturating_add(validate_host_source(&entry?.path().to_string_lossy())?);
-    }
-    Ok(logical_bytes)
+    Ok(0)
 }
 
 pub(super) fn validate_host_destination(path: &str) -> Result<()> {

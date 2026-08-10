@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+use super::cache;
 use super::features;
 use super::types::BootstrapMethod;
 use super::util::{command_failure_detail, run_command_with_live_log, validate_debootstrap_binary};
@@ -54,8 +55,9 @@ fn bootstrap_debootstrap(
     validate_debootstrap_binary(debootstrap_binary)?;
 
     let cache_dir = rootfs_cache_dir(state_dir);
+    cache::ensure(&cache_dir)?;
     let suite_cache = cache_dir.join(suite);
-    if suite_cache.is_dir() && has_rootfs_content(&suite_cache) {
+    if cache::contains(&cache_dir, suite, &suite_cache) {
         tracing::info!(
             "sandbox '{}': using cached rootfs for suite '{}' from {}",
             name,
@@ -114,8 +116,9 @@ fn bootstrap_cached_rootfs(
     state_dir: &Path,
 ) -> Result<()> {
     let cache_dir = rootfs_cache_dir(state_dir);
+    cache::ensure(&cache_dir)?;
     let suite_cache = cache_dir.join(suite);
-    if suite_cache.is_dir() && has_rootfs_content(&suite_cache) {
+    if cache::contains(&cache_dir, suite, &suite_cache) {
         tracing::info!(
             "sandbox '{}' bootstrap: copying cached rootfs for suite '{}' from {}",
             name,
@@ -132,7 +135,7 @@ fn bootstrap_cached_rootfs(
     }
 
     let generic_cache = cache_dir.join("base");
-    if generic_cache.is_dir() && has_rootfs_content(&generic_cache) {
+    if cache::contains(&cache_dir, "base", &generic_cache) {
         tracing::info!(
             "sandbox '{}' bootstrap: copying generic cached rootfs from {}",
             name,
@@ -185,6 +188,7 @@ fn cache_rootfs_suite(rootfs_dir: &Path, state_dir: &Path, suite: &str) -> Resul
             suite_cache.display()
         )
     })?;
+    cache::register(&cache_dir, suite, &suite_cache)?;
 
     tracing::info!(
         "rootfs cached for suite '{}' at {}",
@@ -209,7 +213,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
     let src_arg = format!("{}/.", src.display());
     let output = Command::new("cp")
-        .args(["-a", &src_arg, dst.to_string_lossy().as_ref()])
+        .args([
+            "-a",
+            "--reflink=auto",
+            &src_arg,
+            dst.to_string_lossy().as_ref(),
+        ])
         .output()
         .with_context(|| format!("failed to run cp -a {} {}", src.display(), dst.display()))?;
     if !output.status.success() {
@@ -259,6 +268,9 @@ pub(crate) fn ensure_rootfs_cache(state_dir: &Path) -> Result<PathBuf> {
     let cache_dir = rootfs_cache_dir(state_dir);
     fs::create_dir_all(&cache_dir)
         .with_context(|| format!("failed to create rootfs cache at {}", cache_dir.display()))?;
+    if !cache::index_path(&cache_dir).is_file() {
+        cache::rebuild(&cache_dir)?;
+    }
     Ok(cache_dir)
 }
 

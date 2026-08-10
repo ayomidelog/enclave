@@ -44,6 +44,11 @@ fn run_rootfs_export(args: RootfsExportArgs) -> Result<()> {
 fn run_rootfs_import(args: RootfsImportArgs) -> Result<()> {
     let target = resolve_cache_target(&args.state_dir, args.suite.as_deref(), args.base)?;
     import_rootfs_archive(&args.archive, &target.cache_path, args.replace)?;
+    crate::sandbox::register_rootfs_cache(
+        &crate::sandbox::ensure_rootfs_cache(&args.state_dir)?,
+        &target.label,
+        &target.cache_path,
+    )?;
     println!(
         "imported rootfs cache '{}' into {}",
         target.label,

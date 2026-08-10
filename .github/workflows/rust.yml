@@ -31,3 +31,6 @@ jobs:
       - name: Cargo test (unit + default suites)
         run: |
           cargo test --all-targets -- --skip integration:: --skip stress::
+
+      - name: Performance regression gate
+        run: tools/perf/check-thresholds.sh

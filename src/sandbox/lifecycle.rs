@@ -11,6 +11,7 @@ use crate::registry::{
 
 use super::bootstrap;
 use super::mounts;
+use super::setup_cache;
 use super::types::{
     BootstrapMethod, SandboxLimits, SandboxLimitsUpdate, SandboxListItem, SandboxMetadata,
     SandboxStatus, SandboxStatusReport,
@@ -423,6 +424,9 @@ pub fn exec_setup_command(
     state_dir: &Path,
     selector: &str,
     command: &str,
+    cache_setup: bool,
+    setup_digest: Option<&str>,
+    setup_index: Option<u64>,
 ) -> Result<serde_json::Value> {
     use crate::registry::with_registry;
 
@@ -436,6 +440,17 @@ pub fn exec_setup_command(
         normalize_sandbox_metadata(&mut metadata);
         Ok(super::util::effective_rootfs_path(&metadata))
     })?;
+
+    let cache_marker = if cache_setup {
+        let digest = setup_digest.ok_or_else(|| anyhow!("cached setup requires setup_digest"))?;
+        let index = setup_index.ok_or_else(|| anyhow!("cached setup requires setup_index"))?;
+        if setup_cache::is_complete(Path::new(&rootfs_path), digest, index)? {
+            return Ok(serde_json::json!({"cached": true, "exit_code": 0}));
+        }
+        Some((digest.to_string(), index))
+    } else {
+        None
+    };
 
     let output = Command::new("chroot")
         .arg(&rootfs_path)
@@ -460,6 +475,10 @@ pub fn exec_setup_command(
                 String::new()
             }
         );
+    }
+
+    if let Some((digest, index)) = cache_marker {
+        setup_cache::mark_complete(Path::new(&rootfs_path), &digest, index)?;
     }
 
     Ok(serde_json::json!({

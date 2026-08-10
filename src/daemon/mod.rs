@@ -1,6 +1,7 @@
 mod dispatch;
 mod rate_limiter;
 pub(crate) mod state_lock;
+mod workers;
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -10,6 +11,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use crate::policy;
@@ -145,48 +147,50 @@ fn serve(
     rate_limiter: &Arc<RateLimiter>,
     port_publisher: &Arc<crate::network::publish::PortPublisher>,
 ) -> Result<()> {
-    for stream in listener.incoming() {
+    listener
+        .set_nonblocking(true)
+        .context("failed to make daemon listener nonblocking")?;
+    let workers = workers::RequestWorkerPool::new(config, shutdown, rate_limiter, port_publisher)?;
+    loop {
         if shutdown_requested(shutdown) {
             break;
         }
 
-        let mut stream = match stream {
-            Ok(stream) => stream,
-            Err(err) => {
-                if shutdown_requested(shutdown) {
-                    break;
-                }
-                tracing::warn!("sandbox daemon accept error: {err}");
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!("sandbox daemon accept error: {error}");
                 continue;
             }
         };
 
-        if let Err(err) = handle_client(&mut stream, config, shutdown, rate_limiter, port_publisher)
-        {
-            tracing::warn!("sandbox daemon request error: {err}");
-        }
-
-        if shutdown_requested(shutdown) {
-            break;
-        }
+        workers.submit(stream)?;
     }
+
+    workers.finish();
 
     Ok(())
 }
 
 fn handle_client(
-    stream: &mut UnixStream,
+    mut stream: UnixStream,
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
     rate_limiter: &Arc<RateLimiter>,
     port_publisher: &Arc<crate::network::publish::PortPublisher>,
 ) -> Result<()> {
-    let request_raw = match read_request_line(stream) {
+    crate::perf::record_request();
+    let _request_total = crate::perf::Timer::new("daemon.request");
+    let request_raw = match read_request_line(&stream) {
         Ok(Some(request_raw)) => request_raw,
         Ok(None) => return Ok(()),
         Err(err) => {
             let response = Response::err(err.to_string());
-            write_response(stream, &response)?;
+            write_response(&mut stream, &response)?;
             return Ok(());
         }
     };
@@ -195,11 +199,11 @@ fn handle_client(
         Ok(request) => request,
         Err(err) => {
             let response = Response::err(format!("invalid request payload: {err}"));
-            write_response(stream, &response)?;
+            write_response(&mut stream, &response)?;
             return Ok(());
         }
     };
-    let peer_uid = peer_uid(stream).context("failed to resolve peer uid")?;
+    let peer_uid = peer_uid(&stream).context("failed to resolve peer uid")?;
     if !rate_limiter.allow(peer_uid) {
         let response = Response::err(format!(
             "rate limit exceeded for uid {} (max {} requests per {}s)",
@@ -207,22 +211,24 @@ fn handle_client(
             RATE_LIMIT_MAX_REQUESTS,
             RATE_LIMIT_WINDOW.as_secs()
         ));
-        write_response(stream, &response)?;
+        write_response(&mut stream, &response)?;
         return Ok(());
     }
     if let Err(err) = policy::authorize(&config.state_dir, peer_uid, &request.action) {
         let response = Response::err(err.to_string());
-        write_response(stream, &response)?;
+        write_response(&mut stream, &response)?;
         return Ok(());
     }
 
-    let response = match dispatch::dispatch(request, config, shutdown, port_publisher, Some(stream))
-    {
-        Ok(result) => Response::ok(result),
-        Err(err) => Response::err(err.to_string()),
-    };
+    let _dispatch = crate::perf::Timer::new("daemon.dispatch");
+    let response =
+        match dispatch::dispatch(request, config, shutdown, port_publisher, Some(&stream)) {
+            Ok(result) => Response::ok(result),
+            Err(err) => Response::err(err.to_string()),
+        };
+    drop(_dispatch);
 
-    write_response(stream, &response)?;
+    write_response(&mut stream, &response)?;
     Ok(())
 }
 

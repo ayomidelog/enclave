@@ -35,6 +35,9 @@ Each workspace runs in its own network namespace with full port isolation and ou
 - **Cross-workspace isolation**: direct workspace-to-workspace forwarding is blocked by default on the Enclave bridge.
 - **Host-service isolation**: direct access from a workspace to host-local services and the cloud metadata endpoint is blocked by default.
 - **Clean teardown**: Stopping/destroying a workspace removes its veth pair and releases its IP.
+- **Collision-resistant interface names**: Host-side veth names include the workspace identity, and temporary peer names stay within Linux's 15-character interface-name limit.
+- **Compact IPAM**: The daemon reconciles the registry-facing used-IP set into a bounded bitmap for constant-time first-free allocation and restart-safe reconstruction.
+- **Runtime metrics**: `daemon.health` includes request, transfer, file, cache, namespace-cache, helper-process, mount, unmount, cleanup-retry, registry-lock-wait, and bounded request plus per-phase latency histogram counters; detailed phase logs remain opt-in through `ENCLAVE_PERF=1`.
 
 ### Additional network guards
 
@@ -77,7 +80,7 @@ Those measurements are host-dependent, but they reflect the current build after 
 
 - **Crash recovery**: On daemon startup, Enclave reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. This handles daemon crashes, host reboots, and OOM-killed sessions without manual cleanup.
 - **cgroup fallback**: When cgroup v2 is not available, Enclave falls back to rlimit-only resource enforcement and logs a warning. Workspace isolation remains intact — only hard memory/PID limits are downgraded to soft rlimits.
-- **Mount cleanup**: Cleanup unmounts nested workspace mounts deepest-first. If the runtime owner is gone, it retries with a lazy unmount; failed resources report the mount target, errno, and namespace holders while independent cleanup continues.
+- **Mount cleanup**: Cleanup loads one mountinfo snapshot per cleanup transaction, unmounts nested workspace mounts deepest-first, and retries with a lazy unmount when the runtime owner is gone; failed resources report the mount target, errno, and namespace holders while independent cleanup continues.
 - **Overlay guarantees**: The shared rootfs is bind-mounted read-only under OverlayFS. Workspace writes go to the upper layer only. Stopping or destroying a workspace removes only the workspace-specific overlay data — the shared rootfs is never modified.
 - **Workspace source mounts**: `/home` is presented through an idmapped bind mount, whether the source is the Enclave-managed workspace directory or an explicit host `workspace_dir`.
 - **System diagnostics**: Run `enclave doctor` to verify mount state, cgroup state, registry consistency, and runtime process health. Run `enclave doctor --repair` to reconcile stale registry entries, files, mounts, namespace references, and workspace artifacts.

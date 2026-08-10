@@ -9,12 +9,18 @@ pub mod veth;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 
 static HOST_NETWORKING_READY: AtomicBool = AtomicBool::new(false);
+static HOST_NETWORKING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn ensure_host_networking() -> Result<()> {
+    let _guard = HOST_NETWORKING_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("host networking setup lock poisoned"))?;
     if HOST_NETWORKING_READY.load(Ordering::SeqCst) && bridge::bridge_is_present()? {
         return Ok(());
     }
@@ -28,17 +34,23 @@ pub fn setup_workspace_network(
     pid: u32,
     used_ips: &BTreeSet<u8>,
     workspace_rootfs: &Path,
+    workspace_id: &str,
 ) -> Result<String> {
     ensure_host_networking()?;
     let ip = ipam::allocate_ip(used_ips)?;
-    attach_workspace_network(pid, &ip, workspace_rootfs)?;
+    attach_workspace_network(pid, &ip, workspace_rootfs, workspace_id)?;
 
     Ok(ip)
 }
 
-fn attach_workspace_network(pid: u32, ip: &str, workspace_rootfs: &Path) -> Result<()> {
+fn attach_workspace_network(
+    pid: u32,
+    ip: &str,
+    workspace_rootfs: &Path,
+    workspace_id: &str,
+) -> Result<()> {
     let host_octet = ipam::parse_host_octet(ip).expect("allocate_ip returned invalid IP");
-    let (veth_host, veth_peer) = veth::veth_names(host_octet);
+    let (veth_host, veth_peer) = veth::veth_names(host_octet, workspace_id);
 
     let result: Result<()> = (|| {
         veth::setup_workspace_networking(pid, ip, &veth_host, &veth_peer)
@@ -68,9 +80,9 @@ fn attach_workspace_network(pid: u32, ip: &str, workspace_rootfs: &Path) -> Resu
     Ok(())
 }
 
-pub fn teardown_workspace_network(assigned_ip: &str) {
+pub fn teardown_workspace_network(assigned_ip: &str, workspace_id: &str) {
     if let Some(host_octet) = ipam::parse_host_octet(assigned_ip) {
-        let (veth_host, _) = veth::veth_names(host_octet);
+        let (veth_host, _) = veth::veth_names(host_octet, workspace_id);
         if let Err(err) = nat::remove_workspace_anti_spoofing(&veth_host, assigned_ip) {
             tracing::warn!(
                 "failed to remove anti-spoofing rules for {}: {err:#}",
@@ -89,6 +101,10 @@ where
 }
 
 pub fn cleanup_host_networking() {
+    let Ok(_guard) = HOST_NETWORKING_LOCK.get_or_init(|| Mutex::new(())).lock() else {
+        tracing::warn!("host networking cleanup lock poisoned");
+        return;
+    };
     let bridge_removed = match bridge::remove_bridge_if_idle() {
         Ok(removed) => removed,
         Err(err) => {

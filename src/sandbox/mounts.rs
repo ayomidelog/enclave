@@ -2,45 +2,21 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 
 use super::types::SandboxMetadata;
-use super::util::command_failure_detail;
 
 pub fn ensure_rootfs_mounted(metadata: &SandboxMetadata) -> Result<()> {
     let (rootfs_path, mounted_rootfs_path) = validate_mount_paths(metadata)?;
-    if is_mountpoint(&mounted_rootfs_path)? {
+    if crate::fsutil::is_mountpoint(Path::new(&mounted_rootfs_path))? {
         return Ok(());
     }
 
-    let output = Command::new("mount")
-        .arg("--bind")
-        .arg(&rootfs_path)
-        .arg(&mounted_rootfs_path)
-        .output()
-        .context("failed to run mount --bind")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "failed to mount sandbox rootfs ({}): {}",
-            output.status,
-            command_failure_detail(&output)
-        ));
-    }
-
-    let output = Command::new("mount")
-        .arg("--make-private")
-        .arg(&mounted_rootfs_path)
-        .output()
-        .context("failed to run mount --make-private")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "failed to mark mount private ({}): {}",
-            output.status,
-            command_failure_detail(&output)
-        ));
-    }
+    crate::fsutil::bind_mount(Path::new(&rootfs_path), Path::new(&mounted_rootfs_path))
+        .map_err(|error| anyhow!("failed to mount sandbox rootfs: {error}"))?;
+    crate::fsutil::make_mount_private(Path::new(&mounted_rootfs_path))
+        .map_err(|error| anyhow!("failed to mark mount private: {error}"))?;
 
     Ok(())
 }
@@ -49,7 +25,7 @@ pub fn ensure_rootfs_unmounted(metadata: &SandboxMetadata) -> Result<()> {
     let Some(mounted_rootfs_path) = validate_unmount_path(metadata)? else {
         return Ok(());
     };
-    if !is_mountpoint(&mounted_rootfs_path)? {
+    if !crate::fsutil::is_mountpoint(Path::new(&mounted_rootfs_path))? {
         return Ok(());
     }
 
@@ -65,7 +41,7 @@ pub fn ensure_rootfs_unmounted(metadata: &SandboxMetadata) -> Result<()> {
             error
         ));
     }
-    if is_mountpoint(&mounted_rootfs_path)? {
+    if crate::fsutil::is_mountpoint(Path::new(&mounted_rootfs_path))? {
         bail!(
             "sandbox rootfs mount {} is still present after umount",
             mounted_rootfs_path
@@ -203,15 +179,6 @@ fn reject_symlink_if_present(label: &str, path: &std::path::Path) -> Result<()> 
             Err(error).with_context(|| format!("failed to stat {} {}", label, path.display()))
         }
     }
-}
-
-fn is_mountpoint(path: &str) -> Result<bool> {
-    let status = Command::new("mountpoint")
-        .arg("-q")
-        .arg(path)
-        .status()
-        .with_context(|| format!("failed to check mountpoint {}", path))?;
-    Ok(status.success())
 }
 
 fn validate_mount_paths(metadata: &SandboxMetadata) -> Result<(String, String)> {

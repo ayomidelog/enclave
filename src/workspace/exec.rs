@@ -53,24 +53,12 @@ pub fn exec_workspace_command(
 
     let effective_cwd = sanitize_workspace_cwd(cwd);
     let output = crate::workspace::with_workspace_storage_mounted(&workspace, || {
-        spawn_workspace_command(
-            &workspace,
-            &effective_cwd,
-            command,
-            Stdio::null(),
-            Stdio::piped(),
-            Stdio::piped(),
-        )?
-        .wait_with_output()
-        .context("failed to execute workspace command via internal helper")
+        session::execute_persistent_command(&workspace, &effective_cwd, command)
     })?;
 
-    let exit_code = output
-        .status
-        .code()
-        .unwrap_or(if output.status.success() { 0 } else { 1 });
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let exit_code = output.exit_code;
+    let stdout = output.stdout;
+    let stderr = output.stderr;
     let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
         anyhow!(
             "workspace '{}' has no runtime pid after command execution",
@@ -139,14 +127,19 @@ pub(crate) fn spawn_workspace_command(
         )
     })?;
     let current_exe = crate::workspace::session::resolve_session_helper_source();
+    let namespace_fds =
+        crate::workspace::session::duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
+    let fds = crate::workspace::session::raw_fds(&namespace_fds);
+    crate::perf::record_process_spawn();
     Command::new(&current_exe)
-        .args(runtime_exec_command_args(
+        .args(runtime_exec_command_args_with_fds(
             runtime_pid,
             runtime_starttime_ticks,
             workspace.sandbox_id.as_str(),
             workspace.id.as_str(),
             cwd,
             command,
+            fds,
         ))
         .stdin(stdin)
         .stdout(stdout)
@@ -155,6 +148,53 @@ pub(crate) fn spawn_workspace_command(
         .context("failed to execute workspace command via internal helper")
 }
 
+pub(crate) fn spawn_workspace_file_receiver(
+    workspace: &WorkspaceMetadata,
+    target: &str,
+    stdin: Stdio,
+    stderr: Stdio,
+) -> Result<Child> {
+    let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime pid; restart workspace",
+            workspace.id
+        )
+    })?;
+    let runtime_starttime_ticks = workspace.runtime_starttime_ticks.ok_or_else(|| {
+        anyhow!(
+            "workspace '{}' has no runtime starttime; restart workspace",
+            workspace.id
+        )
+    })?;
+    if !session::process_matches(runtime_pid, Some(runtime_starttime_ticks)) {
+        bail!("workspace '{}' runtime pid is not alive", workspace.id);
+    }
+    let current_exe = crate::workspace::session::resolve_session_helper_source();
+    let namespace_fds =
+        crate::workspace::session::duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
+    let fds = crate::workspace::session::raw_fds(&namespace_fds);
+    crate::perf::record_process_spawn();
+    let mut args = vec![
+        "internal".to_string(),
+        "workspace-file-receive".to_string(),
+        "--runtime-pid".to_string(),
+        runtime_pid.to_string(),
+        "--runtime-starttime-ticks".to_string(),
+        runtime_starttime_ticks.to_string(),
+        "--target".to_string(),
+        target.to_string(),
+    ];
+    append_namespace_fd_args(&mut args, fds);
+    Command::new(current_exe)
+        .args(args)
+        .stdin(stdin)
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .context("failed to execute workspace file receiver")
+}
+
+#[cfg(test)]
 fn runtime_exec_command_args(
     runtime_pid: u32,
     runtime_starttime_ticks: u64,
@@ -162,6 +202,46 @@ fn runtime_exec_command_args(
     workspace_id: &str,
     effective_cwd: &str,
     command: &[String],
+) -> Vec<String> {
+    runtime_exec_command_args_base(
+        runtime_pid,
+        runtime_starttime_ticks,
+        sandbox_id,
+        workspace_id,
+        effective_cwd,
+        command,
+        None,
+    )
+}
+
+fn runtime_exec_command_args_with_fds(
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    sandbox_id: &str,
+    workspace_id: &str,
+    effective_cwd: &str,
+    command: &[String],
+    fds: [std::os::fd::RawFd; 6],
+) -> Vec<String> {
+    runtime_exec_command_args_base(
+        runtime_pid,
+        runtime_starttime_ticks,
+        sandbox_id,
+        workspace_id,
+        effective_cwd,
+        command,
+        Some(fds),
+    )
+}
+
+fn runtime_exec_command_args_base(
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    sandbox_id: &str,
+    workspace_id: &str,
+    effective_cwd: &str,
+    command: &[String],
+    fds: Option<[std::os::fd::RawFd; 6]>,
 ) -> Vec<String> {
     let mut args = vec![
         "internal".to_string(),
@@ -177,9 +257,26 @@ fn runtime_exec_command_args(
         "--workspace-id".to_string(),
         workspace_id.to_string(),
     ];
+    if let Some(fds) = fds {
+        append_namespace_fd_args(&mut args, fds);
+    }
     args.push("--".to_string());
     args.extend(command.iter().cloned());
     args
+}
+
+fn append_namespace_fd_args(args: &mut Vec<String>, fds: [std::os::fd::RawFd; 6]) {
+    for (name, fd) in [
+        ("--root-fd", fds[0]),
+        ("--user-ns-fd", fds[1]),
+        ("--mount-ns-fd", fds[2]),
+        ("--pid-ns-fd", fds[3]),
+        ("--net-ns-fd", fds[4]),
+        ("--uts-ns-fd", fds[5]),
+    ] {
+        args.push(name.to_string());
+        args.push(fd.to_string());
+    }
 }
 
 #[cfg(test)]
