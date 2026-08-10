@@ -179,7 +179,21 @@ pub(crate) fn dispatch(
         Action::SandboxExecSetup => {
             let selector = require_param_str(&request.params, &["sandbox", "sandbox_id"])?;
             let command = require_param_str(&request.params, &["command"])?;
-            sandbox::exec_setup_command(&config.state_dir, selector, command)
+            let cache_setup = request
+                .params
+                .get("cache_setup")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let setup_digest = request.params.get("setup_digest").and_then(Value::as_str);
+            let setup_index = request.params.get("setup_index").and_then(Value::as_u64);
+            sandbox::exec_setup_command(
+                &config.state_dir,
+                selector,
+                command,
+                cache_setup,
+                setup_digest,
+                setup_index,
+            )
         }
         Action::ProcessList => {
             let entries = workspace::list_process_status(&config.state_dir)?;

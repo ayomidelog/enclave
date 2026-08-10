@@ -27,6 +27,9 @@ Capture syscall counts for a focused command with:
 
 Pass `--verbose` to a daemon-backed command to emit the CLI and daemon phase
 timings to stderr without changing normal output contracts.
+
+Use `enclave up --cache-setup` or `enclave restart --cache-setup` only when setup
+commands are known to be safe to skip after an unchanged Enclavefile digest.
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
 

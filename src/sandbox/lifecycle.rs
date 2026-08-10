@@ -423,6 +423,9 @@ pub fn exec_setup_command(
     state_dir: &Path,
     selector: &str,
     command: &str,
+    cache_setup: bool,
+    setup_digest: Option<&str>,
+    setup_index: Option<u64>,
 ) -> Result<serde_json::Value> {
     use crate::registry::with_registry;
 
@@ -436,6 +439,20 @@ pub fn exec_setup_command(
         normalize_sandbox_metadata(&mut metadata);
         Ok(super::util::effective_rootfs_path(&metadata))
     })?;
+
+    let cache_marker = if cache_setup {
+        let digest = setup_digest.ok_or_else(|| anyhow!("cached setup requires setup_digest"))?;
+        let index = setup_index.ok_or_else(|| anyhow!("cached setup requires setup_index"))?;
+        let marker = PathBuf::from(&rootfs_path)
+            .join("../runtime/setup-cache")
+            .join(format!("{digest}-{index}.done"));
+        if marker.exists() {
+            return Ok(serde_json::json!({"cached": true, "exit_code": 0}));
+        }
+        Some(marker)
+    } else {
+        None
+    };
 
     let output = Command::new("chroot")
         .arg(&rootfs_path)
@@ -460,6 +477,14 @@ pub fn exec_setup_command(
                 String::new()
             }
         );
+    }
+
+    if let Some(marker) = cache_marker {
+        if let Some(parent) = marker.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create setup cache {}", parent.display()))?;
+        }
+        crate::fsutil::write_file_atomic(&marker, b"completed\n", 0o600)?;
     }
 
     Ok(serde_json::json!({

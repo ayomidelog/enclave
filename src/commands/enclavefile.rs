@@ -5,6 +5,7 @@ use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::cli::{RestartArgs, UpArgs};
 use crate::enclavefile::{self, Enclavefile, ENCLAVEFILE_NAME};
@@ -43,15 +44,15 @@ pub(crate) fn run_up(socket: &Path, args: UpArgs) -> Result<()> {
         tracing::info!("rebuilding sandbox '{}'...", ef.sandbox.name);
         teardown_sandbox(socket, &ef.sandbox.name)?;
         destroy_sandbox(socket, &ef.sandbox.name)?;
-        create_and_setup_sandbox(socket, &ef)?;
+        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
     } else if sandbox_exists {
         tracing::info!("sandbox '{}' already exists, starting...", ef.sandbox.name);
         start_sandbox_if_stopped(socket, &ef.sandbox.name)?;
         reconcile_sandbox_definition(socket, &ef)?;
 
-        run_setup_commands(socket, &ef)?;
+        run_setup_commands(socket, &ef, args.cache_setup)?;
     } else {
-        create_and_setup_sandbox(socket, &ef)?;
+        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
     }
 
     bring_up_workspaces(socket, &ef, &ef_path)?;
@@ -105,14 +106,14 @@ pub(crate) fn run_restart(socket: &Path, args: RestartArgs) -> Result<()> {
             teardown_sandbox(socket, &ef.sandbox.name)?;
             destroy_sandbox(socket, &ef.sandbox.name)?;
         }
-        create_and_setup_sandbox(socket, &ef)?;
+        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
     } else if sandbox_exists {
         teardown_sandbox(socket, &ef.sandbox.name)?;
         start_sandbox_if_stopped(socket, &ef.sandbox.name)?;
         reconcile_sandbox_definition(socket, &ef)?;
-        run_setup_commands(socket, &ef)?;
+        run_setup_commands(socket, &ef, args.cache_setup)?;
     } else {
-        create_and_setup_sandbox(socket, &ef)?;
+        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
     }
 
     bring_up_workspaces(socket, &ef, &ef_path)?;
@@ -137,7 +138,7 @@ fn start_sandbox_if_stopped(socket: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
-fn create_and_setup_sandbox(socket: &Path, ef: &Enclavefile) -> Result<()> {
+fn create_and_setup_sandbox(socket: &Path, ef: &Enclavefile, cache_setup: bool) -> Result<()> {
     println!(
         "creating sandbox '{}' with suite '{}' (this may take several minutes)...",
         ef.sandbox.name, ef.sandbox.suite
@@ -153,7 +154,7 @@ fn create_and_setup_sandbox(socket: &Path, ef: &Enclavefile) -> Result<()> {
     });
     send(socket, "sandbox.create", request)?;
 
-    run_setup_commands(socket, ef)?;
+    run_setup_commands(socket, ef, cache_setup)?;
 
     Ok(())
 }
@@ -172,11 +173,12 @@ fn reconcile_sandbox_definition(socket: &Path, ef: &Enclavefile) -> Result<()> {
     Ok(())
 }
 
-fn run_setup_commands(socket: &Path, ef: &Enclavefile) -> Result<()> {
+fn run_setup_commands(socket: &Path, ef: &Enclavefile, cache_setup: bool) -> Result<()> {
     if ef.sandbox.setup.is_empty() {
         return Ok(());
     }
     tracing::info!("running setup commands...");
+    let setup_digest = setup_digest(ef);
     for (i, cmd) in ef.sandbox.setup.iter().enumerate() {
         tracing::info!("  [{}/{}] {}", i + 1, ef.sandbox.setup.len(), cmd);
         let result = send(
@@ -185,6 +187,9 @@ fn run_setup_commands(socket: &Path, ef: &Enclavefile) -> Result<()> {
             json!({
                 "sandbox": ef.sandbox.name,
                 "command": cmd,
+                "cache_setup": cache_setup,
+                "setup_digest": setup_digest,
+                "setup_index": i,
             }),
         );
         if let Err(err) = result {
@@ -193,6 +198,20 @@ fn run_setup_commands(socket: &Path, ef: &Enclavefile) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn setup_digest(ef: &Enclavefile) -> String {
+    let mut digest = Sha256::new();
+    digest.update(ef.sandbox.name.as_bytes());
+    digest.update([0]);
+    digest.update(ef.sandbox.suite.as_bytes());
+    digest.update([0]);
+    digest.update(ef.sandbox.bootstrap_method.to_string().as_bytes());
+    for command in &ef.sandbox.setup {
+        digest.update([0xff]);
+        digest.update(command.as_bytes());
+    }
+    format!("{:x}", digest.finalize())
 }
 
 fn teardown_sandbox(socket: &Path, name: &str) -> Result<()> {

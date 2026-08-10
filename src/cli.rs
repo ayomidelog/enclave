@@ -229,12 +229,16 @@ pub struct DoctorArgs {
 pub struct UpArgs {
     #[arg(long)]
     pub rebuild: bool,
+    #[arg(long)]
+    pub cache_setup: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct RestartArgs {
     #[arg(long)]
     pub rebuild: bool,
+    #[arg(long)]
+    pub cache_setup: bool,
 }
 
 #[derive(Args, Debug)]

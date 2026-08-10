@@ -48,7 +48,7 @@ fn top_level_help_includes_enclavefile_commands() {
 }
 
 #[test]
-fn up_help_shows_rebuild_flag() {
+fn up_help_shows_rebuild_and_setup_cache_flags() {
     let output = Command::new(common::enclave_bin())
         .args(["up", "--help"])
         .output()
@@ -63,6 +63,10 @@ fn up_help_shows_rebuild_flag() {
     assert!(
         stdout.contains("--rebuild"),
         "up --help should show --rebuild flag"
+    );
+    assert!(
+        stdout.contains("--cache-setup"),
+        "up --help should show --cache-setup flag"
     );
 }
 
