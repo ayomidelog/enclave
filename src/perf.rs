@@ -1,5 +1,6 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -36,6 +37,7 @@ static PHASE_LATENCY: [AtomicU64; 8] = [
     AtomicU64::new(0),
     AtomicU64::new(0),
 ];
+static NAMED_PHASE_LATENCY: OnceLock<Mutex<BTreeMap<&'static str, [u64; 8]>>> = OnceLock::new();
 
 const LATENCY_BUCKETS_US: [u64; 8] = [100, 500, 1_000, 5_000, 10_000, 50_000, 250_000, u64::MAX];
 
@@ -57,6 +59,19 @@ pub(crate) fn record_request_latency(elapsed_us: u64) {
 
 pub(crate) fn record_phase_latency(elapsed_us: u64) {
     record_histogram(&PHASE_LATENCY, elapsed_us);
+}
+
+pub(crate) fn record_named_phase_latency(name: &'static str, elapsed_us: u64) {
+    let bucket = LATENCY_BUCKETS_US
+        .iter()
+        .position(|limit| elapsed_us <= *limit)
+        .unwrap_or(LATENCY_BUCKETS_US.len() - 1);
+    if let Ok(mut phases) = NAMED_PHASE_LATENCY
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+    {
+        phases.entry(name).or_insert([0; 8])[bucket] += 1;
+    }
 }
 
 pub(crate) fn record_transfer(bytes: u64) {
@@ -121,6 +136,7 @@ pub(crate) fn metrics() -> serde_json::Value {
         "registry_lock_wait_us": REGISTRY_LOCK_WAIT_US.load(Ordering::Relaxed),
         "request_latency_us": histogram_values(&REQUEST_LATENCY),
         "phase_latency_us": histogram_values(&PHASE_LATENCY),
+        "phase_latency_by_name": named_phase_values(),
     })
 }
 
@@ -137,6 +153,14 @@ fn histogram_values(histogram: &[AtomicU64; 8]) -> Vec<u64> {
         .iter()
         .map(|bucket| bucket.load(Ordering::Relaxed))
         .collect()
+}
+
+fn named_phase_values() -> BTreeMap<&'static str, [u64; 8]> {
+    NAMED_PHASE_LATENCY
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .map(|phases| phases.clone())
+        .unwrap_or_default()
 }
 
 #[derive(Debug)]
@@ -158,6 +182,7 @@ impl Drop for Timer {
     fn drop(&mut self) {
         let elapsed_us = self.started.elapsed().as_micros() as u64;
         record_phase_latency(elapsed_us);
+        record_named_phase_latency(self.name, elapsed_us);
         if self.name == "daemon.request" {
             record_request_latency(elapsed_us);
         }

@@ -36,7 +36,7 @@ Each workspace runs in its own network namespace with full port isolation and ou
 - **Host-service isolation**: direct access from a workspace to host-local services and the cloud metadata endpoint is blocked by default.
 - **Clean teardown**: Stopping/destroying a workspace removes its veth pair and releases its IP.
 - **Collision-resistant interface names**: Host-side veth names include the workspace identity, and temporary peer names stay within Linux's 15-character interface-name limit.
-- **Runtime metrics**: `daemon.health` includes request, transfer, file, cache, namespace-cache, helper-process, mount, unmount, cleanup-retry, registry-lock-wait, and bounded request/phase latency histogram counters; detailed phase logs remain opt-in through `ENCLAVE_PERF=1`.
+- **Runtime metrics**: `daemon.health` includes request, transfer, file, cache, namespace-cache, helper-process, mount, unmount, cleanup-retry, registry-lock-wait, and bounded request plus per-phase latency histogram counters; detailed phase logs remain opt-in through `ENCLAVE_PERF=1`.
 
 ### Additional network guards
 
