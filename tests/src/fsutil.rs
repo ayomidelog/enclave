@@ -137,6 +137,22 @@ fn is_mountpoint_uses_mountinfo_without_mountpoint_process() {
 }
 
 #[test]
+fn mountinfo_snapshot_orders_nested_mounts_deepest_first() {
+    let snapshot = MountInfoSnapshot::parse(concat!(
+        "100 1 0:50 / /tmp/enclave/ws/fs rw,relatime - ext4 /dev/loop0 rw\n",
+        "101 100 0:51 / /tmp/enclave/ws/fs/cache\\040data rw,relatime - tmpfs tmpfs rw\n"
+    ));
+    assert_eq!(
+        snapshot.at_or_below(Path::new("/tmp/enclave/ws/fs")),
+        vec![
+            PathBuf::from("/tmp/enclave/ws/fs/cache data"),
+            PathBuf::from("/tmp/enclave/ws/fs")
+        ]
+    );
+    assert!(snapshot.contains(Path::new("/tmp/enclave/ws/fs")));
+}
+
+#[test]
 fn reflink_copy_file_preserves_content_or_reports_unsupported_filesystem() {
     let dir = std::env::temp_dir().join(format!("enclave-fsutil-reflink-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();

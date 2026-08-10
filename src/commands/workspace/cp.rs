@@ -1,4 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -26,20 +30,21 @@ pub(super) fn run_workspace_cp(
     args: WorkspaceCpArgs,
 ) -> Result<()> {
     let (src, dst) = parse_transfer_paths(&args.src, &args.dst)?;
-    let response = send_managed(
-        ctx.socket,
-        "workspace.cp",
-        json!({
-            "sandbox": args.sandbox,
-            "workspace": args.workspace,
-            "src": src.path,
-            "dst": dst.path,
-            "direction": match src.side {
-                PathSide::Host => "host_to_workspace",
-                PathSide::Workspace => "workspace_to_host",
-            },
-        }),
-    )?;
+    let request = json!({
+        "sandbox": args.sandbox,
+        "workspace": args.workspace,
+        "src": src.path,
+        "dst": dst.path,
+        "direction": match src.side {
+            PathSide::Host => "host_to_workspace",
+            PathSide::Workspace => "workspace_to_host",
+        },
+    });
+    let response = if args.progress {
+        send_with_progress(ctx.socket, request)?
+    } else {
+        send_managed(ctx.socket, "workspace.cp", request)?
+    };
     let result: WorkspaceCpResult = serde_json::from_value(response)?;
     println!(
         "copied {} logical bytes in {:.3}s",
@@ -47,6 +52,25 @@ pub(super) fn run_workspace_cp(
         result.elapsed_ms as f64 / 1000.0
     );
     Ok(())
+}
+
+fn send_with_progress(socket: &Path, request: serde_json::Value) -> Result<serde_json::Value> {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let progress_stopped = Arc::clone(&stopped);
+    let progress_thread = thread::spawn(move || {
+        let started = std::time::Instant::now();
+        while !progress_stopped.load(Ordering::Relaxed) {
+            eprintln!(
+                "workspace cp: elapsed {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
+            thread::sleep(Duration::from_millis(500));
+        }
+    });
+    let response = send_managed(socket, "workspace.cp", request);
+    stopped.store(true, Ordering::Relaxed);
+    let _ = progress_thread.join();
+    response
 }
 
 fn parse_transfer_paths(src: &str, dst: &str) -> Result<(TransferPath, TransferPath)> {

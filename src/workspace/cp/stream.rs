@@ -35,6 +35,7 @@ const UTILITY_CACHE_LIMIT: usize = 512;
 #[derive(Debug)]
 pub(super) struct TransferOutput {
     pub(super) logical_bytes: u64,
+    pub(super) files: u64,
 }
 
 pub(super) struct ChildGuard {
@@ -284,7 +285,10 @@ fn run_host_regular_file_to_workspace(
         &destination.final_path(source_name).to_string_lossy(),
         client_stream,
     )?;
-    Ok(TransferOutput { logical_bytes })
+    Ok(TransferOutput {
+        logical_bytes,
+        files: 1,
+    })
 }
 
 fn is_regular_file(path: &str) -> Result<bool> {
@@ -380,7 +384,10 @@ fn run_host_archive_to_workspace(
         &destination.final_path(source_name).to_string_lossy(),
         client_stream,
     )?;
-    Ok(TransferOutput { logical_bytes })
+    Ok(TransferOutput {
+        logical_bytes,
+        files: if source_metadata.is_dir() { 0 } else { 1 },
+    })
 }
 
 fn restore_workspace_metadata(
@@ -454,13 +461,16 @@ pub(super) fn run_workspace_to_host(
         .take()
         .context("workspace tar stdout unavailable")?;
     set_pipe_capacity(stream.as_raw_fd());
-    let logical_bytes = extract_workspace_archive(stream, &stage, source_name)
+    let (logical_bytes, files) = extract_workspace_archive_with_stats(stream, &stage, source_name)
         .context("failed to validate workspace tar archive")?;
     let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
         .context("failed to wait for workspace tar")?;
     ensure_transfer_success("workspace tar", &workspace_output)?;
     stage.commit(source_name, destination.final_name(source_name))?;
-    Ok(TransferOutput { logical_bytes })
+    Ok(TransferOutput {
+        logical_bytes,
+        files,
+    })
 }
 
 fn create_workspace_staging_directory(
@@ -519,13 +529,23 @@ fn move_workspace_path(
     ensure_transfer_success("workspace staged move", &output)
 }
 
+#[cfg(test)]
 pub(super) fn extract_workspace_archive<R: Read>(
     stream: R,
     stage: &HostStagingDirectory,
     source_name: &str,
 ) -> Result<u64> {
+    extract_workspace_archive_with_stats(stream, stage, source_name).map(|(bytes, _)| bytes)
+}
+
+pub(super) fn extract_workspace_archive_with_stats<R: Read>(
+    stream: R,
+    stage: &HostStagingDirectory,
+    source_name: &str,
+) -> Result<(u64, u64)> {
     let mut archive = Archive::new(stream);
     let mut logical_bytes = 0u64;
+    let mut files = 0u64;
     let mut entries = HashSet::new();
     for entry in archive
         .entries()
@@ -547,6 +567,7 @@ pub(super) fn extract_workspace_archive<R: Read>(
         ensure_no_symlink_ancestors(stage.path(), &path)?;
         if entry.header().entry_type().is_file() {
             logical_bytes = logical_bytes.saturating_add(entry.header().size()?);
+            files = files.saturating_add(1);
         }
         entry.unpack_in(stage.path()).with_context(|| {
             format!("failed to unpack workspace tar entry '{}'", path.display())
@@ -556,7 +577,7 @@ pub(super) fn extract_workspace_archive<R: Read>(
     if fs::symlink_metadata(&root).is_err() {
         bail!("workspace tar archive did not contain expected entry '{source_name}'");
     }
-    Ok(logical_bytes)
+    Ok((logical_bytes, files))
 }
 
 pub(super) fn validate_archive_path(path: &Path, source_name: &str) -> Result<()> {

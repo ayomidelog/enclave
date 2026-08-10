@@ -18,6 +18,7 @@ graph LR
 - **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "..." }`
 - The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
 - For `workspace enter` and `workspace exec`, the daemon returns runtime metadata and the CLI launches an internal helper that joins the runtime namespaces directly. Stdout/stderr still stream in real-time without passing through the daemon.
+- Repeated daemon-managed namespace operations reuse an identity-checked descriptor cache keyed by runtime PID and start time. Cached descriptors are duplicated only for the helper process and invalidated when namespace identities change.
 - For `workspace cp`, the daemon uses the same namespace-entry plumbing to run transfer helpers in the workspace. Regular host files use a direct `sendfile` stream into a namespace-local receiver; directories use the Rust tar stream. Workspace-to-host data is validated and staged before an atomic commit; payloads never enter the JSON control protocol.
 
 ## Isolation Model
@@ -76,7 +77,7 @@ flowchart LR
 
 ## Namespace Handoff (workspace enter / exec)
 
-Both `workspace enter` and `workspace exec` use a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that opens `/proc/<pid>/ns/*`, calls `setns()`, and executes directly inside the workspace namespaces. This means output streams in real-time and the daemon does not proxy process stdio.
+Both `workspace enter` and `workspace exec` use a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that uses identity-checked cached descriptors when available, calls `setns()`, and executes directly inside the workspace namespaces. Descriptors are reopened when the PID start time or namespace identities change. This means output streams in real-time and the daemon does not proxy process stdio.
 
 The sequence for `workspace enter`:
 

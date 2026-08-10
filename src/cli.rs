@@ -349,6 +349,8 @@ pub struct WorkspaceCpArgs {
     pub src: String,
     #[arg(value_parser = parse_non_empty_arg)]
     pub dst: String,
+    #[arg(long, default_value_t = false)]
+    pub progress: bool,
 }
 
 #[derive(Args, Debug)]
@@ -441,6 +443,18 @@ pub struct WorkspaceCommandInternalArgs {
     pub sandbox_id: String,
     #[arg(long)]
     pub workspace_id: String,
+    #[arg(long)]
+    pub root_fd: Option<i32>,
+    #[arg(long)]
+    pub user_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub mount_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub pid_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub net_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub uts_ns_fd: Option<i32>,
     #[arg(value_name = "COMMAND", required = true, num_args = 1.., trailing_var_arg = true)]
     pub command: Vec<String>,
 }
@@ -453,6 +467,18 @@ pub struct WorkspaceFileReceiveArgs {
     pub runtime_starttime_ticks: u64,
     #[arg(long)]
     pub target: String,
+    #[arg(long)]
+    pub root_fd: Option<i32>,
+    #[arg(long)]
+    pub user_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub mount_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub pid_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub net_ns_fd: Option<i32>,
+    #[arg(long)]
+    pub uts_ns_fd: Option<i32>,
 }
 
 #[derive(Args, Debug)]

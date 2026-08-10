@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- Identity-checked namespace descriptor reuse for daemon-managed workspace commands and transfers, with explicit invalidation after session shutdown.
+- Bounded daemon health histograms and lifecycle counters for request latency, phase latency, lock wait, transfers, files, mounts, unmounts, and cleanup retries.
+- Opt-in `enclave workspace cp --progress` status output on stderr.
+- Deterministic performance fixtures for 4 KiB, 1 MiB, sparse 1 GiB/5 GiB, many-file, and deep-tree workloads.
+
+### Changed
+- Cleanup plans load and parse `/proc/self/mountinfo` once per transaction before reverse-depth unmounting.
+
 ## 1.0.4 - 2026-08-10
 
 ### Added

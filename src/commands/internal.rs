@@ -105,7 +105,17 @@ pub(crate) fn run_workspace_command(args: WorkspaceCommandInternalArgs) -> Resul
         );
     }
 
-    let namespaces = NamespaceHandles::open(args.runtime_pid)?;
+    let namespaces = NamespaceHandles::from_optional_fds(
+        args.runtime_pid,
+        [
+            args.root_fd,
+            args.user_ns_fd,
+            args.mount_ns_fd,
+            args.pid_ns_fd,
+            args.net_ns_fd,
+            args.uts_ns_fd,
+        ],
+    )?;
     enter_workspace_namespaces(&namespaces)?;
 
     let child = unsafe { fork() }.context("failed to fork after namespace entry")?;
@@ -141,7 +151,17 @@ pub(crate) fn run_workspace_file_receive(args: WorkspaceFileReceiveArgs) -> Resu
         );
     }
     validate_workspace_file_target(&args.target)?;
-    let namespaces = NamespaceHandles::open(args.runtime_pid)?;
+    let namespaces = NamespaceHandles::from_optional_fds(
+        args.runtime_pid,
+        [
+            args.root_fd,
+            args.user_ns_fd,
+            args.mount_ns_fd,
+            args.pid_ns_fd,
+            args.net_ns_fd,
+            args.uts_ns_fd,
+        ],
+    )?;
     enter_workspace_namespaces(&namespaces)?;
     let child = unsafe { fork() }.context("failed to fork after namespace entry")?;
     match child {
@@ -247,6 +267,20 @@ struct NamespaceHandles {
 }
 
 impl NamespaceHandles {
+    fn from_optional_fds(runtime_pid: u32, fds: [Option<i32>; 6]) -> Result<Self> {
+        if let [Some(root), Some(user), Some(mount), Some(pid), Some(net), Some(uts)] = fds {
+            return Ok(Self {
+                root_dir: unsafe { File::from_raw_fd(root) },
+                user_ns: unsafe { File::from_raw_fd(user) },
+                mount_ns: unsafe { File::from_raw_fd(mount) },
+                pid_ns: unsafe { File::from_raw_fd(pid) },
+                net_ns: unsafe { File::from_raw_fd(net) },
+                uts_ns: unsafe { File::from_raw_fd(uts) },
+            });
+        }
+        Self::open(runtime_pid)
+    }
+
     fn open(runtime_pid: u32) -> Result<Self> {
         let root_dir = File::open(format!("/proc/{runtime_pid}/root"))
             .with_context(|| format!("failed to open /proc/{runtime_pid}/root"))?;
@@ -533,7 +567,9 @@ fn bind_mount_self(path: &Path) -> Result<()> {
         MsFlags::MS_BIND,
         Option::<&str>::None,
     )
-    .with_context(|| format!("failed to bind-mount {}", path.display()))
+    .with_context(|| format!("failed to bind-mount {}", path.display()))?;
+    crate::perf::record_mount();
+    Ok(())
 }
 
 fn pivot_into_rootfs(rootfs: &Path, host_old_root: &Path) -> Result<()> {
@@ -592,7 +628,9 @@ fn mount_devpts_if_needed() -> Result<()> {
         MsFlags::empty(),
         Option::<&str>::None,
     )
-    .with_context(|| format!("failed to mount devpts at {}", target.display()))
+    .with_context(|| format!("failed to mount devpts at {}", target.display()))?;
+    crate::perf::record_mount();
+    Ok(())
 }
 
 fn mount_proc_if_needed() -> Result<()> {
@@ -606,7 +644,10 @@ fn mount_proc_if_needed() -> Result<()> {
         Option::<&str>::None,
     );
     match mount_result {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            crate::perf::record_mount();
+            Ok(())
+        }
         Err(err) => {
             if is_mountpoint(target).unwrap_or(false) {
                 Ok(())
@@ -637,7 +678,9 @@ fn bind_sys_if_needed(old_root: &Path) -> Result<()> {
             source.display(),
             target.display()
         )
-    })
+    })?;
+    crate::perf::record_mount();
+    Ok(())
 }
 
 fn mount_runtime_tmpfs_if_needed(target: &Path) -> Result<()> {
@@ -652,7 +695,9 @@ fn mount_runtime_tmpfs_if_needed(target: &Path) -> Result<()> {
         runtime_tmpfs_mount_flags(),
         Some(RUNTIME_TMPFS_DATA),
     )
-    .with_context(|| format!("failed to mount tmpfs at {}", target.display()))
+    .with_context(|| format!("failed to mount tmpfs at {}", target.display()))?;
+    crate::perf::record_mount();
+    Ok(())
 }
 
 fn mount_workspace_tmp_if_needed(
@@ -669,14 +714,16 @@ fn mount_workspace_tmp_if_needed(
     if disk_backed_tmp {
         let workspace_tmp = workspace_fs.join("tmp");
         ensure_workspace_tmp_source(old_root, &workspace_tmp)?;
-        return mount_workspace_source(old_root, &workspace_tmp, target, workspace_idmap_option)
+        mount_workspace_source(old_root, &workspace_tmp, target, workspace_idmap_option)
             .with_context(|| {
                 format!(
                     "failed to mount disk-backed workspace /tmp from {} to {}",
                     workspace_tmp.display(),
                     target.display()
                 )
-            });
+            })?;
+        crate::perf::record_mount();
+        return Ok(());
     }
     mount(
         Some("tmpfs"),
@@ -690,7 +737,9 @@ fn mount_workspace_tmp_if_needed(
             "failed to mount private workspace tmpfs at {}",
             target.display()
         )
-    })
+    })?;
+    crate::perf::record_mount();
+    Ok(())
 }
 
 fn runtime_tmpfs_mount_flags() -> MsFlags {

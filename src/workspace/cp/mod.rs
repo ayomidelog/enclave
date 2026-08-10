@@ -103,6 +103,7 @@ pub(crate) fn copy_workspace_path_with_connection(
     })?;
 
     crate::perf::record_transfer(transfer.logical_bytes);
+    crate::perf::record_transfer_files(transfer.files);
 
     Ok(WorkspaceCpResult {
         workspace_id: workspace.id,

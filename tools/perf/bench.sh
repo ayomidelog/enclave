@@ -11,6 +11,7 @@ Usage: bench.sh <command> [options]
 Commands:
   host       Print benchmark host metadata.
   ping       Measure daemon ping CLI latency.
+  health     Measure daemon health CLI latency.
   registry   Measure registry read throughput with the unit benchmark.
   archive    Measure single-file archive creation overhead.
   stress     Exercise concurrent daemon control requests.
@@ -31,7 +32,7 @@ case "$command_name" in
     host_metadata
     exit 0
     ;;
-  ping|registry|archive|stress|cp) ;;
+  ping|health|registry|archive|stress|cp) ;;
   *) usage; exit 2 ;;
 esac
 
@@ -52,7 +53,7 @@ host_metadata
 printf 'command=%s\niterations=%s\n' "$command_name" "$iterations"
 
 case "$command_name" in
-  ping)
+  ping|health)
     if [[ $(id -u) -ne 0 ]] && ! sudo -n true 2>/dev/null; then
       printf 'status=SKIP reason=daemon benchmark requires root\n'
       exit 0
@@ -90,7 +91,7 @@ case "$command_name" in
       exit 1
     fi
     printf 'status=PASS\n'
-    run_timed_iterations "$iterations" "${runner[@]}" "$binary" --socket "$socket" ping
+    run_timed_iterations "$iterations" "${runner[@]}" "$binary" --socket "$socket" "$command_name"
     ;;
   registry)
     cargo test --test perf_suite registry_read_cache_benchmark -- --ignored --nocapture

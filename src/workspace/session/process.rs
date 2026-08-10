@@ -32,6 +32,26 @@ pub fn read_namespace_refs(pid: u32) -> Result<(String, String)> {
     Ok((mount, pid_ns))
 }
 
+pub(super) fn read_namespace_identity(pid: u32) -> Result<[String; 5]> {
+    Ok([
+        fs::read_link(format!("/proc/{pid}/ns/user"))?
+            .to_string_lossy()
+            .to_string(),
+        fs::read_link(format!("/proc/{pid}/ns/mnt"))?
+            .to_string_lossy()
+            .to_string(),
+        fs::read_link(format!("/proc/{pid}/ns/pid"))?
+            .to_string_lossy()
+            .to_string(),
+        fs::read_link(format!("/proc/{pid}/ns/net"))?
+            .to_string_lossy()
+            .to_string(),
+        fs::read_link(format!("/proc/{pid}/ns/uts"))?
+            .to_string_lossy()
+            .to_string(),
+    ])
+}
+
 pub fn count_processes_in_pid_namespace(pid: u32) -> Result<usize> {
     let target = fs::read_link(format!("/proc/{pid}/ns/pid"))
         .with_context(|| format!("failed to read /proc/{pid}/ns/pid"))?;

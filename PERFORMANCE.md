@@ -38,12 +38,18 @@ measurements below use the same host and harness as the baseline.
 | Single-file archive creation | `22.04x` faster (`1.892066383s` -> `0.085836286s`) | 10 x 16 MiB fixture, `tools/perf/check-thresholds.sh`, August 10, 2026 |
 | Daemon worker isolation | compile- and test-validated | `cargo test --all-targets --no-run` |
 | Daemon scheduling | separate bounded control/transfer queues | 6 control workers, 2 transfer workers, classification regression tests |
+| Runtime observability | bounded latency histograms and lifecycle counters | `daemon.health` exposes request/phase buckets, lock wait, mount/unmount, cleanup retry, transfer-file, cache, and process-spawn counters |
+| Cleanup mount parsing | one mountinfo snapshot per cleanup transaction | `MountInfoSnapshot` reverse-depth planning tests |
+| Namespace handoff | identity-checked descriptor reuse | runtime PID/start-time and five namespace identities key the daemon cache; helper descriptors are inherited without reopening `/proc/<pid>/ns/*` |
 | Daemon ping, 10 CLI invocations | p50 `0.07s`, p95 `0.16s` | Current branch, `tools/perf/bench.sh ping --iterations 10` |
+| Daemon health, 8 CLI invocations | p50 `0.06s`, p95 `0.14s` | Current branch, `tools/perf/bench.sh health --iterations 8`, August 10, 2026 |
 | Concurrent daemon control requests | 64 requests in `1.119924s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64` |
 | Workspace readiness | event-driven wait | `inotify` + bounded timeout; privileged start fixture pending |
 | Privileged workspace cp regression fixture | 14.00 s | Files, directories, metadata preservation, symlink rejection, and both directions passed |
 | Regular-file transfer path | kernel direct stream | `sendfile` into namespace-local receiver; privileged fixture passed |
 | Workspace cp, 5 GiB | pending privileged run | `tools/perf/bench.sh cp` |
+| Deterministic transfer fixtures | pass | `tools/perf/fixtures.sh`: 4 KiB, 1 MiB, sparse 1 GiB/5 GiB, 1000 files, ten-level tree |
+| Copy progress reporting | opt-in, stderr-only | `enclave workspace cp ... --progress`; no progress text enters stdout or JSON protocol |
 
 ## Interpretation
 

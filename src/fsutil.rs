@@ -12,6 +12,49 @@ use uuid::Uuid;
 const LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
+#[derive(Debug, Clone)]
+pub(crate) struct MountInfoSnapshot {
+    mountpoints: Vec<PathBuf>,
+}
+
+impl MountInfoSnapshot {
+    pub(crate) fn load() -> Result<Self> {
+        let raw = match fs::read_to_string("/proc/self/mountinfo") {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error).context("failed to read /proc/self/mountinfo"),
+        };
+        Ok(Self::parse(&raw))
+    }
+
+    pub(crate) fn parse(raw: &str) -> Self {
+        Self {
+            mountpoints: raw
+                .lines()
+                .filter_map(|line| line.split_whitespace().nth(4))
+                .map(unescape_mountinfo_path)
+                .map(PathBuf::from)
+                .collect(),
+        }
+    }
+
+    pub(crate) fn contains(&self, path: &Path) -> bool {
+        self.mountpoints.iter().any(|mountpoint| mountpoint == path)
+    }
+
+    pub(crate) fn at_or_below(&self, root: &Path) -> Vec<PathBuf> {
+        let mut mountpoints = self
+            .mountpoints
+            .iter()
+            .filter(|mountpoint| *mountpoint == root || mountpoint.starts_with(root))
+            .cloned()
+            .collect::<Vec<_>>();
+        mountpoints.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+        mountpoints.dedup();
+        mountpoints
+    }
+}
+
 pub fn with_file_lock<T, F>(lock_path: &Path, operation: F) -> Result<T>
 where
     F: FnOnce() -> Result<T>,
@@ -48,6 +91,7 @@ where
         return Err(anyhow!("failed to lock {}: {}", lock_path.display(), err));
     }
 
+    crate::perf::record_registry_lock_wait(started.elapsed().as_micros() as u64);
     let result = operation();
 
     let unlock_rc = unsafe { libc::flock(fd, libc::LOCK_UN) };
@@ -125,18 +169,7 @@ pub fn write_file_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
 }
 
 pub fn is_mountpoint(path: &Path) -> Result<bool> {
-    let raw = match fs::read_to_string("/proc/self/mountinfo") {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error).context("failed to read /proc/self/mountinfo"),
-    };
-    let needle = path.to_string_lossy();
-    Ok(raw.lines().any(|line| {
-        line.split_whitespace()
-            .nth(4)
-            .map(unescape_mountinfo_path)
-            .is_some_and(|mountpoint| mountpoint == needle)
-    }))
+    Ok(MountInfoSnapshot::load()?.contains(path))
 }
 
 pub fn reflink_copy_file(source: &Path, destination: &Path) -> Result<bool> {
