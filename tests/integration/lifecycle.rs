@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
@@ -84,7 +85,13 @@ fn workspace_lifecycle_create_start_stop_destroy() {
 
     let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
         .expect("create workspace");
+    let start_started = Instant::now();
     let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    println!(
+        "benchmark=workspace_start_warm elapsed_seconds={:.6}",
+        start_started.elapsed().as_secs_f64()
+    );
+    let exec_started = Instant::now();
     for _ in 0..3 {
         let result = exec_workspace_command(
             &state,
@@ -100,6 +107,11 @@ fn workspace_lifecycle_create_start_stop_destroy() {
             result.stdout, result.stderr
         );
     }
+    println!(
+        "benchmark=workspace_exec_persistent iterations=3 elapsed_seconds={:.6} average_seconds={:.6}",
+        exec_started.elapsed().as_secs_f64(),
+        exec_started.elapsed().as_secs_f64() / 3.0
+    );
     let runtime_pid = started.runtime_pid.expect("runtime pid should be set");
     let route_table = Command::new("nsenter")
         .arg("--net")

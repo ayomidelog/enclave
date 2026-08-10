@@ -4,6 +4,24 @@
 
 No unreleased changes.
 
+## 1.0.7 - 2026-08-10
+
+### Added
+- Explicit `--cache-setup` opt-in for `enclave up` and `enclave restart`. Successful setup commands are recorded independently using a digest of the sandbox identity, bootstrap method, suite, and ordered command list.
+- Additional repeatable performance-harness workloads for sandbox and workspace listing, workspace statistics, process status, and diagnostics, plus opt-in daemon phase timing through global `--verbose`.
+
+### Changed
+- Sandbox rootfs bind mounting now uses direct `mount(2)` calls with the existing validation and propagation behavior, avoiding repeated mount-utility process launches on the common workspace lifecycle path.
+- Workspace lifecycle operations use bounded workers and identity-checked registry commits so independent setup, startup, cleanup, statistics, and status work can progress without holding the global registry lock during slow filesystem, namespace, network, or process operations.
+- `workspace wipe` plans cleanup from one registry snapshot, processes independent work concurrently, and commits each confirmed deletion individually.
+- Shared bridge and NAT initialization is serialized separately from workspace-specific networking, preventing duplicate host setup without unnecessarily serializing workspace starts.
+- Host-to-workspace directory copies validate archive entries while producing the Rust-controlled tar stream in a single traversal, eliminating the host `tar` subprocess and a second metadata walk.
+- Generated `SPEED.md` and `PERFORMANCE.md` benchmark reports are now ignored; repeatable commands and operational guidance live in `tools/perf/README.md`.
+
+### Fixed
+- Setup-cache filesystem policy is isolated behind validated marker-path and atomic-write helpers, preventing invalid digests or command indexes from escaping the sandbox cache root.
+- The lifecycle integration benchmark reports warm workspace-start and persistent-exec timings without changing lifecycle assertions or normal command output contracts.
+
 ## 1.0.6 - 2026-08-10
 
 ### Added
