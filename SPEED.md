@@ -1544,6 +1544,11 @@ Do not introduce it before measuring that ordinary syscalls are the bottleneck.
 
 Keep compatibility with kernels and security policies supported by Enclave.
 
+The current syscall harness has been run against the release binary; the measured
+control-path workload is dominated by process startup and metadata operations, so
+`io_uring` is intentionally not enabled until a transfer-focused profile proves it
+is the bottleneck.
+
 ## Concurrency model
 
 ### Bounded parallelism

@@ -68,6 +68,7 @@ measurements below use the same host and harness as the baseline.
 | Registry generation tracking | monotonic stale-commit guard | Durable registry mutations advance a generation counter; lifecycle operations revalidate resource identity before committing external-work results |
 | Snapshot lock scope | storage copy outside registry lock | Snapshot creation now snapshots workspace metadata once, then mounts/copies/validates the source without retaining the global registry lock |
 | Host network initialization | one daemon-wide setup critical section | Bridge, NAT, and IPv6 setup are serialized once; per-workspace veth and namespace configuration remains independent |
+| Syscall profile | `84` syscalls, `0.006055s` traced wall time for `--version` | `tools/perf/trace.sh target/release/enclave --version`, August 10, 2026; the current hot path is dominated by process startup and file metadata rather than a measured io_uring-sized transfer bottleneck |
 | CLI phase timing | opt-in diagnostics | Global `--verbose` emits CLI total/config, socket connect, request write, response read, daemon request/dispatch, and named lifecycle phase timings to stderr |
 | Syscall profiling harness | pass | `tools/perf/trace.sh` wraps `strace -f -c` without making tracing a runtime dependency |
 
