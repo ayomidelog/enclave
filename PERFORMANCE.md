@@ -24,10 +24,11 @@ Captured before the first performance implementation on August 9, 2026.
 The implemented phases add an identity-checked registry read cache, compact
 registry writes, bounded daemon workers, nonblocking daemon shutdown,
 event-driven workspace readiness, direct mountinfo checks, cached workspace
-utility discovery, pidfd-aware transfer cancellation, a Rust archive stream for
-regular files and directories, explicit timestamp preservation, enlarged transfer
-pipes, reflink-aware storage copies, bounded snapshot GC, collision-resistant
-veth naming, safe quota resize checks, and phase timers. The privileged
+utility discovery, pidfd-aware transfer cancellation, kernel-assisted regular
+file streaming, streamed host-to-workspace directory transfers, explicit
+timestamp preservation, enlarged transfer pipes, reflink-aware storage copies,
+bounded snapshot GC, collision-resistant veth naming, safe quota resize checks,
+and phase timers. The privileged
 measurements below use the same host and harness as the baseline.
 
 | Workload | Result | Evidence |
@@ -48,7 +49,7 @@ measurements below use the same host and harness as the baseline.
 | Daemon ping, 10 CLI invocations | p50 `0.07s`, p95 `0.16s` | Current branch, `tools/perf/bench.sh ping --iterations 10` |
 | Daemon health, 8 CLI invocations | p50 `0.06s`, p95 `0.14s` | Current branch, `tools/perf/bench.sh health --iterations 8`, August 10, 2026 |
 | Concurrent daemon control requests | 64 requests in `1.039178s` | 16 clients, 6 control workers plus 2 transfer workers, `tools/perf/bench.sh stress --iterations 64` |
-| Workspace readiness | event-driven wait | `inotify` + bounded timeout; privileged start fixture pending |
+| Workspace readiness | event-driven wait | `inotify` + bounded timeout; covered by the privileged lifecycle fixture |
 | Privileged workspace cp regression fixture | 14.00 s | Files, directories, metadata preservation, symlink rejection, and both directions passed |
 | Privileged integration suite | 12/12 passed in `59.80s` | Auth, lifecycle, snapshot, quota, resize, tmp isolation, workspace copy, and host-mount fixtures; August 10, 2026 |
 | Regular-file transfer path | kernel direct stream | `sendfile` into namespace-local receiver; privileged fixture passed |
@@ -62,6 +63,9 @@ measurements below use the same host and harness as the baseline.
 The build time is compilation time, not application runtime, and is not treated as
 an optimization success metric. Ping remains within subprocess and host noise in
 this ten-sample run; the measured speedup claim is limited to registry reads.
-The 5 GiB transfer and workspace lifecycle rows remain open until a prepared
-namespace fixture is available. Correctness and safety gates remain higher
-priority than a favorable number.
+The 5 GiB transfer and workspace lifecycle rows now have measurements from the
+privileged namespace fixture. The many-file workspace-to-host direction remains
+slower than external tar because it retains Rust-side archive validation and
+staging; that safety boundary is intentional and is the next focused tuning
+target. Correctness and safety gates remain higher priority than a favorable
+number.

@@ -2,16 +2,22 @@
 
 ## Unreleased
 
+No unreleased changes.
+
+## 1.0.5 - 2026-08-10
+
 ### Added
 - Identity-checked namespace descriptor reuse for daemon-managed workspace commands and transfers, with explicit invalidation after session shutdown.
 - Bounded daemon health histograms and lifecycle counters for request latency, phase latency, lock wait, transfers, files, mounts, unmounts, and cleanup retries.
 - Opt-in `enclave workspace cp --progress` status output on stderr.
 - Deterministic performance fixtures for 4 KiB, 1 MiB, sparse 1 GiB/5 GiB, many-file, and deep-tree workloads.
+- Bounded bitmap IP allocation for deterministic network address selection under registry reconciliation.
 
 ### Changed
 - Cleanup plans load and parse `/proc/self/mountinfo` once per transaction before reverse-depth unmounting.
 - Host-to-workspace directory copies stream the host archive producer directly into the namespace-local extractor after source validation, reducing metadata-heavy transfer overhead.
 - Regular host-file transfers attempt `splice` before `sendfile` to reduce kernel/userspace copying on supported filesystems and pipes.
+- Performance documentation now includes privileged 5 GiB transfer and full lifecycle measurements.
 
 ## 1.0.4 - 2026-08-10
 
