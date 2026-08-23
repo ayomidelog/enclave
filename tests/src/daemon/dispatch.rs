@@ -137,3 +137,24 @@ fn parse_required_disk_bytes_rejects_missing_and_overflowing_values() {
     }))
     .is_err());
 }
+
+#[test]
+fn clear_tmp_on_restart_accepts_boolean_values() {
+    assert_eq!(
+        parse_optional_bool_field(
+            &serde_json::json!({"clear_tmp_on_restart": true}),
+            "clear_tmp_on_restart"
+        )
+        .unwrap(),
+        Some(true)
+    );
+}
+
+#[test]
+fn clear_tmp_on_restart_rejects_non_boolean_values() {
+    assert!(parse_optional_bool_field(
+        &serde_json::json!({"clear_tmp_on_restart": "yes"}),
+        "clear_tmp_on_restart"
+    )
+    .is_err());
+}

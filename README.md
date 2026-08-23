@@ -93,6 +93,14 @@ Workspace runtimes are hardened with user-namespace isolation, capability droppi
 
 Managed workspace disk limits cover more than `/home`: when `disk_mb` is configured, the workspace uses a quota-backed root OverlayFS layer, so writes under `/opt`, `/var`, `/etc`, `/root`, `/home`, and workspace-private `/tmp` consume that workspace's allocation. The shared sandbox rootfs remains the lower layer and is not modified by those writes.
 
+Temporary files normally survive a workspace stop when they are stored on managed disk. To get reset-on-restart behavior, opt in per workspace:
+
+```toml
+[workspace.builder]
+name = "builder"
+clear_tmp_on_restart = true
+```
+
 ## Bootstrap Methods
 
 Enclave supports multiple methods for creating sandbox root filesystems:

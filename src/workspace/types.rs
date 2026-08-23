@@ -33,6 +33,7 @@ pub struct WorkspaceLimits {
 
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceLimitsUpdate {
+    pub clear_tmp_on_restart: Option<bool>,
     pub cpu_seconds: Option<Option<u64>>,
     pub cpu_percent: Option<Option<f64>>,
     pub memory_bytes: Option<Option<u64>>,
@@ -93,7 +94,8 @@ impl WorkspaceLimits {
 
 impl WorkspaceLimitsUpdate {
     pub fn is_empty(&self) -> bool {
-        self.cpu_seconds.is_none()
+        self.clear_tmp_on_restart.is_none()
+            && self.cpu_seconds.is_none()
             && self.cpu_percent.is_none()
             && self.memory_bytes.is_none()
             && self.max_processes.is_none()
@@ -141,6 +143,8 @@ pub struct WorkspaceMetadata {
     pub runtime_starttime_ticks: Option<u64>,
     #[serde(default)]
     pub namespace_refs: NamespaceRefs,
+    #[serde(default)]
+    pub clear_tmp_on_restart: bool,
     #[serde(default)]
     pub limits: WorkspaceLimits,
 

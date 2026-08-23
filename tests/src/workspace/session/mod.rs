@@ -31,6 +31,7 @@ fn workspace_fixture() -> super::super::types::WorkspaceMetadata {
         runtime_pid: None,
         runtime_starttime_ticks: None,
         namespace_refs: Default::default(),
+        clear_tmp_on_restart: false,
         limits: Default::default(),
         assigned_ip: None,
     }

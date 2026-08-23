@@ -76,6 +76,7 @@ fn cleanup_workspace_artifacts_removes_stale_workspace_resources() {
         runtime_pid: Some(u32::MAX),
         runtime_starttime_ticks: None,
         namespace_refs: NamespaceRefs::default(),
+        clear_tmp_on_restart: false,
         limits: WorkspaceLimits::default(),
         assigned_ip: None,
     };
@@ -145,6 +146,7 @@ fn cleanup_workspace_artifacts_accepts_missing_workspace_root() {
         runtime_pid: None,
         runtime_starttime_ticks: None,
         namespace_refs: NamespaceRefs::default(),
+        clear_tmp_on_restart: false,
         limits: WorkspaceLimits::default(),
         assigned_ip: None,
     };
@@ -215,6 +217,7 @@ fn reconcile_clears_dead_runtime_and_namespace_references() {
                 .to_string_lossy()
                 .to_string(),
         },
+        clear_tmp_on_restart: false,
         limits: WorkspaceLimits::default(),
         assigned_ip: Some("10.88.0.99".to_string()),
     };

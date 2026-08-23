@@ -226,6 +226,8 @@ When creating a workspace, you can set per-workspace resource limits:
 | `--max-open-files N` | Maximum number of open file descriptors (`RLIMIT_NOFILE`). |
 | `--disk-mb N` | Maximum disk space for Enclave-managed workspace storage, including `/home`, workspace-private `/tmp`, and root OverlayFS writes such as `/opt`, `/var`, `/etc`, and `/root`. Not supported with host-mounted `workspace_dir` / `path`. |
 
+The Enclavefile-only `clear_tmp_on_restart = true` setting clears a managed workspace's `/tmp` after a successful workspace or sandbox stop. It is disabled by default and does not affect host-mounted workspace directories.
+
 Sandbox limits are aggregate caps across all running workspaces in that sandbox. Workspace limits apply to the individual workspace process tree.
 
 ## Snapshots

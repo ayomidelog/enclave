@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Quota-backed workspaces now use a per-workspace root OverlayFS upper/work layer on the same ext4 image as `/home` and workspace-private `/tmp`, so writes under `/opt`, `/var`, `/etc`, and `/root` consume the configured `disk_mb` allocation without modifying the shared sandbox lower rootfs.
+- Managed workspace `/tmp` can be cleared on restart with the opt-in Enclavefile setting `clear_tmp_on_restart = true`.
 
 ## 1.0.7 - 2026-08-10
 

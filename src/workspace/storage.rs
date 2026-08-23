@@ -94,6 +94,76 @@ pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Resu
     Ok(())
 }
 
+pub(crate) fn reset_workspace_tmp(workspace: &WorkspaceMetadata) -> Result<()> {
+    if !workspace_uses_disk_image(workspace) {
+        return Ok(());
+    }
+
+    let workspace_root = PathBuf::from(&workspace.filesystem_path);
+    let tmp_path = workspace_root.join("tmp");
+    let canonical_root = fs::canonicalize(&workspace_root).with_context(|| {
+        format!(
+            "failed to resolve workspace filesystem {}",
+            workspace_root.display()
+        )
+    })?;
+    let canonical_tmp =
+        crate::fsutil::ensure_path_within(&canonical_root, &tmp_path, "workspace tmp")?;
+    let metadata = match fs::symlink_metadata(&canonical_tmp) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(&canonical_tmp).with_context(|| {
+                format!("failed to create workspace tmp {}", canonical_tmp.display())
+            })?;
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect workspace tmp {}",
+                    canonical_tmp.display()
+                )
+            })
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "workspace tmp path must not be a symlink: {}",
+            canonical_tmp.display()
+        );
+    }
+
+    fs::create_dir_all(&canonical_tmp)
+        .with_context(|| format!("failed to create workspace tmp {}", canonical_tmp.display()))?;
+    for entry in fs::read_dir(&canonical_tmp)
+        .with_context(|| format!("failed to read workspace tmp {}", canonical_tmp.display()))?
+    {
+        let path = entry
+            .with_context(|| {
+                format!(
+                    "failed to inspect workspace tmp {}",
+                    canonical_tmp.display()
+                )
+            })?
+            .path();
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("failed to inspect workspace tmp entry {}", path.display()))?;
+        if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() {
+            fs::remove_dir_all(&path).with_context(|| {
+                format!(
+                    "failed to remove workspace tmp directory {}",
+                    path.display()
+                )
+            })?;
+        } else {
+            fs::remove_file(&path).with_context(|| {
+                format!("failed to remove workspace tmp entry {}", path.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn unmount_mounts_at_or_below_excluding(
     root: &Path,
     excluded_roots: &[PathBuf],

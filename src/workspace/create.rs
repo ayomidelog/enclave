@@ -19,6 +19,7 @@ pub struct WorkspaceCreateOptions {
     pub auth_providers: Vec<String>,
     pub env_tokens: Vec<String>,
     pub published_ports: Vec<PublishedPortSpec>,
+    pub clear_tmp_on_restart: bool,
 }
 
 pub fn create_workspace(
@@ -51,6 +52,7 @@ pub fn create_workspace_with_options(
         auth_providers,
         env_tokens,
         published_ports,
+        clear_tmp_on_restart,
     } = options;
     limits.validate()?;
     let auth_providers = normalize_auth_providers(auth_providers)?;
@@ -176,6 +178,7 @@ pub fn create_workspace_with_options(
                 pid: pid_ns_ref.to_string_lossy().to_string(),
             },
             limits: limits.clone(),
+            clear_tmp_on_restart,
             assigned_ip: None,
         };
 
