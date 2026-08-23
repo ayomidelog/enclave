@@ -109,6 +109,7 @@ pub fn start_session(
         .with_context(|| format!("failed to clone {}", log_file.display()))?;
 
     let disk_backed_tmp = crate::workspace::storage::workspace_uses_disk_image(workspace);
+    let root_overlay_paths = crate::workspace::storage::root_overlay_paths(workspace);
     let mut command = Command::new("setsid");
     command
         .arg("-f")
@@ -174,6 +175,15 @@ pub fn start_session(
         .arg(workspace_bind_idmap.unwrap_or_default());
     if disk_backed_tmp {
         command.arg("--disk-backed-tmp");
+    }
+    if let Some((upper, work, merged)) = root_overlay_paths {
+        command
+            .arg("--root-overlay-upper")
+            .arg(upper)
+            .arg("--root-overlay-work")
+            .arg(work)
+            .arg("--root-overlay-merged")
+            .arg(merged);
     }
     let status = command
         .stdin(Stdio::null())

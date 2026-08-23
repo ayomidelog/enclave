@@ -91,6 +91,8 @@ Enclave relies exclusively on Linux kernel features. There is no distro detectio
 
 Workspace runtimes are hardened with user-namespace isolation, capability dropping, read-only `/proc/sys` and `/sys` remounts, seccomp deny rules, and optional AppArmor/SELinux hooks.
 
+Managed workspace disk limits cover more than `/home`: when `disk_mb` is configured, the workspace uses a quota-backed root OverlayFS layer, so writes under `/opt`, `/var`, `/etc`, `/root`, `/home`, and workspace-private `/tmp` consume that workspace's allocation. The shared sandbox rootfs remains the lower layer and is not modified by those writes.
+
 ## Bootstrap Methods
 
 Enclave supports multiple methods for creating sandbox root filesystems:

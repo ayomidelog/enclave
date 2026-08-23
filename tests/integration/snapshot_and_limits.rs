@@ -25,6 +25,7 @@ fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
     let cache = state_dir.join("sandboxes").join("rootfs-cache").join(suite);
     fs::create_dir_all(cache.join("bin")).expect("create bin");
     fs::create_dir_all(cache.join("etc")).expect("create etc");
+    fs::create_dir_all(cache.join("opt")).expect("create opt");
     fs::create_dir_all(cache.join("usr").join("bin")).expect("create usr/bin");
     fs::copy("/usr/bin/busybox", cache.join("bin").join("busybox")).expect("copy busybox");
     #[cfg(unix)]
@@ -36,6 +37,91 @@ fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
         std::os::unix::fs::symlink("/bin/busybox", cache.join("usr").join("bin").join("env"))
             .expect("symlink env");
     }
+}
+
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn workspace_root_overlay_enforces_total_disk_quota() {
+    if !root_only() {
+        return;
+    }
+
+    use std::io::Write;
+
+    let state = state_dir("enclave-int-root-overlay-quota");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-root-overlay-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let quota_bytes = 32 * 1024 * 1024;
+    let limited = create_workspace(
+        &state,
+        &sandbox.id,
+        "limited",
+        WorkspaceLimits {
+            disk_bytes: Some(quota_bytes),
+            ..WorkspaceLimits::default()
+        },
+    )
+    .expect("create quota workspace");
+    let peer = create_workspace(&state, &sandbox.id, "peer", WorkspaceLimits::default())
+        .expect("create peer workspace");
+    let limited = start_workspace(&state, &sandbox.id, &limited.id).expect("start quota workspace");
+    let peer = start_workspace(&state, &sandbox.id, &peer.id).expect("start peer workspace");
+    let limited_pid = limited.runtime_pid.expect("quota runtime pid");
+    let peer_pid = peer.runtime_pid.expect("peer runtime pid");
+
+    let limited_fill = Path::new("/proc")
+        .join(limited_pid.to_string())
+        .join("root/opt/quota-fill.bin");
+    let peer_fill = Path::new("/proc")
+        .join(peer_pid.to_string())
+        .join("root/opt/quota-fill.bin");
+    let lower_fill = Path::new(&sandbox.rootfs_path).join("opt/quota-fill.bin");
+    let block = vec![0u8; 1024 * 1024];
+    let mut file = fs::File::create(&limited_fill).expect("create quota fill file");
+    let mut wrote_any = false;
+    let mut hit_quota = false;
+    for _ in 0..64 {
+        match file.write_all(&block) {
+            Ok(()) => wrote_any = true,
+            Err(error) => {
+                assert_eq!(error.raw_os_error(), Some(libc::ENOSPC));
+                hit_quota = true;
+                break;
+            }
+        }
+    }
+    assert!(wrote_any, "quota overlay should accept some writes");
+    assert!(
+        hit_quota,
+        "quota overlay should reject writes after exhaustion"
+    );
+    assert!(
+        !peer_fill.exists(),
+        "peer workspace must not see quota workspace writes"
+    );
+    assert!(
+        !lower_fill.exists(),
+        "shared sandbox lower rootfs must remain unchanged"
+    );
+
+    stop_workspace(&state, &sandbox.id, &limited.id).expect("stop quota workspace");
+    stop_workspace(&state, &sandbox.id, &peer.id).expect("stop peer workspace");
+    destroy_workspace(&state, &sandbox.id, &limited.id).expect("destroy quota workspace");
+    destroy_workspace(&state, &sandbox.id, &peer.id).expect("destroy peer workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
 }
 
 #[test]

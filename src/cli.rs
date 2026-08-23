@@ -414,6 +414,12 @@ pub struct WorkspaceSessionLaunchArgs {
     pub workspace_idmap_option: String,
     #[arg(long, default_value_t = false)]
     pub disk_backed_tmp: bool,
+    #[arg(long, default_value = "")]
+    pub root_overlay_upper: String,
+    #[arg(long, default_value = "")]
+    pub root_overlay_work: String,
+    #[arg(long, default_value = "")]
+    pub root_overlay_merged: String,
 }
 
 #[derive(Args, Debug)]
@@ -428,6 +434,12 @@ pub struct WorkspaceSessionBootstrapArgs {
     pub workspace_idmap_option: String,
     #[arg(long, default_value_t = false)]
     pub disk_backed_tmp: bool,
+    #[arg(long, default_value = "")]
+    pub root_overlay_upper: String,
+    #[arg(long, default_value = "")]
+    pub root_overlay_work: String,
+    #[arg(long, default_value = "")]
+    pub root_overlay_merged: String,
     #[arg(long, value_name = "PATH")]
     pub ready_file: String,
 }

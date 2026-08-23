@@ -224,7 +224,7 @@ When creating a workspace, you can set per-workspace resource limits:
 | `--memory-mb N` | Maximum virtual memory in megabytes (`RLIMIT_AS`). |
 | `--max-procs N` | Maximum number of processes (`RLIMIT_NPROC` via `prlimit`). |
 | `--max-open-files N` | Maximum number of open file descriptors (`RLIMIT_NOFILE`). |
-| `--disk-mb N` | Maximum disk space for Enclave-managed workspace `/home` storage. Not supported with host-mounted `workspace_dir` / `path`. |
+| `--disk-mb N` | Maximum disk space for Enclave-managed workspace storage, including `/home`, workspace-private `/tmp`, and root OverlayFS writes such as `/opt`, `/var`, `/etc`, and `/root`. Not supported with host-mounted `workspace_dir` / `path`. |
 
 Sandbox limits are aggregate caps across all running workspaces in that sandbox. Workspace limits apply to the individual workspace process tree.
 

@@ -68,6 +68,25 @@ fn workspace_disk_image_path_is_under_workspace_dir() {
 }
 
 #[test]
+fn root_overlay_paths_use_quota_filesystem_for_upper_and_work() {
+    let mut workspace = workspace_fixture();
+    workspace.limits.disk_bytes = Some(MIN_DISK_BYTES);
+    let (upper, work, merged) = root_overlay_paths(&workspace).expect("quota root overlay");
+    assert_eq!(
+        upper,
+        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/fs/root-upper")
+    );
+    assert_eq!(
+        work,
+        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/fs/root-work")
+    );
+    assert_eq!(
+        merged,
+        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/root-merged")
+    );
+}
+
+#[test]
 fn disk_resize_rejects_workspace_without_allocation() {
     let workspace = workspace_fixture();
     let err = increase_workspace_disk_allocation(&workspace, MIN_DISK_BYTES * 2)

@@ -14,13 +14,14 @@ fn script_execs_pre_pivot_bootstrap_helper_before_ready() {
 
 #[test]
 fn script_uses_host_helper_path_instead_of_old_root_exec_path() {
-    assert!(WORKSPACE_SESSION_SCRIPT.contains("exec \"$SESSION_HELPER\""));
+    assert!(WORKSPACE_SESSION_SCRIPT.contains("run_bootstrap()"));
+    assert!(WORKSPACE_SESSION_SCRIPT.contains("exec \"$@\""));
     assert!(!WORKSPACE_SESSION_SCRIPT.contains("/.old_root${SESSION_HELPER}"));
 }
 
 #[test]
 fn script_wraps_bootstrap_helper_with_setpriv_when_lsm_options_are_present() {
-    assert!(WORKSPACE_SESSION_SCRIPT.contains("exec setpriv $setpriv_args \"$SESSION_HELPER\""));
+    assert!(WORKSPACE_SESSION_SCRIPT.contains("exec setpriv $setpriv_args \"$@\""));
     assert!(WORKSPACE_SESSION_SCRIPT.contains("--apparmor-profile=$APPARMOR_PROFILE"));
     assert!(WORKSPACE_SESSION_SCRIPT.contains("--selinux-label=$SELINUX_LABEL"));
 }

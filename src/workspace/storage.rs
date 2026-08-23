@@ -52,6 +52,32 @@ pub fn ensure_workspace_storage_ready(workspace: &WorkspaceMetadata) -> Result<(
         ensure_disk_backend_available()?;
         initialize_disk_image(workspace)?;
         mount_disk_image_if_needed(workspace)?;
+        ensure_root_overlay_layout(workspace)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn root_overlay_paths(
+    workspace: &WorkspaceMetadata,
+) -> Option<(PathBuf, PathBuf, PathBuf)> {
+    if !workspace_uses_disk_image(workspace) {
+        return None;
+    }
+    Some((
+        PathBuf::from(&workspace.filesystem_path).join("root-upper"),
+        PathBuf::from(&workspace.filesystem_path).join("root-work"),
+        PathBuf::from(&workspace.workspace_path).join("root-merged"),
+    ))
+}
+
+fn ensure_root_overlay_layout(workspace: &WorkspaceMetadata) -> Result<()> {
+    let Some((upper, work, merged)) = root_overlay_paths(workspace) else {
+        return Ok(());
+    };
+    for path in [&upper, &work, &merged] {
+        fs::create_dir_all(path).with_context(|| {
+            format!("failed to create root overlay directory {}", path.display())
+        })?;
     }
     Ok(())
 }

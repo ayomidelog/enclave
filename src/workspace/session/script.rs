@@ -16,6 +16,9 @@ APPARMOR_PROFILE="${14}"
 SELINUX_LABEL="${15}"
 WORKSPACE_IDMAP_OPTION="${16}"
 DISK_BACKED_TMP="${17}"
+ROOT_OVERLAY_UPPER="${18}"
+ROOT_OVERLAY_WORK="${19}"
+ROOT_OVERLAY_MERGED="${20}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -24,6 +27,9 @@ log() {
 log "workspace session bootstrap starting"
 log "rootfs=$ROOTFS"
 log "workspace_fs=$WS_FS"
+log "root_overlay_upper=$ROOT_OVERLAY_UPPER"
+log "root_overlay_work=$ROOT_OVERLAY_WORK"
+log "root_overlay_merged=$ROOT_OVERLAY_MERGED"
 
 if [ -n "$CPU_LIMIT" ]; then
   ulimit -t "$CPU_LIMIT" || true
@@ -70,33 +76,36 @@ echo "$HOST_PID" > "$PID_FILE"
 
 log "workspace session bootstrap complete; switching to hardened runtime helper"
 BOOTSTRAP_TMP_ARGS=""
-if [ "$DISK_BACKED_TMP" = "true" ]; then
-  BOOTSTRAP_TMP_ARGS="--disk-backed-tmp"
-fi
-if [ -n "$APPARMOR_PROFILE" ] || [ -n "$SELINUX_LABEL" ]; then
-  setpriv_args="--nnp"
-  if [ -n "$APPARMOR_PROFILE" ]; then
-    setpriv_args="$setpriv_args --apparmor-profile=$APPARMOR_PROFILE"
-  fi
-  if [ -n "$SELINUX_LABEL" ]; then
-    setpriv_args="$setpriv_args --selinux-label=$SELINUX_LABEL"
-  fi
-  # shellcheck disable=SC2086
-  exec setpriv $setpriv_args "$SESSION_HELPER" internal workspace-session-bootstrap \
+run_bootstrap() {
+  set -- "$SESSION_HELPER" internal workspace-session-bootstrap \
     --rootfs "$ROOTFS" \
     --workspace-fs "$WS_FS" \
     --mount-target "$MOUNT_TARGET" \
-    --workspace-idmap-option "$WORKSPACE_IDMAP_OPTION" \
-    $BOOTSTRAP_TMP_ARGS \
-    --ready-file "$READY_FILE"
-fi
-exec "$SESSION_HELPER" internal workspace-session-bootstrap \
-  --rootfs "$ROOTFS" \
-  --workspace-fs "$WS_FS" \
-  --mount-target "$MOUNT_TARGET" \
-  --workspace-idmap-option "$WORKSPACE_IDMAP_OPTION" \
-  $BOOTSTRAP_TMP_ARGS \
-  --ready-file "$READY_FILE"
+    --workspace-idmap-option "$WORKSPACE_IDMAP_OPTION"
+  if [ "$DISK_BACKED_TMP" = "true" ]; then
+    set -- "$@" --disk-backed-tmp
+  fi
+  if [ -n "$ROOT_OVERLAY_UPPER" ]; then
+    set -- "$@" \
+      --root-overlay-upper "$ROOT_OVERLAY_UPPER" \
+      --root-overlay-work "$ROOT_OVERLAY_WORK" \
+      --root-overlay-merged "$ROOT_OVERLAY_MERGED"
+  fi
+  set -- "$@" --ready-file "$READY_FILE"
+  if [ -n "$APPARMOR_PROFILE" ] || [ -n "$SELINUX_LABEL" ]; then
+    setpriv_args="--nnp"
+    if [ -n "$APPARMOR_PROFILE" ]; then
+      setpriv_args="$setpriv_args --apparmor-profile=$APPARMOR_PROFILE"
+    fi
+    if [ -n "$SELINUX_LABEL" ]; then
+      setpriv_args="$setpriv_args --selinux-label=$SELINUX_LABEL"
+    fi
+    # shellcheck disable=SC2086
+    exec setpriv $setpriv_args "$@"
+  fi
+  exec "$@"
+}
+run_bootstrap
 "#;
 
 #[cfg(test)]

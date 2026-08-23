@@ -54,10 +54,12 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - `workspaces/<workspace-id>/home-merged/` is the merged OverlayFS view.
 - `workspaces/<workspace-id>/fs/` is the default workspace source directory mounted into `/home` inside the workspace.
 - When `disk_mb` is configured, that `fs/` mount target is backed by the workspace's `fs.img` loop-mounted ext4 image, and the workspace-private `/tmp` is bind-mounted from the same filesystem so both paths consume the same quota.
+- When `disk_mb` is configured, the workspace also mounts an OverlayFS root whose upper and work directories live on that same ext4 image. Writable paths such as `/opt`, `/var`, `/etc`, and `/root` therefore consume the workspace quota while the shared sandbox rootfs remains the read-only lower layer.
 - Quota-backed workspace storage is initialized and mounted when the workspace is created so the returned `filesystem_path` always refers to the actual ext4 data volume, even before the runtime is started.
 - An existing quota-backed allocation can be increased with `enclave workspace resize <sandbox> <workspace> --disk-mb N`; the command grows both the sparse image and its ext4 filesystem and updates the persisted workspace limit.
 - Resizing a running workspace temporarily stops and restarts its runtime through the normal lifecycle cleanup and hardening path. Host-backed workspace directories and allocation decreases are intentionally unsupported.
 - If `workspace_dir` is configured, Enclave mounts that directory instead.
+- Host-backed `workspace_dir`/`path` workspaces do not use the quota-backed root overlay and remain subject to the host directory's storage policy.
 - In both cases, `/home` is presented through an idmapped bind mount rather than a raw host bind.
 - `enclave workspace cp` operates on the live mounted workspace filesystem. It is a streaming transfer and does not create a separate archive or durable copy in Enclave state.
 
