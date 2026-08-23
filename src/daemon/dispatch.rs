@@ -96,6 +96,7 @@ fn parse_required_disk_bytes(params: &Value) -> Result<u64> {
 
 fn parse_workspace_limits_update(params: &Value) -> Result<workspace::WorkspaceLimitsUpdate> {
     Ok(workspace::WorkspaceLimitsUpdate {
+        clear_tmp_on_restart: parse_optional_bool_field(params, "clear_tmp_on_restart")?,
         cpu_seconds: parse_optional_u64_field(params, "cpu_seconds")?,
         cpu_percent: parse_optional_f64_field(params, "cpu_percent")?,
         memory_bytes: parse_optional_u64_field(params, "memory_mb")?
@@ -105,6 +106,16 @@ fn parse_workspace_limits_update(params: &Value) -> Result<workspace::WorkspaceL
         disk_bytes: parse_optional_u64_field(params, "disk_mb")?
             .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
     })
+}
+
+fn parse_optional_bool_field(params: &Value, key: &str) -> Result<Option<bool>> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("'{key}' must be a boolean")),
+    }
 }
 
 fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::SandboxLimits> {
@@ -432,6 +443,12 @@ fn dispatch_workspace_create(
         .transpose()?
         .unwrap_or_default();
     let published_ports = parse_published_ports(params, "ports")?.unwrap_or_default();
+    let clear_tmp_on_restart = params
+        .get("clear_tmp_on_restart")
+        .map(|_| parse_optional_bool_field(params, "clear_tmp_on_restart"))
+        .transpose()?
+        .flatten()
+        .unwrap_or(false);
     let metadata = workspace::create_workspace_with_options(
         &config.state_dir,
         sandbox_id,
@@ -442,6 +459,7 @@ fn dispatch_workspace_create(
             auth_providers,
             env_tokens,
             published_ports,
+            clear_tmp_on_restart,
         },
     )?;
     let started = workspace::start_workspace_with_security(
@@ -563,7 +581,6 @@ fn dispatch_workspace_update(
         .transpose()?;
     let published_ports = parse_published_ports(params, "ports")?;
     let limits = parse_workspace_limits_update(params)?;
-
     update_workspace_definition_with_runtime(
         &config.state_dir,
         WorkspaceDefinitionUpdateRequest {
@@ -1091,6 +1108,7 @@ fn rollback_workspace_definition_update(
         Some(previous.env_tokens.clone()),
         Some(previous.published_ports.clone()),
         workspace::WorkspaceLimitsUpdate {
+            clear_tmp_on_restart: Some(previous.clear_tmp_on_restart),
             cpu_seconds: Some(previous.limits.cpu_seconds),
             cpu_percent: Some(previous.limits.cpu_percent),
             memory_bytes: Some(previous.limits.memory_bytes),

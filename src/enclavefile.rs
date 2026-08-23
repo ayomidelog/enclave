@@ -43,6 +43,8 @@ pub struct WorkspaceSection {
     pub max_open_files: Option<u64>,
     pub disk_mb: Option<u64>,
     #[serde(default)]
+    pub clear_tmp_on_restart: bool,
+    #[serde(default)]
     pub auth: Vec<String>,
     #[serde(default)]
     pub env_tokens: Vec<String>,

@@ -24,6 +24,7 @@ fn runtime_exec_clears_environment_before_running_wrapper() {
         runtime_pid: Some(1234),
         runtime_starttime_ticks: Some(1),
         namespace_refs: Default::default(),
+        clear_tmp_on_restart: false,
         limits: WorkspaceLimits::default(),
         assigned_ip: None,
     };

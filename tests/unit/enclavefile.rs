@@ -44,6 +44,7 @@ ports = ["127.0.0.1:3001:3000/tcp"]
 [workspace.builder]
 name = "builder"
 run = "cargo build --release"
+clear_tmp_on_restart = true
 
 [workspace.shell]
 name = "shell"
@@ -72,11 +73,13 @@ name = "shell"
     let builder = &ef.workspace["builder"];
     assert_eq!(builder.name, "builder");
     assert_eq!(builder.run.as_deref(), Some("cargo build --release"));
+    assert!(builder.clear_tmp_on_restart);
 
     let shell = &ef.workspace["shell"];
     assert_eq!(shell.name, "shell");
     assert!(shell.run.is_none());
     assert!(shell.path.is_none());
+    assert!(!shell.clear_tmp_on_restart);
 }
 
 #[test]

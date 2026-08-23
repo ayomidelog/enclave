@@ -22,6 +22,7 @@ fn workspace_fixture() -> super::super::types::WorkspaceMetadata {
         runtime_pid: None,
         runtime_starttime_ticks: None,
         namespace_refs: Default::default(),
+        clear_tmp_on_restart: false,
         limits: Default::default(),
         assigned_ip: None,
     }
@@ -65,6 +66,44 @@ fn workspace_disk_image_path_is_under_workspace_dir() {
         workspace_disk_image_path(&workspace),
         std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/fs.img")
     );
+}
+
+#[test]
+fn root_overlay_paths_use_quota_filesystem_for_upper_and_work() {
+    let mut workspace = workspace_fixture();
+    workspace.limits.disk_bytes = Some(MIN_DISK_BYTES);
+    let (upper, work, merged) = root_overlay_paths(&workspace).expect("quota root overlay");
+    assert_eq!(
+        upper,
+        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/fs/root-upper")
+    );
+    assert_eq!(
+        work,
+        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/fs/root-work")
+    );
+    assert_eq!(
+        merged,
+        std::path::PathBuf::from("/tmp/enclave-test/workspaces/ws-123/root-merged")
+    );
+}
+
+#[test]
+fn reset_workspace_tmp_removes_contents_but_keeps_directory() {
+    let root = std::env::temp_dir().join(format!("enclave-tmp-reset-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace = workspace_fixture();
+    workspace.workspace_path = root.join("workspace").to_string_lossy().to_string();
+    workspace.filesystem_path = root.join("workspace/fs").to_string_lossy().to_string();
+    workspace.limits.disk_bytes = Some(MIN_DISK_BYTES);
+    std::fs::create_dir_all(root.join("workspace/fs/tmp/nested")).expect("create tmp fixture");
+    std::fs::write(root.join("workspace/fs/tmp/file"), "data").expect("write tmp fixture");
+
+    reset_workspace_tmp(&workspace).expect("reset workspace tmp");
+
+    assert!(root.join("workspace/fs/tmp").is_dir());
+    assert!(!root.join("workspace/fs/tmp/file").exists());
+    assert!(!root.join("workspace/fs/tmp/nested").exists());
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

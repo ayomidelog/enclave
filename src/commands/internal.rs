@@ -68,12 +68,24 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
 
 pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArgs) -> Result<()> {
     let rootfs = validate_workspace_rootfs(Path::new(&args.rootfs))?;
-    let host_old_root = rootfs.join(".old_root");
+    let (new_root, host_old_root) = if args.root_overlay_merged.is_empty() {
+        let host_old_root = rootfs.join(".old_root");
+        fs::create_dir_all(&host_old_root)
+            .with_context(|| format!("failed to create {}", host_old_root.display()))?;
+        bind_mount_self(&rootfs)?;
+        (rootfs, host_old_root)
+    } else {
+        let upper = validate_workspace_overlay_path(&args.root_overlay_upper, "upper")?;
+        let work = validate_workspace_overlay_path(&args.root_overlay_work, "work")?;
+        let merged = validate_workspace_overlay_path(&args.root_overlay_merged, "merged")?;
+        mount_workspace_root_overlay(&rootfs, &upper, &work, &merged)?;
+        let host_old_root = merged.join(".old_root");
+        fs::create_dir_all(&host_old_root)
+            .with_context(|| format!("failed to create {}", host_old_root.display()))?;
+        (merged, host_old_root)
+    };
 
-    fs::create_dir_all(&host_old_root)
-        .with_context(|| format!("failed to create {}", host_old_root.display()))?;
-    bind_mount_self(&rootfs)?;
-    pivot_into_rootfs(&rootfs, &host_old_root)?;
+    pivot_into_rootfs(&new_root, &host_old_root)?;
     std::env::set_current_dir("/").context("failed to chdir to / after pivot_root")?;
     mount_workspace_source(
         Path::new(PIVOTED_OLD_ROOT),
@@ -88,6 +100,60 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
         args.disk_backed_tmp,
     )?;
     run_workspace_session_loop_inner(Path::new(PIVOTED_OLD_ROOT), Path::new(&args.ready_file))
+}
+
+fn validate_workspace_overlay_path(raw: &str, label: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(raw);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        bail!(
+            "workspace root overlay {label} path is unsafe: {}",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
+fn mount_workspace_root_overlay(
+    lower: &Path,
+    upper: &Path,
+    work: &Path,
+    merged: &Path,
+) -> Result<()> {
+    for path in [upper, work, merged] {
+        fs::create_dir_all(path)
+            .with_context(|| format!("failed to create root overlay path {}", path.display()))?;
+    }
+    let options = format!(
+        "lowerdir={},upperdir={},workdir={}",
+        overlay_mount_path(lower),
+        overlay_mount_path(upper),
+        overlay_mount_path(work)
+    );
+    mount(
+        Option::<&str>::None,
+        merged,
+        Some("overlay"),
+        MsFlags::empty(),
+        Some(options.as_str()),
+    )
+    .with_context(|| {
+        format!(
+            "failed to mount workspace root overlay at {}",
+            merged.display()
+        )
+    })?;
+    crate::perf::record_mount();
+    Ok(())
+}
+
+fn overlay_mount_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('\\', "\\134")
+        .replace(',', "\\054")
 }
 
 pub(crate) fn run_workspace_session_loop(args: WorkspaceSessionLoopArgs) -> Result<()> {
@@ -808,6 +874,9 @@ fn exec_workspace_session_script(args: &WorkspaceSessionLaunchArgs) -> Result<()
         .arg(&args.selinux_label)
         .arg(&args.workspace_idmap_option)
         .arg(if args.disk_backed_tmp { "true" } else { "" })
+        .arg(&args.root_overlay_upper)
+        .arg(&args.root_overlay_work)
+        .arg(&args.root_overlay_merged)
         .exec();
     Err(err).context("failed to exec workspace session bootstrap script")
 }

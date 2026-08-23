@@ -329,6 +329,12 @@ pub fn update_workspace_definition(
                 changed = true;
             }
         }
+        if let Some(clear_tmp_on_restart) = limits_update.clear_tmp_on_restart {
+            if workspace.clear_tmp_on_restart != clear_tmp_on_restart {
+                workspace.clear_tmp_on_restart = clear_tmp_on_restart;
+                changed = true;
+            }
+        }
         changed |= workspace.limits.apply_update(&limits_update)?;
         crate::workspace::validate_workspace_storage_limits(
             workspace.home_mount_source_path.as_deref(),
@@ -1128,11 +1134,20 @@ fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
     if let Some(ref ip) = workspace.assigned_ip {
         network::teardown_workspace_network(ip, &workspace.id);
     }
-    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
-        tracing::warn!(
+    match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
+        Ok(()) if workspace.clear_tmp_on_restart => {
+            if let Err(err) = crate::workspace::reset_workspace_tmp(&workspace) {
+                tracing::warn!(
+                    "failed to reset workspace /tmp for {}: {err:#}",
+                    workspace.id
+                );
+            }
+        }
+        Ok(()) => {}
+        Err(err) => tracing::warn!(
             "failed to unmount quota-backed workspace storage for {}: {err:#}",
             workspace.id
-        );
+        ),
     }
 }
 
