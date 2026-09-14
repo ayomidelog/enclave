@@ -347,13 +347,27 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
     permissions.set_mode(0o755);
     fs::set_permissions(&temp_path, permissions)
         .with_context(|| format!("failed to chmod {}", temp_path.display()))?;
-    fs::rename(&temp_path, &helper_path).with_context(|| {
-        format!(
-            "failed to promote session helper {} -> {}",
-            temp_path.display(),
-            helper_path.display()
-        )
-    })?;
+    match fs::hard_link(&temp_path, &helper_path) {
+        Ok(()) => {
+            fs::remove_file(&temp_path).with_context(|| {
+                format!(
+                    "failed to remove temporary session helper {}",
+                    temp_path.display()
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another starter won the create race. Never replace a helper that
+            // may already be executing; the sandbox helper is immutable for
+            // the lifetime of the sandbox.
+            let _ = fs::remove_file(&temp_path);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to install session helper {}", helper_path.display())
+            });
+        }
+    }
     Ok(helper_path)
 }
 
