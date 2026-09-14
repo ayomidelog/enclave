@@ -1119,7 +1119,11 @@ fn cleanup_worker_count(job_count: usize) -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get().max(1))
+                .unwrap_or(4)
+        })
         .min(job_count)
 }
 

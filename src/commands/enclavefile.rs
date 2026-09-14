@@ -302,7 +302,11 @@ fn start_workspace_definitions(
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get().saturating_mul(2).max(1))
+                .unwrap_or(4)
+        })
         .min(definitions.len());
     let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..definitions.len())));
     let (result_sender, result_receiver) = std::sync::mpsc::channel();

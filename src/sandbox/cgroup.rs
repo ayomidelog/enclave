@@ -101,6 +101,24 @@ pub fn add_process_to_cgroup(cgroup_path: &Path, pid: u32) -> Result<()> {
         .with_context(|| format!("failed to add pid {} to cgroup", pid))
 }
 
+/// Terminate every process currently attached to a cgroup in one kernel
+/// operation. This is substantially faster and more reliable than walking a
+/// large process tree and signalling descendants individually.
+pub fn kill_cgroup_members(cgroup_path: &Path) -> Result<bool> {
+    if !is_cgroup_v2_available() {
+        return Ok(false);
+    }
+
+    let kill_path = cgroup_path.join("cgroup.kill");
+    if !kill_path.exists() {
+        return Ok(false);
+    }
+
+    write_cgroup_value(&kill_path, "1")
+        .with_context(|| format!("failed to kill processes in {}", cgroup_path.display()))?;
+    Ok(true)
+}
+
 pub fn apply_cgroup_limits(cgroup_path: &Path, config: &CgroupConfig) -> Result<()> {
     if !is_cgroup_v2_available() {
         return Ok(());

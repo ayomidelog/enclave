@@ -483,7 +483,17 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
 
     let mut remaining = collect_running_targets(&pending);
     for (pid, _) in &remaining {
-        process::send_signal(*pid, libc::SIGKILL)?;
+        let cgroup_killed = crate::sandbox::cgroup::runtime_cgroup_path(*pid)?
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("enclave-ws-"))
+            })
+            .map(|path| crate::sandbox::cgroup::kill_cgroup_members(&path))
+            .transpose()?
+            .unwrap_or(false);
+        if !cgroup_killed {
+            process::send_signal(*pid, libc::SIGKILL)?;
+        }
     }
     wait_for_targets_to_exit(&remaining, Duration::from_secs(1));
 
