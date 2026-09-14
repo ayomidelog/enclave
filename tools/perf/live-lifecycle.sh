@@ -29,6 +29,15 @@ cleanup() {
   "${runner[@]}" "$binary" --socket "$socket_path" destroy heavy-live >/dev/null 2>&1 || true
   "${runner[@]}" "$binary" --socket "$socket_path" daemon stop >/dev/null 2>&1 || true
   if [[ -f "$pid_file" ]]; then "${runner[@]}" kill "$(cat "$pid_file")" >/dev/null 2>&1 || true; fi
+  for proc in /proc/[0-9]*; do
+    pid=${proc##*/}
+    proc_exe=$(readlink "$proc/exe" 2>/dev/null || true)
+    [[ "$proc_exe" == "$binary" ]] || continue
+    proc_cmd=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)
+    case "$proc_cmd" in
+      *"$work_dir"*) "${runner[@]}" kill -KILL "$pid" >/dev/null 2>&1 || true ;;
+    esac
+  done
   "${runner[@]}" umount -l "$state_dir"/sandboxes/*/runtime/rootfs.mnt >/dev/null 2>&1 || true
   "${runner[@]}" rm -rf "$work_dir" "$socket_dir"
 }
