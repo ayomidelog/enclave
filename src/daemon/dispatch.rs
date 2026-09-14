@@ -587,6 +587,19 @@ fn dispatch_workspace_start_many_item(
             let workspace = require_param_str(spec, &["name"])?;
             let mut update = spec.clone();
             if let Some(object) = update.as_object_mut() {
+                for key in [
+                    "cpu_seconds",
+                    "cpu_percent",
+                    "memory_mb",
+                    "max_procs",
+                    "max_open_files",
+                    "disk_mb",
+                    "path",
+                ] {
+                    if object.get(key).is_some_and(Value::is_null) {
+                        object.remove(key);
+                    }
+                }
                 object.insert("sandbox".to_string(), Value::String(sandbox.to_string()));
                 object.insert(
                     "workspace".to_string(),
