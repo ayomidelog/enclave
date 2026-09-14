@@ -81,7 +81,7 @@ flowchart LR
 2. Sends `sandbox.create` to the daemon — bootstraps the rootfs using the selected method.
 3. Sends `sandbox.exec_setup` for each setup command — runs inside the sandbox via `chroot`.
 4. Sends `workspace.create` for each `[workspace.*]` block — creates namespace isolation + mounts.
-5. Sends `workspace.start` — executes the `run` command (if defined) inside the workspace.
+5. Sends one bounded `workspace.start_many` request — starts workspace runtimes concurrently and launches configured `run` commands detached inside each workspace cgroup.
 
 - Setup commands run during sandbox creation and are re-run on later `enclave up` / `enclave restart` calls so Enclavefile changes can be applied to an existing sandbox.
 - Re-running `enclave up` when the sandbox exists skips sandbox creation, re-applies setup commands, and starts workspaces.

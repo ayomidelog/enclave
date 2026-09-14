@@ -58,12 +58,27 @@ That didn't exist. So I built it.
 
 ## Latest Verified Lifecycle Timing
 
-On the validated 26-workspace sandbox:
+On the bounded eight-workspace cached-rootfs benchmark (bootstrap preparation excluded):
 
-- `enclave up`/workspace start path: `6.93s`
-- `enclave down`/sandbox stop path: `4.20s`
+- cold workspace boot: `2.55s`
+- cold shutdown: `1.63s`
+- warm workspace boot: `2.66s`
+- warm shutdown: `1.38s`
 
-These numbers are host-dependent, but they reflect the current best-known build.
+These numbers are host-dependent. Reproduce them with:
+
+```bash
+ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 ./tools/perf/live-lifecycle.sh
+```
+
+The benchmark reuses a local cached rootfs and does not download bootstrap packages.
+
+For a fast warm lifecycle, pause a running sandbox instead of stopping it:
+
+```bash
+enclave pause mybox
+enclave resume mybox
+```
 
 ## Snapshot Archives
 
