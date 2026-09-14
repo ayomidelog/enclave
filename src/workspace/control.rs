@@ -1009,7 +1009,7 @@ pub(crate) fn set_workspace_stopped(
     workspace_id: &str,
 ) -> Result<()> {
     if let Some(job) = mark_workspace_stopped(sandbox, workspace_id)? {
-        run_workspace_stop_cleanup(job, false)?;
+        run_workspace_stop_cleanup(job, false, false)?;
     }
     remove_sandbox_cgroup_if_idle(sandbox);
     Ok(())
@@ -1155,10 +1155,17 @@ fn run_workspace_stop_cleanups(
         .iter()
         .map(|cleanup| cleanup.workspace.clone())
         .collect::<Vec<_>>();
-    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted_many(&storage_workspaces)
-    {
-        tracing::warn!("batch workspace storage cleanup failed: {err:#}");
-    }
+    // A successful batch unmount already used one consistent mountinfo
+    // snapshot. Avoid re-reading mountinfo once per workspace; retain the
+    // per-workspace path as a retry fallback when the batch operation fails.
+    let storage_batch_succeeded =
+        match crate::workspace::ensure_workspace_storage_unmounted_many(&storage_workspaces) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!("batch workspace storage cleanup failed: {err:#}");
+                false
+            }
+        };
 
     let worker_count = cleanup_worker_count(cleanups.len());
     let queue = Arc::new(Mutex::new(VecDeque::from(cleanups)));
@@ -1178,7 +1185,11 @@ fn run_workspace_stop_cleanups(
                         return;
                     };
                     let workspace_id = cleanup.workspace.id.clone();
-                    let result = run_workspace_stop_cleanup(cleanup, network_already_cleaned);
+                    let result = run_workspace_stop_cleanup(
+                        cleanup,
+                        network_already_cleaned,
+                        storage_batch_succeeded,
+                    );
                     let _ = result_sender.send((workspace_id, result));
                 })
                 .expect("failed to spawn workspace cleanup worker")
@@ -1217,6 +1228,7 @@ fn cleanup_worker_count(job_count: usize) -> usize {
 fn run_workspace_stop_cleanup(
     cleanup: WorkspaceStopCleanup,
     network_already_cleaned: bool,
+    storage_already_unmounted: bool,
 ) -> Result<()> {
     let workspace = cleanup.workspace;
     let sandbox = cleanup.sandbox;
@@ -1229,6 +1241,14 @@ fn run_workspace_stop_cleanup(
         if let Some(ip) = workspace.assigned_ip.as_deref() {
             crate::network::teardown_workspace_network(ip, &workspace.id);
         }
+    }
+
+    if storage_already_unmounted {
+        if workspace.clear_tmp_on_restart {
+            crate::workspace::reset_workspace_tmp(&workspace)
+                .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?;
+        }
+        return Ok(());
     }
 
     match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
