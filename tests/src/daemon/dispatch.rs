@@ -11,6 +11,8 @@ fn action_parse_known_actions() {
         "sandbox.update",
         "sandbox.start",
         "sandbox.stop",
+        "sandbox.pause",
+        "sandbox.resume",
         "sandbox.status",
         "sandbox.destroy",
         "sandbox.list",

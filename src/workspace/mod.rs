@@ -24,9 +24,10 @@ pub use control::{
     remove_workspace, start_workspace, stop_workspace, workspace_status, BatchDestroyReport,
 };
 pub(crate) use control::{
-    reconcile_workspace_runtime_state, resize_workspace_disk_with_security,
-    stop_running_workspaces_in_sandbox, sync_sandbox_runtime_limits, sync_workspace_runtime_limits,
-    update_workspace_definition, workspace_metadata, workspace_runtime_is_active,
+    freeze_workspaces_in_sandbox, reconcile_workspace_runtime_state,
+    resize_workspace_disk_with_security, stop_running_workspaces_in_sandbox,
+    sync_sandbox_runtime_limits, sync_workspace_runtime_limits, update_workspace_definition,
+    workspace_metadata, workspace_runtime_is_active,
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;

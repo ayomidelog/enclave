@@ -176,6 +176,8 @@ pub(crate) fn dispatch(
         Action::SandboxUpdate => dispatch_sandbox_update(&request.params, config),
         Action::SandboxStart => dispatch_sandbox_start(&request.params, config),
         Action::SandboxStop => dispatch_sandbox_stop(&request.params, config, port_publisher),
+        Action::SandboxPause => dispatch_sandbox_pause(&request.params, config, port_publisher),
+        Action::SandboxResume => dispatch_sandbox_resume(&request.params, config),
         Action::SandboxStatus => dispatch_sandbox_status(&request.params, config),
         Action::SandboxDestroy => dispatch_sandbox_destroy(&request.params, config, port_publisher),
         Action::SandboxList => {
@@ -378,6 +380,10 @@ fn dispatch_sandbox_stop(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let status = sandbox::sandbox_status(&config.state_dir, selector)?;
+    if status.status == sandbox::SandboxStatus::Paused {
+        sandbox::resume_sandbox(&config.state_dir, selector)?;
+    }
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     for ws in workspaces {
         if ws.status == crate::workspace::WorkspaceStatus::Running {
@@ -396,6 +402,28 @@ fn dispatch_sandbox_stop(
     Ok(serde_json::to_value(metadata)?)
 }
 
+fn dispatch_sandbox_pause(
+    params: &Value,
+    config: &DaemonConfig,
+    port_publisher: &Arc<PortPublisher>,
+) -> Result<Value> {
+    let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
+    for workspace in workspaces {
+        if workspace.status == crate::workspace::WorkspaceStatus::Running {
+            port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
+        }
+    }
+    let metadata = sandbox::pause_sandbox(&config.state_dir, selector)?;
+    Ok(serde_json::to_value(metadata)?)
+}
+
+fn dispatch_sandbox_resume(params: &Value, config: &DaemonConfig) -> Result<Value> {
+    let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let metadata = sandbox::resume_sandbox(&config.state_dir, selector)?;
+    Ok(serde_json::to_value(metadata)?)
+}
+
 fn dispatch_sandbox_status(params: &Value, config: &DaemonConfig) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let report = sandbox::sandbox_status(&config.state_dir, selector)?;
@@ -408,6 +436,10 @@ fn dispatch_sandbox_destroy(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let status = sandbox::sandbox_status(&config.state_dir, selector)?;
+    if status.status == sandbox::SandboxStatus::Paused {
+        sandbox::resume_sandbox(&config.state_dir, selector)?;
+    }
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     for ws in workspaces {
         port_publisher.clear_workspace_ports(&ws.sandbox_id, &ws.id);
@@ -867,6 +899,8 @@ enum Action {
     SandboxUpdate,
     SandboxStart,
     SandboxStop,
+    SandboxPause,
+    SandboxResume,
     SandboxStatus,
     SandboxDestroy,
     SandboxList,
@@ -919,6 +953,8 @@ impl Action {
             "sandbox.update" => Self::SandboxUpdate,
             "sandbox.start" => Self::SandboxStart,
             "sandbox.stop" => Self::SandboxStop,
+            "sandbox.pause" => Self::SandboxPause,
+            "sandbox.resume" => Self::SandboxResume,
             "sandbox.status" => Self::SandboxStatus,
             "sandbox.destroy" => Self::SandboxDestroy,
             "sandbox.list" => Self::SandboxList,

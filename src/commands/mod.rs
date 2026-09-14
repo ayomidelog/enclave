@@ -95,6 +95,8 @@ pub fn run() -> Result<()> {
         Commands::Create(args) => sandbox::run_create(&cli.socket, args),
         Commands::Start { sandbox } => sandbox::run_start(&cli.socket, &sandbox),
         Commands::Stop { sandbox } => sandbox::run_stop(&cli.socket, &sandbox),
+        Commands::Pause { sandbox } => sandbox::run_pause(&cli.socket, &sandbox),
+        Commands::Resume { sandbox } => sandbox::run_resume(&cli.socket, &sandbox),
         Commands::Destroy { sandbox } => sandbox::run_destroy(&cli.socket, &sandbox),
         Commands::List => sandbox::run_list(&cli.socket),
         Commands::Stats => stats::run_stats(&cli.socket),

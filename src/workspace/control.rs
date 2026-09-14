@@ -823,6 +823,38 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
     Ok(failed_ids)
 }
 
+pub(crate) fn freeze_workspaces_in_sandbox(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    frozen: bool,
+) -> Result<()> {
+    let pids = with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
+        Ok(sandbox
+            .workspaces
+            .values()
+            .filter(|workspace| workspace.status == WorkspaceStatus::Running)
+            .filter_map(|workspace| workspace.runtime_pid)
+            .collect::<Vec<_>>())
+    })?;
+
+    for pid in pids {
+        let cgroup_path = crate::sandbox::cgroup::runtime_cgroup_path(pid)?
+            .ok_or_else(|| anyhow!("workspace runtime pid {} is not in cgroup v2", pid))?;
+        if !crate::sandbox::cgroup::set_cgroup_frozen(&cgroup_path, frozen)? {
+            bail!(
+                "workspace cgroup {} does not support freezing",
+                cgroup_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn list_workspace_items(
     state_dir: &std::path::Path,
     sandbox_selector: &str,

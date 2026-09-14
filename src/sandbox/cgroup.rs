@@ -119,6 +119,20 @@ pub fn kill_cgroup_members(cgroup_path: &Path) -> Result<bool> {
     Ok(true)
 }
 
+/// Freeze or thaw all processes in a cgroup without destroying its runtime.
+pub fn set_cgroup_frozen(cgroup_path: &Path, frozen: bool) -> Result<bool> {
+    if !is_cgroup_v2_available() {
+        return Ok(false);
+    }
+    let freeze_path = cgroup_path.join("cgroup.freeze");
+    if !freeze_path.exists() {
+        return Ok(false);
+    }
+    write_cgroup_value(&freeze_path, if frozen { "1" } else { "0" })
+        .with_context(|| format!("failed to set cgroup.freeze for {}", cgroup_path.display()))?;
+    Ok(true)
+}
+
 pub fn apply_cgroup_limits(cgroup_path: &Path, config: &CgroupConfig) -> Result<()> {
     if !is_cgroup_v2_available() {
         return Ok(());

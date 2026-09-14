@@ -52,6 +52,14 @@ pub enum Commands {
         #[arg(value_parser = parse_entity_name)]
         sandbox: String,
     },
+    Pause {
+        #[arg(value_parser = parse_entity_name)]
+        sandbox: String,
+    },
+    Resume {
+        #[arg(value_parser = parse_entity_name)]
+        sandbox: String,
+    },
     Destroy {
         #[arg(value_parser = parse_entity_name)]
         sandbox: String,
