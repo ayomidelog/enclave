@@ -522,7 +522,7 @@ fn dispatch_workspace_start_many(
         .filter(|value| (1..=64).contains(value))
         .unwrap_or_else(|| {
             std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get().saturating_mul(2).max(1))
+                .map(|parallelism| parallelism.get().max(1))
                 .unwrap_or(4)
         })
         .min(specs.len());
