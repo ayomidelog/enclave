@@ -411,13 +411,13 @@ fn dispatch_sandbox_pause(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let metadata = sandbox::pause_sandbox(&config.state_dir, selector)?;
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     for workspace in workspaces {
         if workspace.status == crate::workspace::WorkspaceStatus::Running {
             port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
         }
     }
-    let metadata = sandbox::pause_sandbox(&config.state_dir, selector)?;
     Ok(serde_json::to_value(metadata)?)
 }
 
