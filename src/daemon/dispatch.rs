@@ -177,7 +177,7 @@ pub(crate) fn dispatch(
         Action::SandboxStart => dispatch_sandbox_start(&request.params, config),
         Action::SandboxStop => dispatch_sandbox_stop(&request.params, config, port_publisher),
         Action::SandboxPause => dispatch_sandbox_pause(&request.params, config, port_publisher),
-        Action::SandboxResume => dispatch_sandbox_resume(&request.params, config),
+        Action::SandboxResume => dispatch_sandbox_resume(&request.params, config, port_publisher),
         Action::SandboxStatus => dispatch_sandbox_status(&request.params, config),
         Action::SandboxDestroy => dispatch_sandbox_destroy(&request.params, config, port_publisher),
         Action::SandboxList => {
@@ -421,9 +421,19 @@ fn dispatch_sandbox_pause(
     Ok(serde_json::to_value(metadata)?)
 }
 
-fn dispatch_sandbox_resume(params: &Value, config: &DaemonConfig) -> Result<Value> {
+fn dispatch_sandbox_resume(
+    params: &Value,
+    config: &DaemonConfig,
+    port_publisher: &Arc<PortPublisher>,
+) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let metadata = sandbox::resume_sandbox(&config.state_dir, selector)?;
+    let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
+    for workspace in workspaces {
+        if workspace.status == crate::workspace::WorkspaceStatus::Running {
+            ensure_workspace_ports_started(&config.state_dir, &workspace, port_publisher)?;
+        }
+    }
     Ok(serde_json::to_value(metadata)?)
 }
 
