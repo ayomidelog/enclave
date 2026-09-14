@@ -13,6 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,7 @@ const SESSION_HELPER_BASENAME: &str = "session-helper";
 const SELF_EXE_PATH: &str = "/proc/self/exe";
 const HELPER_OVERRIDE_ENV: &str = "ENCLAVE_SELF_EXE";
 const TEST_BINARY_ENV: &str = "CARGO_BIN_EXE_enclave";
+static SESSION_HELPER_PREPARE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -312,6 +314,10 @@ fn session_helper_path(workspace: &WorkspaceMetadata) -> PathBuf {
 }
 
 fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
+    let _guard = SESSION_HELPER_PREPARE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("session helper preparation lock poisoned"))?;
     let helper_path = session_helper_path(workspace);
     let source_exe = resolve_session_helper_source();
     if helper_is_fresh(&source_exe, &helper_path)? {
