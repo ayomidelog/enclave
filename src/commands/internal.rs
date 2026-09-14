@@ -70,7 +70,7 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
     let old_root_name = workspace_old_root_name(&args.workspace_id)?;
     let pivoted_old_root = PathBuf::from("/").join(&old_root_name);
     let (new_root, host_old_root) = if args.root_overlay_merged.is_empty() {
-        let host_old_root = rootfs.join(&old_root_name);
+        let host_old_root = workspace_old_root_path(&rootfs, &args.workspace_id)?;
         fs::create_dir_all(&host_old_root)
             .with_context(|| format!("failed to create {}", host_old_root.display()))?;
         bind_mount_self(&rootfs)?;
