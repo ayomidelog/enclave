@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -146,6 +147,46 @@ pub(crate) fn spawn_workspace_command(
         .stderr(stderr)
         .spawn()
         .context("failed to execute workspace command via internal helper")
+}
+
+/// Launch a long-running command without keeping the daemon request open.
+/// The helper wrapper is attached to the workspace cgroup before it forks the
+/// command, so descendants follow the workspace lifecycle.
+pub(crate) fn spawn_workspace_command_detached(
+    workspace: &WorkspaceMetadata,
+    cwd: &str,
+    command: &[String],
+) -> Result<()> {
+    let child = spawn_workspace_command(
+        workspace,
+        cwd,
+        command,
+        Stdio::null(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let child_pid = child.id();
+    let runtime_pid = workspace
+        .runtime_pid
+        .ok_or_else(|| anyhow!("workspace '{}' has no runtime pid", workspace.id))?;
+    let cgroup_path = std::path::PathBuf::from("/sys/fs/cgroup")
+        .join(crate::sandbox::cgroup::sandbox_cgroup_name(
+            &workspace.sandbox_id,
+        ))
+        .join(format!("enclave-ws-{runtime_pid}"));
+    if cgroup_path.exists() {
+        if let Err(error) = crate::sandbox::cgroup::add_process_to_cgroup(&cgroup_path, child_pid) {
+            let mut child = child;
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("failed to attach detached workspace command to cgroup");
+        }
+    }
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 pub(crate) fn spawn_workspace_file_receiver(

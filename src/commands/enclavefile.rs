@@ -262,34 +262,6 @@ fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Resul
 
     start_workspace_definitions_bulk(socket, &ef.sandbox.name, &definitions)?;
 
-    thread::scope(|scope| {
-        for (_, key, ws, _) in definitions {
-            let Some(run_cmd) = ws.run.clone() else {
-                continue;
-            };
-            let socket = socket.to_path_buf();
-            let sandbox = ef.sandbox.name.clone();
-            let workspace = ws.name.clone();
-            let key = (*key).to_string();
-            scope.spawn(move || {
-                tracing::info!("  executing: {}", run_cmd);
-                let exec_result = send(
-                    &socket,
-                    "workspace.exec",
-                    json!({
-                        "sandbox_id": sandbox,
-                        "workspace_id": workspace,
-                        "cwd": "/home",
-                        "command": ["sh", "-c", run_cmd],
-                    }),
-                );
-                if let Err(err) = exec_result {
-                    tracing::warn!("  run command for workspace '{}' failed: {err:#}", key);
-                }
-            });
-        }
-    });
-
     Ok(())
 }
 
@@ -393,6 +365,7 @@ fn start_workspace_definitions_bulk(
                 "auth": workspace.auth,
                 "env_tokens": workspace.env_tokens,
                 "ports": workspace.ports,
+                "run": workspace.run,
             })
         })
         .collect::<Vec<_>>();

@@ -34,6 +34,7 @@ pub(crate) use cp::copy_workspace_path_with_connection;
 pub(crate) use cp::CopyOptions;
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
 pub use exec::exec_workspace_command;
+pub(crate) use exec::spawn_workspace_command_detached;
 pub use logs::workspace_logs;
 pub use ports::{
     configured_port_statuses, merge_published_port_statuses, validate_published_ports,

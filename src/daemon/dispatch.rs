@@ -2,7 +2,7 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 use crate::network::publish::PortPublisher;
@@ -580,8 +580,8 @@ fn dispatch_workspace_start_many_item(
     config: &DaemonConfig,
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
-    match dispatch_workspace_create(spec, config, port_publisher) {
-        Ok(result) => Ok(result),
+    let started = match dispatch_workspace_create(spec, config, port_publisher) {
+        Ok(result) => result,
         Err(error) if format!("{error:#}").contains("already exists") => {
             let sandbox = require_param_str(spec, &["sandbox_id"])?;
             let workspace = require_param_str(spec, &["name"])?;
@@ -612,10 +612,26 @@ fn dispatch_workspace_start_many_item(
                 config,
                 "start",
                 port_publisher,
-            )
+            )?
         }
-        Err(error) => Err(error),
+        Err(error) => return Err(error),
+    };
+
+    if let Some(run_command) = spec.get("run").and_then(Value::as_str) {
+        let metadata: workspace::WorkspaceMetadata = serde_json::from_value(started.clone())?;
+        workspace::spawn_workspace_command_detached(
+            &metadata,
+            "/home",
+            &["sh".to_string(), "-c".to_string(), run_command.to_string()],
+        )
+        .with_context(|| {
+            format!(
+                "failed to launch run command for workspace '{}'",
+                metadata.name
+            )
+        })?;
     }
+    Ok(started)
 }
 
 fn dispatch_workspace_create(
