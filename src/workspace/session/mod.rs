@@ -526,6 +526,17 @@ where
     }
     wait_for_targets_to_exit(&remaining, POST_KILL_TIMEOUT);
 
+    // Some kernels report a successful cgroup.kill write before the leader
+    // disappears. Keep the PID/start-time guard and issue one direct fallback
+    // signal so a surviving runtime cannot make the whole sandbox stop fail.
+    let still_running = collect_running_targets(&pending);
+    for (pid, expected_starttime_ticks) in &still_running {
+        if process::verify_signal_target(*pid, *expected_starttime_ticks).is_ok() {
+            process::send_signal(*pid, libc::SIGKILL)?;
+        }
+    }
+    wait_for_targets_to_exit(&still_running, POST_KILL_TIMEOUT);
+
     for (pid, expected_starttime_ticks) in pending {
         if process_matches(pid, expected_starttime_ticks) {
             result.failed_pids.insert(pid);
