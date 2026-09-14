@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+- `enclave pause` and `enclave resume` for freezing and thawing a sandbox cgroup without destroying workspace processes, namespaces, or mounts.
+- A bounded `workspace.start_many` lifecycle operation for bulk Enclavefile startup, plus the reproducible cached-rootfs live lifecycle benchmark at `tools/perf/live-lifecycle.sh`.
+
+### Changed
+- Enclavefile `run` commands launch asynchronously inside the target workspace cgroup, so long-running services no longer serialize `enclave up`.
+- Workspace stop now uses cgroup v2 process-tree termination, bounded cleanup fan-out, one mountinfo snapshot, and overlapped network teardown.
+- Workspace pivot-root paths are unique per workspace, allowing reliable multi-workspace startup without shared `/.old_root` collisions.
+
+### Fixed
+- Detached workspace commands are attached to their cgroup before namespace-command forking, preventing resource-limit and shutdown escapes.
+- Persistent workspace helper startup tolerates transient socket races and active helper binaries are never replaced.
+- Pause failures preserve published ports, and omitted Enclavefile limit fields no longer clear existing workspace allocations during bulk reconciliation.
+
 - Quota-backed workspaces now use a per-workspace root OverlayFS upper/work layer on the same ext4 image as `/home` and workspace-private `/tmp`, so writes under `/opt`, `/var`, `/etc`, and `/root` consume the configured `disk_mb` allocation without modifying the shared sandbox lower rootfs.
 - Managed workspace `/tmp` can be cleared on restart with the opt-in Enclavefile setting `clear_tmp_on_restart = true`.
 
