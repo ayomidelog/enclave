@@ -293,6 +293,7 @@ fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Resul
     Ok(())
 }
 
+#[allow(dead_code)]
 fn start_workspace_definitions(
     socket: &Path,
     sandbox_name: &str,
@@ -425,6 +426,7 @@ fn start_workspace_definitions_bulk(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn ensure_workspace_started(
     socket: &Path,
     sandbox_name: &str,
