@@ -260,7 +260,7 @@ fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Resul
         })
         .collect::<Result<Vec<_>>>()?;
 
-    start_workspace_definitions(socket, &ef.sandbox.name, &definitions)?;
+    start_workspace_definitions_bulk(socket, &ef.sandbox.name, &definitions)?;
 
     for (_, key, ws, _) in definitions {
         if let Some(run_cmd) = &ws.run {
@@ -351,6 +351,47 @@ fn start_workspace_definitions(
         }
         Ok(())
     })
+}
+
+fn start_workspace_definitions_bulk(
+    socket: &Path,
+    sandbox_name: &str,
+    definitions: &[(
+        usize,
+        &str,
+        &crate::enclavefile::WorkspaceSection,
+        Option<String>,
+    )],
+) -> Result<()> {
+    if definitions.is_empty() {
+        return Ok(());
+    }
+    let workspaces = definitions
+        .iter()
+        .map(|(_, _, workspace, workspace_dir)| {
+            json!({
+                "sandbox_id": sandbox_name,
+                "name": workspace.name,
+                "path": workspace_dir,
+                "cpu_seconds": workspace.cpu_seconds,
+                "cpu_percent": workspace.cpu_percent,
+                "memory_mb": workspace.memory_mb,
+                "max_procs": workspace.max_procs,
+                "max_open_files": workspace.max_open_files,
+                "disk_mb": workspace.disk_mb,
+                "clear_tmp_on_restart": workspace.clear_tmp_on_restart,
+                "auth": workspace.auth,
+                "env_tokens": workspace.env_tokens,
+                "ports": workspace.ports,
+            })
+        })
+        .collect::<Vec<_>>();
+    send_managed(
+        socket,
+        "workspace.start_many",
+        json!({ "workspaces": workspaces }),
+    )?;
+    Ok(())
 }
 
 fn ensure_workspace_started(

@@ -218,6 +218,9 @@ pub(crate) fn dispatch(
         Action::WorkspaceStart => {
             dispatch_workspace_target(&request.params, config, "start", port_publisher)
         }
+        Action::WorkspaceStartMany => {
+            dispatch_workspace_start_many(&request.params, config, port_publisher)
+        }
         Action::WorkspaceStop => {
             dispatch_workspace_target(&request.params, config, "stop", port_publisher)
         }
@@ -453,6 +456,75 @@ fn dispatch_sandbox_destroy(
     }
     let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
     Ok(json!({ "removed": removed }))
+}
+
+/// Start a group of workspaces through one daemon request. The expensive
+/// namespace, storage, and network work remains bounded and concurrent while
+/// the caller avoids one socket request per workspace.
+fn dispatch_workspace_start_many(
+    params: &Value,
+    config: &DaemonConfig,
+    port_publisher: &Arc<PortPublisher>,
+) -> Result<Value> {
+    let specs = params
+        .get("workspaces")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("missing 'workspaces' array"))?
+        .clone();
+    if specs.is_empty() {
+        return Ok(json!([]));
+    }
+
+    let worker_count = std::env::var("ENCLAVE_UP_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=64).contains(value))
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get().saturating_mul(2).max(1))
+                .unwrap_or(4)
+        })
+        .min(specs.len());
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::from_iter(specs.into_iter().enumerate()),
+    ));
+    let result_count = queue.lock().map(|queue| queue.len()).unwrap_or(0);
+    let results = std::sync::Arc::new(std::sync::Mutex::new(
+        (0..result_count)
+            .map(|_| None::<Result<Value>>)
+            .collect::<Vec<_>>(),
+    ));
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = std::sync::Arc::clone(&queue);
+            let results = std::sync::Arc::clone(&results);
+            let config = config.clone();
+            let port_publisher = Arc::clone(port_publisher);
+            scope.spawn(move || loop {
+                let Some((index, spec)) = queue.lock().ok().and_then(|mut queue| queue.pop_front())
+                else {
+                    return;
+                };
+                let result = dispatch_workspace_create(&spec, &config, &port_publisher);
+                if let Ok(mut results) = results.lock() {
+                    results[index] = Some(result);
+                }
+            });
+        }
+    });
+
+    let results = Arc::try_unwrap(results)
+        .map_err(|_| anyhow::anyhow!("workspace batch result ownership remained active"))?
+        .into_inner()
+        .map_err(|_| anyhow::anyhow!("workspace batch result lock poisoned"))?;
+    let mut output = Vec::with_capacity(results.len());
+    for result in results {
+        output.push(
+            result.ok_or_else(|| anyhow::anyhow!("workspace batch item did not complete"))??,
+        );
+    }
+    Ok(Value::Array(output))
 }
 
 fn dispatch_workspace_create(
@@ -909,6 +981,7 @@ enum Action {
     ProcessList,
     WorkspaceCreate,
     WorkspaceStart,
+    WorkspaceStartMany,
     WorkspaceStop,
     WorkspaceDestroy,
     WorkspaceWipe,
@@ -963,6 +1036,7 @@ impl Action {
             "process.list" => Self::ProcessList,
             "workspace.create" => Self::WorkspaceCreate,
             "workspace.start" => Self::WorkspaceStart,
+            "workspace.start_many" => Self::WorkspaceStartMany,
             "workspace.stop" => Self::WorkspaceStop,
             "workspace.destroy" => Self::WorkspaceDestroy,
             "workspace.wipe" => Self::WorkspaceWipe,

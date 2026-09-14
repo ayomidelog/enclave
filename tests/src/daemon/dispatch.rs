@@ -21,6 +21,7 @@ fn action_parse_known_actions() {
         "process.list",
         "workspace.create",
         "workspace.start",
+        "workspace.start_many",
         "workspace.stop",
         "workspace.destroy",
         "workspace.wipe",
