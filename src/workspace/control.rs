@@ -1118,6 +1118,26 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
         return;
     }
 
+    let network_targets = cleanups
+        .iter()
+        .filter_map(|cleanup| {
+            cleanup
+                .workspace
+                .assigned_ip
+                .clone()
+                .map(|ip| (ip, cleanup.workspace.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    crate::network::teardown_workspace_networks(&network_targets);
+    let storage_workspaces = cleanups
+        .iter()
+        .map(|cleanup| cleanup.workspace.clone())
+        .collect::<Vec<_>>();
+    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted_many(&storage_workspaces)
+    {
+        tracing::warn!("batch workspace storage cleanup failed: {err:#}");
+    }
+
     let worker_count = cleanup_worker_count(cleanups.len());
     let queue = Arc::new(Mutex::new(VecDeque::from(cleanups)));
     let handles = (0..worker_count)
@@ -1167,9 +1187,6 @@ fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
         remove_workspace_cgroups(&sandbox, pid);
     }
 
-    if let Some(ref ip) = workspace.assigned_ip {
-        network::teardown_workspace_network(ip, &workspace.id);
-    }
     match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
         Ok(()) if workspace.clear_tmp_on_restart => {
             if let Err(err) = crate::workspace::reset_workspace_tmp(&workspace) {

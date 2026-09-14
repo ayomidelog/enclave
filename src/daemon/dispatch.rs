@@ -506,7 +506,7 @@ fn dispatch_workspace_start_many(
                 else {
                     return;
                 };
-                let result = dispatch_workspace_create(&spec, &config, &port_publisher);
+                let result = dispatch_workspace_start_many_item(&spec, &config, &port_publisher);
                 if let Ok(mut results) = results.lock() {
                     results[index] = Some(result);
                 }
@@ -525,6 +525,36 @@ fn dispatch_workspace_start_many(
         );
     }
     Ok(Value::Array(output))
+}
+
+fn dispatch_workspace_start_many_item(
+    spec: &Value,
+    config: &DaemonConfig,
+    port_publisher: &Arc<PortPublisher>,
+) -> Result<Value> {
+    match dispatch_workspace_create(spec, config, port_publisher) {
+        Ok(result) => Ok(result),
+        Err(error) if format!("{error:#}").contains("already exists") => {
+            let sandbox = require_param_str(spec, &["sandbox_id"])?;
+            let workspace = require_param_str(spec, &["name"])?;
+            let mut update = spec.clone();
+            if let Some(object) = update.as_object_mut() {
+                object.insert("sandbox".to_string(), Value::String(sandbox.to_string()));
+                object.insert(
+                    "workspace".to_string(),
+                    Value::String(workspace.to_string()),
+                );
+            }
+            dispatch_workspace_update(&update, config, port_publisher)?;
+            dispatch_workspace_target(
+                &json!({ "sandbox": sandbox, "workspace": workspace }),
+                config,
+                "start",
+                port_publisher,
+            )
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn dispatch_workspace_create(
