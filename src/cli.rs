@@ -506,6 +506,8 @@ pub struct WorkspaceCommandInternalArgs {
     pub sandbox_id: String,
     #[arg(long)]
     pub workspace_id: String,
+    #[arg(long, default_value = "")]
+    pub cgroup_path: String,
     #[arg(long)]
     pub root_fd: Option<i32>,
     #[arg(long)]

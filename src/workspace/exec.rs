@@ -165,23 +165,6 @@ pub(crate) fn spawn_workspace_command_detached(
         Stdio::null(),
         Stdio::null(),
     )?;
-    let child_pid = child.id();
-    let runtime_pid = workspace
-        .runtime_pid
-        .ok_or_else(|| anyhow!("workspace '{}' has no runtime pid", workspace.id))?;
-    let cgroup_path = std::path::PathBuf::from("/sys/fs/cgroup")
-        .join(crate::sandbox::cgroup::sandbox_cgroup_name(
-            &workspace.sandbox_id,
-        ))
-        .join(format!("enclave-ws-{runtime_pid}"));
-    if cgroup_path.exists() {
-        if let Err(error) = crate::sandbox::cgroup::add_process_to_cgroup(&cgroup_path, child_pid) {
-            let mut child = child;
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error).context("failed to attach detached workspace command to cgroup");
-        }
-    }
     thread::spawn(move || {
         let mut child = child;
         let _ = child.wait();
@@ -297,6 +280,12 @@ fn runtime_exec_command_args_base(
         sandbox_id.to_string(),
         "--workspace-id".to_string(),
         workspace_id.to_string(),
+        "--cgroup-path".to_string(),
+        format!(
+            "/sys/fs/cgroup/{}/enclave-ws-{}",
+            crate::sandbox::cgroup::sandbox_cgroup_name(sandbox_id),
+            runtime_pid
+        ),
     ];
     if let Some(fds) = fds {
         append_namespace_fd_args(&mut args, fds);

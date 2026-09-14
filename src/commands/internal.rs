@@ -462,6 +462,14 @@ pub(crate) fn run_workspace_command(args: WorkspaceCommandInternalArgs) -> Resul
         );
     }
 
+    if !args.cgroup_path.is_empty() {
+        crate::sandbox::cgroup::add_process_to_cgroup(
+            std::path::Path::new(&args.cgroup_path),
+            std::process::id(),
+        )
+        .context("failed to attach workspace command helper to cgroup")?;
+    }
+
     let namespaces = NamespaceHandles::from_optional_fds(
         args.runtime_pid,
         [
