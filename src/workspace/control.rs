@@ -820,7 +820,8 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
         Ok(())
     })?;
 
-    run_workspace_stop_cleanups(cleanup_jobs, true);
+    let cleanup_errors = run_workspace_stop_cleanups(cleanup_jobs, true);
+    failed_ids.extend(cleanup_errors);
 
     with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
@@ -1008,7 +1009,7 @@ pub(crate) fn set_workspace_stopped(
     workspace_id: &str,
 ) -> Result<()> {
     if let Some(job) = mark_workspace_stopped(sandbox, workspace_id)? {
-        run_workspace_stop_cleanup(job, false);
+        run_workspace_stop_cleanup(job, false)?;
     }
     remove_sandbox_cgroup_if_idle(sandbox);
     Ok(())
@@ -1129,9 +1130,12 @@ fn clear_workspace_namespace_refs(workspace: &mut WorkspaceMetadata) {
     workspace.namespace_refs = Default::default();
 }
 
-fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>, network_already_cleaned: bool) {
+fn run_workspace_stop_cleanups(
+    cleanups: Vec<WorkspaceStopCleanup>,
+    network_already_cleaned: bool,
+) -> Vec<String> {
     if cleanups.is_empty() {
-        return;
+        return Vec::new();
     }
 
     let network_targets = cleanups
@@ -1158,9 +1162,11 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>, network_alre
 
     let worker_count = cleanup_worker_count(cleanups.len());
     let queue = Arc::new(Mutex::new(VecDeque::from(cleanups)));
+    let (result_sender, result_receiver) = std::sync::mpsc::channel();
     let handles = (0..worker_count)
         .map(|worker_id| {
             let queue = Arc::clone(&queue);
+            let result_sender = result_sender.clone();
             thread::Builder::new()
                 .name(format!("enclave-workspace-cleanup-{worker_id}"))
                 .spawn(move || loop {
@@ -1171,7 +1177,9 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>, network_alre
                     let Some(cleanup) = cleanup else {
                         return;
                     };
-                    run_workspace_stop_cleanup(cleanup, network_already_cleaned);
+                    let workspace_id = cleanup.workspace.id.clone();
+                    let result = run_workspace_stop_cleanup(cleanup, network_already_cleaned);
+                    let _ = result_sender.send((workspace_id, result));
                 })
                 .expect("failed to spawn workspace cleanup worker")
         })
@@ -1182,6 +1190,15 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>, network_alre
             tracing::warn!("workspace cleanup thread panicked: {:?}", err);
         }
     }
+    drop(result_sender);
+    result_receiver
+        .into_iter()
+        .filter_map(|(workspace_id, result)| {
+            result
+                .err()
+                .map(|error| format!("{workspace_id}: {error:#}"))
+        })
+        .collect()
 }
 
 fn cleanup_worker_count(job_count: usize) -> usize {
@@ -1197,7 +1214,10 @@ fn cleanup_worker_count(job_count: usize) -> usize {
         .min(job_count)
 }
 
-fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup, network_already_cleaned: bool) {
+fn run_workspace_stop_cleanup(
+    cleanup: WorkspaceStopCleanup,
+    network_already_cleaned: bool,
+) -> Result<()> {
     let workspace = cleanup.workspace;
     let sandbox = cleanup.sandbox;
 
@@ -1213,19 +1233,13 @@ fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup, network_already_cle
 
     match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
         Ok(()) if workspace.clear_tmp_on_restart => {
-            if let Err(err) = crate::workspace::reset_workspace_tmp(&workspace) {
-                tracing::warn!(
-                    "failed to reset workspace /tmp for {}: {err:#}",
-                    workspace.id
-                );
-            }
+            crate::workspace::reset_workspace_tmp(&workspace)
+                .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?
         }
         Ok(()) => {}
-        Err(err) => tracing::warn!(
-            "failed to unmount quota-backed workspace storage for {}: {err:#}",
-            workspace.id
-        ),
+        Err(err) => return Err(err).context("failed to unmount workspace storage"),
     }
+    Ok(())
 }
 
 fn remove_sandbox_cgroup_if_idle(sandbox: &RegistrySandbox) {
