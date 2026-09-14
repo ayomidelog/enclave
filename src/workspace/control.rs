@@ -1371,7 +1371,11 @@ fn ensure_workspace_cgroup_hierarchy(
             workspace.id
         );
     }
-    if !cgroup_v2_available || (!sandbox_config.has_limits() && !workspace_config.has_limits()) {
+    // Keep a cgroup hierarchy even for unlimited workspaces. It provides the
+    // process boundary required by warm pause/resume and fast cgroup.kill
+    // shutdown; resource limits remain unlimited through the configured `max`
+    // values.
+    if !cgroup_v2_available {
         return Ok(());
     }
 
