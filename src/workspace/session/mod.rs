@@ -123,6 +123,8 @@ pub fn start_session(
         .arg(&workspace.sandbox_rootfs_path)
         .arg("--workspace-fs")
         .arg(workspace_source)
+        .arg("--workspace-id")
+        .arg(&workspace.id)
         .arg("--mount-target")
         .arg(&workspace.filesystem_mount_target)
         .arg("--mount-ref")

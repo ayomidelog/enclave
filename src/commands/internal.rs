@@ -69,7 +69,7 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
 pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArgs) -> Result<()> {
     let rootfs = validate_workspace_rootfs(Path::new(&args.rootfs))?;
     let (new_root, host_old_root) = if args.root_overlay_merged.is_empty() {
-        let host_old_root = rootfs.join(".old_root");
+        let host_old_root = workspace_old_root_path(&rootfs, &args.workspace_id)?;
         fs::create_dir_all(&host_old_root)
             .with_context(|| format!("failed to create {}", host_old_root.display()))?;
         bind_mount_self(&rootfs)?;
@@ -100,6 +100,17 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
         args.disk_backed_tmp,
     )?;
     run_workspace_session_loop_inner(Path::new(PIVOTED_OLD_ROOT), Path::new(&args.ready_file))
+}
+
+fn workspace_old_root_path(rootfs: &Path, workspace_id: &str) -> Result<PathBuf> {
+    if workspace_id.is_empty()
+        || !workspace_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        bail!("workspace id is unsafe for old-root mount path: {workspace_id}");
+    }
+    Ok(rootfs.join(format!(".old_root-{workspace_id}")))
 }
 
 fn validate_workspace_overlay_path(raw: &str, label: &str) -> Result<PathBuf> {
@@ -877,6 +888,7 @@ fn exec_workspace_session_script(args: &WorkspaceSessionLaunchArgs) -> Result<()
         .arg(&args.root_overlay_upper)
         .arg(&args.root_overlay_work)
         .arg(&args.root_overlay_merged)
+        .arg(&args.workspace_id)
         .exec();
     Err(err).context("failed to exec workspace session bootstrap script")
 }

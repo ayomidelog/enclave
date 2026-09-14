@@ -393,6 +393,8 @@ pub struct WorkspaceSessionLaunchArgs {
     #[arg(long, value_name = "PATH")]
     pub workspace_fs: String,
     #[arg(long)]
+    pub workspace_id: String,
+    #[arg(long)]
     pub mount_target: String,
     #[arg(long, value_name = "PATH")]
     pub mount_ref: String,
@@ -436,6 +438,8 @@ pub struct WorkspaceSessionBootstrapArgs {
     pub rootfs: String,
     #[arg(long, value_name = "PATH")]
     pub workspace_fs: String,
+    #[arg(long)]
+    pub workspace_id: String,
     #[arg(long)]
     pub mount_target: String,
     #[arg(long, default_value = "")]
