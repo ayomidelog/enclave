@@ -47,6 +47,17 @@ Commands that require namespaces or root privileges report `SKIP` instead of
 silently producing an invalid number. Use `strace=1`, `perf=1`, or `pidstat=1`
 to enable optional tracing for a single command.
 
+Run the bounded eight-workspace lifecycle benchmark with an already-prepared
+cached rootfs:
+
+```bash
+ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 \
+  ./tools/perf/live-lifecycle.sh
+```
+
+The benchmark copies the local cached rootfs into temporary state and never
+downloads bootstrap packages. Set `ENCLAVE_LIVE_ROOTFS` to use another cache.
+
 Generate deterministic transfer fixtures with:
 
 ```bash

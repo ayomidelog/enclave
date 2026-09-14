@@ -1,0 +1,56 @@
+[sandbox]
+name = "heavy-live"
+suite = "bookworm"
+bootstrap_method = "cached_rootfs"
+memory_mb = 768
+cpu_percent = 40
+max_procs = 256
+
+[workspace.ws01]
+name = "ws01"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws02]
+name = "ws02"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws03]
+name = "ws03"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws04]
+name = "ws04"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws05]
+name = "ws05"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws06]
+name = "ws06"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws07]
+name = "ws07"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
+[workspace.ws08]
+name = "ws08"
+memory_mb = 64
+cpu_percent = 5
+max_procs = 32
+run = "sh -c 'for i in 1 2 3; do yes </dev/null >/dev/null 2>&1 & done; exit 0'"
