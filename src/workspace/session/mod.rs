@@ -38,7 +38,11 @@ pub(crate) use security::{
 pub(crate) use userns::{detect_user_namespace_mode, UserNamespaceMode};
 
 const START_TIMEOUT: Duration = Duration::from_secs(5);
-const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+// Dedicated cgroups provide a fast fallback for the remaining process tree.
+// Keep graceful shutdown short so every workspace does not pay a fixed
+// multi-second delay before cgroup.kill is used.
+const STOP_TIMEOUT: Duration = Duration::from_millis(500);
+const POST_KILL_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_HELPER_BASENAME: &str = "session-helper";
 const SELF_EXE_PATH: &str = "/proc/self/exe";
 const HELPER_OVERRIDE_ENV: &str = "ENCLAVE_SELF_EXE";
@@ -520,7 +524,7 @@ where
             process::send_signal(*pid, libc::SIGKILL)?;
         }
     }
-    wait_for_targets_to_exit(&remaining, Duration::from_secs(1));
+    wait_for_targets_to_exit(&remaining, POST_KILL_TIMEOUT);
 
     for (pid, expected_starttime_ticks) in pending {
         if process_matches(pid, expected_starttime_ticks) {
