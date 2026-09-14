@@ -340,7 +340,7 @@ pub fn pause_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata
     })?;
 
     crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, true)?;
-    with_registry_mut(state_dir, |registry| {
+    let commit = with_registry_mut(state_dir, |registry| {
         let entry = registry
             .sandboxes
             .get_mut(&metadata.id)
@@ -348,7 +348,18 @@ pub fn pause_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata
         entry.metadata.status = SandboxStatus::Paused;
         persist_sandbox_metadata(&entry.metadata)?;
         Ok(entry.metadata.clone())
-    })
+    });
+    if let Err(error) = commit {
+        if let Err(rollback_error) =
+            crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, false)
+        {
+            tracing::error!(
+                "failed to roll back sandbox pause after registry error: {rollback_error:#}"
+            );
+        }
+        return Err(error);
+    }
+    commit
 }
 
 pub fn resume_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata> {
@@ -365,7 +376,7 @@ pub fn resume_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadat
     })?;
 
     crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, false)?;
-    with_registry_mut(state_dir, |registry| {
+    let commit = with_registry_mut(state_dir, |registry| {
         let entry = registry
             .sandboxes
             .get_mut(&metadata.id)
@@ -373,7 +384,18 @@ pub fn resume_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadat
         entry.metadata.status = SandboxStatus::Running;
         persist_sandbox_metadata(&entry.metadata)?;
         Ok(entry.metadata.clone())
-    })
+    });
+    if let Err(error) = commit {
+        if let Err(rollback_error) =
+            crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, true)
+        {
+            tracing::error!(
+                "failed to roll back sandbox resume after registry error: {rollback_error:#}"
+            );
+        }
+        return Err(error);
+    }
+    commit
 }
 
 pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
