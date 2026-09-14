@@ -786,10 +786,18 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
                 .map(|ip| (ip, workspace.id.clone()))
         })
         .collect::<Vec<_>>();
-    let network_targets_for_hook = network_targets.clone();
+    let mut network_cleanup = None;
     let stop_result = session::stop_sessions_batch_with_hook(&stop_targets, || {
-        crate::network::teardown_workspace_networks(&network_targets_for_hook);
+        let network_targets = network_targets.clone();
+        network_cleanup = Some(thread::spawn(move || {
+            crate::network::teardown_workspace_networks(&network_targets);
+        }));
     })?;
+    if let Some(handle) = network_cleanup {
+        if let Err(error) = handle.join() {
+            tracing::warn!("workspace network cleanup thread panicked: {:?}", error);
+        }
+    }
 
     let mut stopped_ids = BTreeSet::new();
     let mut cleanup_jobs = Vec::new();
