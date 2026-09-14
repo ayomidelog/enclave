@@ -133,6 +133,18 @@ pub fn set_cgroup_frozen(cgroup_path: &Path, frozen: bool) -> Result<bool> {
     Ok(true)
 }
 
+/// Confirm that a runtime PID is still a member of the managed cgroup before
+/// applying a destructive operation to that cgroup.
+pub fn cgroup_contains_pid(cgroup_path: &Path, pid: u32) -> Result<bool> {
+    let contents = fs::read_to_string(cgroup_path.join("cgroup.procs")).with_context(|| {
+        format!(
+            "failed to read {}",
+            cgroup_path.join("cgroup.procs").display()
+        )
+    })?;
+    Ok(contents.lines().any(|line| line.trim() == pid.to_string()))
+}
+
 pub fn apply_cgroup_limits(cgroup_path: &Path, config: &CgroupConfig) -> Result<()> {
     if !is_cgroup_v2_available() {
         return Ok(());

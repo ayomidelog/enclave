@@ -777,7 +777,19 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
                 .map(|pid| (pid, workspace.runtime_starttime_ticks))
         })
         .collect::<Vec<_>>();
-    let stop_result = session::stop_sessions_batch(&stop_targets)?;
+    let network_targets = running
+        .iter()
+        .filter_map(|workspace| {
+            workspace
+                .assigned_ip
+                .clone()
+                .map(|ip| (ip, workspace.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    let network_targets_for_hook = network_targets.clone();
+    let stop_result = session::stop_sessions_batch_with_hook(&stop_targets, || {
+        crate::network::teardown_workspace_networks(&network_targets_for_hook);
+    })?;
 
     let mut stopped_ids = BTreeSet::new();
     let mut cleanup_jobs = Vec::new();
@@ -808,7 +820,7 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
         Ok(())
     })?;
 
-    run_workspace_stop_cleanups(cleanup_jobs);
+    run_workspace_stop_cleanups(cleanup_jobs, true);
 
     with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
@@ -828,29 +840,33 @@ pub(crate) fn freeze_workspaces_in_sandbox(
     sandbox_selector: &str,
     frozen: bool,
 ) -> Result<()> {
-    let pids = with_registry(state_dir, |registry| {
+    let (sandbox_id, has_running_workspace) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
             .get(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
-        Ok(sandbox
-            .workspaces
-            .values()
-            .filter(|workspace| workspace.status == WorkspaceStatus::Running)
-            .filter_map(|workspace| workspace.runtime_pid)
-            .collect::<Vec<_>>())
+        Ok((
+            sandbox_id,
+            sandbox
+                .workspaces
+                .values()
+                .filter(|workspace| workspace.status == WorkspaceStatus::Running)
+                .count()
+                > 0,
+        ))
     })?;
 
-    for pid in pids {
-        let cgroup_path = crate::sandbox::cgroup::runtime_cgroup_path(pid)?
-            .ok_or_else(|| anyhow!("workspace runtime pid {} is not in cgroup v2", pid))?;
-        if !crate::sandbox::cgroup::set_cgroup_frozen(&cgroup_path, frozen)? {
-            bail!(
-                "workspace cgroup {} does not support freezing",
-                cgroup_path.display()
-            );
-        }
+    if !has_running_workspace {
+        return Ok(());
+    }
+    let cgroup_path = std::path::PathBuf::from("/sys/fs/cgroup")
+        .join(crate::sandbox::cgroup::sandbox_cgroup_name(&sandbox_id));
+    if !crate::sandbox::cgroup::set_cgroup_frozen(&cgroup_path, frozen)? {
+        bail!(
+            "sandbox cgroup {} does not support freezing",
+            cgroup_path.display()
+        );
     }
     Ok(())
 }
@@ -992,7 +1008,7 @@ pub(crate) fn set_workspace_stopped(
     workspace_id: &str,
 ) -> Result<()> {
     if let Some(job) = mark_workspace_stopped(sandbox, workspace_id)? {
-        run_workspace_stop_cleanup(job);
+        run_workspace_stop_cleanup(job, false);
     }
     remove_sandbox_cgroup_if_idle(sandbox);
     Ok(())
@@ -1113,7 +1129,7 @@ fn clear_workspace_namespace_refs(workspace: &mut WorkspaceMetadata) {
     workspace.namespace_refs = Default::default();
 }
 
-fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
+fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>, network_already_cleaned: bool) {
     if cleanups.is_empty() {
         return;
     }
@@ -1128,7 +1144,9 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
                 .map(|ip| (ip, cleanup.workspace.id.clone()))
         })
         .collect::<Vec<_>>();
-    crate::network::teardown_workspace_networks(&network_targets);
+    if !network_already_cleaned {
+        crate::network::teardown_workspace_networks(&network_targets);
+    }
     let storage_workspaces = cleanups
         .iter()
         .map(|cleanup| cleanup.workspace.clone())
@@ -1153,7 +1171,7 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
                     let Some(cleanup) = cleanup else {
                         return;
                     };
-                    run_workspace_stop_cleanup(cleanup);
+                    run_workspace_stop_cleanup(cleanup, network_already_cleaned);
                 })
                 .expect("failed to spawn workspace cleanup worker")
         })
@@ -1179,12 +1197,18 @@ fn cleanup_worker_count(job_count: usize) -> usize {
         .min(job_count)
 }
 
-fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
+fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup, network_already_cleaned: bool) {
     let workspace = cleanup.workspace;
     let sandbox = cleanup.sandbox;
 
     if let Some(pid) = workspace.runtime_pid {
         remove_workspace_cgroups(&sandbox, pid);
+    }
+
+    if !network_already_cleaned {
+        if let Some(ip) = workspace.assigned_ip.as_deref() {
+            crate::network::teardown_workspace_network(ip, &workspace.id);
+        }
     }
 
     match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {

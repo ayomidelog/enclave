@@ -429,12 +429,43 @@ fn dispatch_sandbox_resume(
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let metadata = sandbox::resume_sandbox(&config.state_dir, selector)?;
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
+    let mut port_failures = Vec::new();
     for workspace in workspaces {
-        if workspace.status == crate::workspace::WorkspaceStatus::Running {
-            ensure_workspace_ports_started(&config.state_dir, &workspace, port_publisher)?;
+        if workspace.status == crate::workspace::WorkspaceStatus::Running
+            && !workspace.published_ports.is_empty()
+        {
+            let Some(ip) = workspace.assigned_ip.as_deref() else {
+                port_failures.push(format!("{}: missing workspace IP", workspace.name));
+                continue;
+            };
+            let Some(pid) = workspace.runtime_pid else {
+                port_failures.push(format!("{}: missing runtime PID", workspace.name));
+                continue;
+            };
+            let statuses = port_publisher.reconcile_workspace_ports(
+                &workspace.sandbox_id,
+                &workspace.id,
+                pid,
+                ip,
+                &workspace.published_ports,
+            )?;
+            for status in statuses {
+                if let workspace::PublishedPortState::Failed = status.state {
+                    port_failures.push(format!(
+                        "{}: {}",
+                        workspace.name,
+                        status
+                            .error
+                            .unwrap_or_else(|| "port publication failed".to_string())
+                    ));
+                }
+            }
         }
     }
-    Ok(serde_json::to_value(metadata)?)
+    Ok(json!({
+        "sandbox": metadata,
+        "port_failures": port_failures,
+    }))
 }
 
 fn dispatch_sandbox_status(params: &Value, config: &DaemonConfig) -> Result<Value> {

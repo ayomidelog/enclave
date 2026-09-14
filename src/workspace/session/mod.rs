@@ -443,6 +443,18 @@ pub fn stop_session(pid: u32, expected_starttime_ticks: Option<u64>) -> Result<(
 }
 
 pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopResult> {
+    stop_sessions_batch_with_hook(targets, || {})
+}
+
+/// Stop runtimes while allowing independent cleanup to begin immediately
+/// after SIGTERM is sent and before the shared graceful-exit wait.
+pub fn stop_sessions_batch_with_hook<F>(
+    targets: &[(u32, Option<u64>)],
+    after_signal: F,
+) -> Result<BatchStopResult>
+where
+    F: FnOnce(),
+{
     let mut result = BatchStopResult::default();
     let mut pending = Vec::new();
 
@@ -479,6 +491,7 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
     for (pid, _) in &pending {
         process::send_signal(*pid, libc::SIGTERM)?;
     }
+    after_signal();
     wait_for_targets_to_exit(&pending, STOP_TIMEOUT);
 
     let mut remaining = collect_running_targets(&pending);
@@ -488,6 +501,7 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
                 path.file_name()
                     .is_some_and(|name| name.to_string_lossy().starts_with("enclave-ws-"))
             })
+            .filter(|path| crate::sandbox::cgroup::cgroup_contains_pid(path, *pid).unwrap_or(false))
             .map(|path| crate::sandbox::cgroup::kill_cgroup_members(&path))
             .transpose()?
             .unwrap_or(false);
