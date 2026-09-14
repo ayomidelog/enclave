@@ -320,7 +320,9 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
         .map_err(|_| anyhow::anyhow!("session helper preparation lock poisoned"))?;
     let helper_path = session_helper_path(workspace);
     let source_exe = resolve_session_helper_source();
-    if helper_is_fresh(&source_exe, &helper_path)? {
+    // Replacing an already-running executable can fail with ETXTBSY on Linux.
+    // Reuse the sandbox-local helper for the lifetime of the sandbox.
+    if helper_path.is_file() {
         return Ok(helper_path);
     }
     if let Some(parent) = helper_path.parent() {
@@ -353,19 +355,6 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
         )
     })?;
     Ok(helper_path)
-}
-
-fn helper_is_fresh(source_exe: &Path, helper_path: &Path) -> Result<bool> {
-    if !helper_path.is_file() {
-        return Ok(false);
-    }
-    let source_meta = fs::metadata(source_exe)
-        .with_context(|| format!("failed to stat {}", source_exe.display()))?;
-    let helper_meta = fs::metadata(helper_path)
-        .with_context(|| format!("failed to stat {}", helper_path.display()))?;
-    let source_mtime = source_meta.modified().ok();
-    let helper_mtime = helper_meta.modified().ok();
-    Ok(source_meta.len() == helper_meta.len() && source_mtime == helper_mtime)
 }
 
 pub(crate) fn resolve_session_helper_source() -> PathBuf {
