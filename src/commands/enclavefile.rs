@@ -395,11 +395,33 @@ fn start_workspace_definitions_bulk(
             })
         })
         .collect::<Vec<_>>();
-    send_managed(
+    let result = send_managed(
         socket,
         "workspace.start_many",
         json!({ "workspaces": workspaces }),
     )?;
+    let failures = result
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.get("ok")
+                .and_then(|value| value.as_bool())
+                .is_some_and(|ok| !ok)
+                .then(|| {
+                    item.get("error")
+                        .and_then(|error| error.as_str())
+                        .unwrap_or("workspace startup failed")
+                        .to_string()
+                })
+        })
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        bail!(
+            "one or more workspaces failed to start: {}",
+            failures.join("; ")
+        );
+    }
     Ok(())
 }
 

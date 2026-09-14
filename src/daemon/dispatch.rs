@@ -560,10 +560,17 @@ fn dispatch_workspace_start_many(
         .into_inner()
         .map_err(|_| anyhow::anyhow!("workspace batch result lock poisoned"))?;
     let mut output = Vec::with_capacity(results.len());
-    for result in results {
-        output.push(
-            result.ok_or_else(|| anyhow::anyhow!("workspace batch item did not complete"))??,
-        );
+    for (index, result) in results.into_iter().enumerate() {
+        let result =
+            result.ok_or_else(|| anyhow::anyhow!("workspace batch item did not complete"))?;
+        output.push(match result {
+            Ok(value) => json!({ "index": index, "ok": true, "result": value }),
+            Err(error) => json!({
+                "index": index,
+                "ok": false,
+                "error": format!("{error:#}"),
+            }),
+        });
     }
     Ok(Value::Array(output))
 }
