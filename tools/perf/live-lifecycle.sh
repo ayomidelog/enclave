@@ -46,7 +46,9 @@ trap cleanup EXIT INT TERM
 "${runner[@]}" mkdir -p "$state_dir/sandboxes/rootfs-cache"
 "${runner[@]}" cp -a "$rootfs_source" "$state_dir/sandboxes/rootfs-cache/"
 cp "$script_dir/live-heavy.Enclavefile" "$work_dir/Enclavefile"
-"${runner[@]}" "$binary" --socket "$socket_path" daemon start \
+"${runner[@]}" env \
+  ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
+  "$binary" --socket "$socket_path" daemon start \
   --state-dir "$state_dir" --pid-file "$pid_file" --wait-secs 20
 "${runner[@]}" "$binary" --socket "$socket_path" create heavy-live \
   --suite bookworm --bootstrap-method cached_rootfs >/dev/null

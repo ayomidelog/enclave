@@ -373,6 +373,11 @@ fn dispatch_sandbox_update(params: &Value, config: &DaemonConfig) -> Result<Valu
 
 fn dispatch_sandbox_start(params: &Value, config: &DaemonConfig) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let status = sandbox::sandbox_status(&config.state_dir, selector)?;
+    if status.status == sandbox::SandboxStatus::Paused {
+        let resumed = sandbox::resume_sandbox(&config.state_dir, selector)?;
+        return Ok(serde_json::to_value(resumed)?);
+    }
     let metadata = sandbox::start_sandbox(&config.state_dir, selector)?;
     Ok(serde_json::to_value(metadata)?)
 }

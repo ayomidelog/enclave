@@ -221,7 +221,11 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
                 let running_mounted: Vec<String> = with_registry(state_dir, |reg| {
                     let mut paths = Vec::new();
                     for sandbox in reg.sandboxes.values() {
-                        if sandbox.metadata.status == crate::sandbox::SandboxStatus::Running {
+                        if matches!(
+                            sandbox.metadata.status,
+                            crate::sandbox::SandboxStatus::Running
+                                | crate::sandbox::SandboxStatus::Paused
+                        ) {
                             paths.push(sandbox.metadata.mounted_rootfs_path.clone());
                         }
                     }
