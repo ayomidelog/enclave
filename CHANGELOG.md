@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.8 - 2026-09-15
+
 ### Added
 - `enclave pause` and `enclave resume` for freezing and thawing a sandbox cgroup without destroying workspace processes, namespaces, or mounts.
 - A bounded `workspace.start_many` lifecycle operation for bulk Enclavefile startup, plus the reproducible cached-rootfs live lifecycle benchmark at `tools/perf/live-lifecycle.sh`.
