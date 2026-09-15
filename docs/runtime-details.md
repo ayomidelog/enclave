@@ -69,17 +69,36 @@ Rough ballpark on a 4-core x86_64 host (NVMe):
 
 Numbers vary by host hardware, suite, and setup commands. The key tradeoff: one shared rootfs means the bootstrap cost is paid once regardless of workspace count.
 
-On the validated 26-workspace sandbox, current best-known lifecycle timings are:
+The repository includes a bounded live lifecycle benchmark:
 
-- `enclave up` / existing-sandbox workspace start path: `6.93s`
-- `enclave down` / sandbox stop path: `4.20s`
+```bash
+ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 \
+  ./tools/perf/live-lifecycle.sh
+```
 
-Those measurements are host-dependent, but they reflect the current build after the workspace-helper cache, host-network cache, user-namespace cache, collapsed veth setup, and unchanged-DNS-write optimizations.
+It reuses a local cached rootfs, applies an eight-workspace memory/CPU/process
+budget, and excludes rootfs preparation from lifecycle timings. On the current
+validation host it measured approximately 2.55 seconds for cold workspace boot,
+1.63 seconds for cold shutdown, 2.66 seconds for warm boot, and 1.38 seconds
+for warm shutdown.
+
+On the current bounded eight-workspace cached-rootfs validation, the lifecycle
+timings are approximately:
+
+- cold workspace boot: `2.55s`
+- cold shutdown: `1.63s`
+- warm workspace boot: `2.66s`
+- warm shutdown: `1.38s`
+
+These measurements are host-dependent; use the repository benchmark to compare
+changes on the same machine.
 
 ## Stability Guarantees
 
 - **Crash recovery**: On daemon startup, Enclave reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. This handles daemon crashes, host reboots, and OOM-killed sessions without manual cleanup.
 - **cgroup fallback**: When cgroup v2 is not available, Enclave falls back to rlimit-only resource enforcement and logs a warning. Workspace isolation remains intact — only hard memory/PID limits are downgraded to soft rlimits.
+- **Process termination**: Workspace runtimes use dedicated cgroups when cgroup v2 is available. Shutdown allows a short graceful interval, then uses `cgroup.kill` with identity-checked signal fallback so detached workspace commands cannot survive normal cleanup.
+- **Detached run commands**: Enclavefile `run` commands launch asynchronously inside the workspace runtime cgroup. `enclave up` reports launch failures but does not wait for long-running services to exit.
 - **Mount cleanup**: Cleanup loads one mountinfo snapshot per cleanup transaction, unmounts nested workspace mounts deepest-first, and retries with a lazy unmount when the runtime owner is gone; failed resources report the mount target, errno, and namespace holders while independent cleanup continues.
 - **Overlay guarantees**: The shared rootfs is bind-mounted read-only under OverlayFS. Workspace writes go to the upper layer only. Stopping or destroying a workspace removes only the workspace-specific overlay data — the shared rootfs is never modified.
 - **Workspace source mounts**: `/home` is presented through an idmapped bind mount, whether the source is the Enclave-managed workspace directory or an explicit host `workspace_dir`.

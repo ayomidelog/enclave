@@ -48,9 +48,11 @@ fn runtime_exec_clears_environment_before_running_wrapper() {
     assert_eq!(args[9], "sb-1");
     assert_eq!(args[10], "--workspace-id");
     assert_eq!(args[11], "ws-1");
-    assert_eq!(args[12], "--");
-    assert_eq!(args[13], "/bin/echo");
-    assert_eq!(args[14], "ok");
+    assert_eq!(args[12], "--cgroup-path");
+    assert_eq!(args[13], "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-1234");
+    assert_eq!(args[14], "--");
+    assert_eq!(args[15], "/bin/echo");
+    assert_eq!(args[16], "ok");
 }
 
 #[test]
@@ -64,5 +66,15 @@ fn runtime_exec_separates_wrapped_command_flags() {
         &["tar".to_string(), "-C".to_string(), "/home".to_string()],
     );
 
-    assert_eq!(&args[12..], ["--", "tar", "-C", "/home"]);
+    assert_eq!(
+        &args[12..],
+        [
+            "--cgroup-path",
+            "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-1234",
+            "--",
+            "tar",
+            "-C",
+            "/home"
+        ]
+    );
 }

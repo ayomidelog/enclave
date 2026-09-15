@@ -45,6 +45,7 @@ impl FromStr for BootstrapMethod {
 #[serde(rename_all = "lowercase")]
 pub enum SandboxStatus {
     Running,
+    Paused,
     #[default]
     Stopped,
 }

@@ -94,6 +94,34 @@ pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Resu
     Ok(())
 }
 
+/// Unmount all workspace storage using one mountinfo snapshot. This avoids a
+/// full `/proc/self/mountinfo` scan for every workspace during sandbox stop.
+pub(crate) fn ensure_workspace_storage_unmounted_many(
+    workspaces: &[WorkspaceMetadata],
+) -> Result<()> {
+    let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
+    let mut mountpoints = Vec::new();
+    for workspace in workspaces {
+        let root = Path::new(&workspace.workspace_path);
+        let owner_is_dead = workspace_owner_is_dead(workspace);
+        for path in snapshot.at_or_below(root) {
+            mountpoints.push((path, owner_is_dead));
+        }
+    }
+    mountpoints.sort_by(|left, right| {
+        right
+            .0
+            .components()
+            .count()
+            .cmp(&left.0.components().count())
+    });
+    mountpoints.dedup_by(|left, right| left.0 == right.0);
+    for (path, owner_is_dead) in mountpoints {
+        unmount_workspace_path(&path, owner_is_dead)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn reset_workspace_tmp(workspace: &WorkspaceMetadata) -> Result<()> {
     if !workspace_uses_disk_image(workspace) {
         return Ok(());

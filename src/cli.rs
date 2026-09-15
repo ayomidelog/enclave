@@ -52,6 +52,14 @@ pub enum Commands {
         #[arg(value_parser = parse_entity_name)]
         sandbox: String,
     },
+    Pause {
+        #[arg(value_parser = parse_entity_name)]
+        sandbox: String,
+    },
+    Resume {
+        #[arg(value_parser = parse_entity_name)]
+        sandbox: String,
+    },
     Destroy {
         #[arg(value_parser = parse_entity_name)]
         sandbox: String,
@@ -385,6 +393,8 @@ pub struct WorkspaceSessionLaunchArgs {
     #[arg(long, value_name = "PATH")]
     pub workspace_fs: String,
     #[arg(long)]
+    pub workspace_id: String,
+    #[arg(long)]
     pub mount_target: String,
     #[arg(long, value_name = "PATH")]
     pub mount_ref: String,
@@ -428,6 +438,8 @@ pub struct WorkspaceSessionBootstrapArgs {
     pub rootfs: String,
     #[arg(long, value_name = "PATH")]
     pub workspace_fs: String,
+    #[arg(long)]
+    pub workspace_id: String,
     #[arg(long)]
     pub mount_target: String,
     #[arg(long, default_value = "")]
@@ -494,6 +506,8 @@ pub struct WorkspaceCommandInternalArgs {
     pub sandbox_id: String,
     #[arg(long)]
     pub workspace_id: String,
+    #[arg(long, default_value = "")]
+    pub cgroup_path: String,
     #[arg(long)]
     pub root_fd: Option<i32>,
     #[arg(long)]

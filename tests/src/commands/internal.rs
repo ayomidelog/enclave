@@ -1,12 +1,22 @@
 use super::{
     open_ready_file_via_old_root, runtime_tmpfs_mount_flags, validate_workspace_file_target,
-    RUNTIME_TMPFS_DATA,
+    workspace_old_root_path, RUNTIME_TMPFS_DATA,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
 
 struct TempDir {
     path: PathBuf,
+}
+
+#[test]
+fn workspace_old_root_path_is_unique_and_rejects_unsafe_ids() {
+    let rootfs = Path::new("/state/rootfs");
+    assert_eq!(
+        workspace_old_root_path(rootfs, "workspace-abc_123").unwrap(),
+        PathBuf::from("/state/rootfs/.old_root-workspace-abc_123")
+    );
+    assert!(workspace_old_root_path(rootfs, "../escape").is_err());
 }
 
 impl TempDir {

@@ -13,6 +13,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -37,11 +38,16 @@ pub(crate) use security::{
 pub(crate) use userns::{detect_user_namespace_mode, UserNamespaceMode};
 
 const START_TIMEOUT: Duration = Duration::from_secs(5);
-const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+// Dedicated cgroups provide a fast fallback for the remaining process tree.
+// Keep graceful shutdown short so every workspace does not pay a fixed
+// multi-second delay before cgroup.kill is used.
+const STOP_TIMEOUT: Duration = Duration::from_millis(500);
+const POST_KILL_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_HELPER_BASENAME: &str = "session-helper";
 const SELF_EXE_PATH: &str = "/proc/self/exe";
 const HELPER_OVERRIDE_ENV: &str = "ENCLAVE_SELF_EXE";
 const TEST_BINARY_ENV: &str = "CARGO_BIN_EXE_enclave";
+static SESSION_HELPER_PREPARE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
@@ -121,6 +127,8 @@ pub fn start_session(
         .arg(&workspace.sandbox_rootfs_path)
         .arg("--workspace-fs")
         .arg(workspace_source)
+        .arg("--workspace-id")
+        .arg(&workspace.id)
         .arg("--mount-target")
         .arg(&workspace.filesystem_mount_target)
         .arg("--mount-ref")
@@ -312,9 +320,15 @@ fn session_helper_path(workspace: &WorkspaceMetadata) -> PathBuf {
 }
 
 fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
+    let _guard = SESSION_HELPER_PREPARE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| anyhow::anyhow!("session helper preparation lock poisoned"))?;
     let helper_path = session_helper_path(workspace);
     let source_exe = resolve_session_helper_source();
-    if helper_is_fresh(&source_exe, &helper_path)? {
+    // Replacing an already-running executable can fail with ETXTBSY on Linux.
+    // Reuse the sandbox-local helper for the lifetime of the sandbox.
+    if helper_path.is_file() {
         return Ok(helper_path);
     }
     if let Some(parent) = helper_path.parent() {
@@ -339,27 +353,28 @@ fn prepare_session_helper(workspace: &WorkspaceMetadata) -> Result<PathBuf> {
     permissions.set_mode(0o755);
     fs::set_permissions(&temp_path, permissions)
         .with_context(|| format!("failed to chmod {}", temp_path.display()))?;
-    fs::rename(&temp_path, &helper_path).with_context(|| {
-        format!(
-            "failed to promote session helper {} -> {}",
-            temp_path.display(),
-            helper_path.display()
-        )
-    })?;
-    Ok(helper_path)
-}
-
-fn helper_is_fresh(source_exe: &Path, helper_path: &Path) -> Result<bool> {
-    if !helper_path.is_file() {
-        return Ok(false);
+    match fs::hard_link(&temp_path, &helper_path) {
+        Ok(()) => {
+            fs::remove_file(&temp_path).with_context(|| {
+                format!(
+                    "failed to remove temporary session helper {}",
+                    temp_path.display()
+                )
+            })?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another starter won the create race. Never replace a helper that
+            // may already be executing; the sandbox helper is immutable for
+            // the lifetime of the sandbox.
+            let _ = fs::remove_file(&temp_path);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to install session helper {}", helper_path.display())
+            });
+        }
     }
-    let source_meta = fs::metadata(source_exe)
-        .with_context(|| format!("failed to stat {}", source_exe.display()))?;
-    let helper_meta = fs::metadata(helper_path)
-        .with_context(|| format!("failed to stat {}", helper_path.display()))?;
-    let source_mtime = source_meta.modified().ok();
-    let helper_mtime = helper_meta.modified().ok();
-    Ok(source_meta.len() == helper_meta.len() && source_mtime == helper_mtime)
+    Ok(helper_path)
 }
 
 pub(crate) fn resolve_session_helper_source() -> PathBuf {
@@ -443,6 +458,18 @@ pub fn stop_session(pid: u32, expected_starttime_ticks: Option<u64>) -> Result<(
 }
 
 pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopResult> {
+    stop_sessions_batch_with_hook(targets, || {})
+}
+
+/// Stop runtimes while allowing independent cleanup to begin immediately
+/// after SIGTERM is sent and before the shared graceful-exit wait.
+pub fn stop_sessions_batch_with_hook<F>(
+    targets: &[(u32, Option<u64>)],
+    after_signal: F,
+) -> Result<BatchStopResult>
+where
+    F: FnOnce(),
+{
     let mut result = BatchStopResult::default();
     let mut pending = Vec::new();
 
@@ -479,13 +506,36 @@ pub fn stop_sessions_batch(targets: &[(u32, Option<u64>)]) -> Result<BatchStopRe
     for (pid, _) in &pending {
         process::send_signal(*pid, libc::SIGTERM)?;
     }
+    after_signal();
     wait_for_targets_to_exit(&pending, STOP_TIMEOUT);
 
     let mut remaining = collect_running_targets(&pending);
     for (pid, _) in &remaining {
-        process::send_signal(*pid, libc::SIGKILL)?;
+        let cgroup_killed = crate::sandbox::cgroup::runtime_cgroup_path(*pid)?
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("enclave-ws-"))
+            })
+            .filter(|path| crate::sandbox::cgroup::cgroup_contains_pid(path, *pid).unwrap_or(false))
+            .map(|path| crate::sandbox::cgroup::kill_cgroup_members(&path))
+            .transpose()?
+            .unwrap_or(false);
+        if !cgroup_killed {
+            process::send_signal(*pid, libc::SIGKILL)?;
+        }
     }
-    wait_for_targets_to_exit(&remaining, Duration::from_secs(1));
+    wait_for_targets_to_exit(&remaining, POST_KILL_TIMEOUT);
+
+    // Some kernels report a successful cgroup.kill write before the leader
+    // disappears. Keep the PID/start-time guard and issue one direct fallback
+    // signal so a surviving runtime cannot make the whole sandbox stop fail.
+    let still_running = collect_running_targets(&pending);
+    for (pid, expected_starttime_ticks) in &still_running {
+        if process::verify_signal_target(*pid, *expected_starttime_ticks).is_ok() {
+            process::send_signal(*pid, libc::SIGKILL)?;
+        }
+    }
+    wait_for_targets_to_exit(&still_running, POST_KILL_TIMEOUT);
 
     for (pid, expected_starttime_ticks) in pending {
         if process_matches(pid, expected_starttime_ticks) {

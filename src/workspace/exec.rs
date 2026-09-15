@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -148,6 +149,29 @@ pub(crate) fn spawn_workspace_command(
         .context("failed to execute workspace command via internal helper")
 }
 
+/// Launch a long-running command without keeping the daemon request open.
+/// The helper wrapper is attached to the workspace cgroup before it forks the
+/// command, so descendants follow the workspace lifecycle.
+pub(crate) fn spawn_workspace_command_detached(
+    workspace: &WorkspaceMetadata,
+    cwd: &str,
+    command: &[String],
+) -> Result<()> {
+    let child = spawn_workspace_command(
+        workspace,
+        cwd,
+        command,
+        Stdio::null(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 pub(crate) fn spawn_workspace_file_receiver(
     workspace: &WorkspaceMetadata,
     target: &str,
@@ -256,6 +280,12 @@ fn runtime_exec_command_args_base(
         sandbox_id.to_string(),
         "--workspace-id".to_string(),
         workspace_id.to_string(),
+        "--cgroup-path".to_string(),
+        format!(
+            "/sys/fs/cgroup/{}/enclave-ws-{}",
+            crate::sandbox::cgroup::sandbox_cgroup_name(sandbox_id),
+            runtime_pid
+        ),
     ];
     if let Some(fds) = fds {
         append_namespace_fd_args(&mut args, fds);

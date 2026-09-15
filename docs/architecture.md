@@ -21,6 +21,9 @@ graph LR
 - For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly. Daemon-managed `workspace exec` uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. Stdout/stderr remain outside the daemon JSON control response.
 - Repeated daemon-managed namespace operations reuse an identity-checked descriptor cache keyed by runtime PID and start time. Cached descriptors are duplicated only for the helper process and invalidated when namespace identities change.
 - Workspace creation and Enclavefile startup use bounded fan-out for independent work, while registry commits and run-command ordering remain deterministic.
+- Enclavefile workspace startup uses one bounded `workspace.start_many` daemon request and returns structured per-workspace results; partial success is explicit so callers can report failed items without losing successful starts.
+- Sandbox pause/resume freezes the sandbox cgroup as one lifecycle boundary, preserves namespaces and mounts, and restores published ports best-effort without stopping workspaces when a host port is unavailable.
+- Sandbox shutdown sends process termination and starts independent network cleanup concurrently; storage unmounting waits for runtime termination and propagates cleanup failures for recovery.
 - Managed workspaces with `disk_mb` mount a per-workspace OverlayFS root before `pivot_root`; the shared sandbox rootfs is the lower layer and the quota-backed workspace image stores the upper/work directories, making root-level copy-on-write data subject to the workspace quota.
 - The optional `clear_tmp_on_restart` workspace setting resets managed `/tmp` only after the runtime and its storage mounts are confirmed stopped; failed unmounts leave data intact.
 - Batch workspace wipe takes one registry snapshot, performs independent cleanup through the bounded cleanup pool, and commits each confirmed deletion separately so a later failure cannot retain already-cleaned records.
@@ -78,7 +81,7 @@ flowchart LR
 2. Sends `sandbox.create` to the daemon — bootstraps the rootfs using the selected method.
 3. Sends `sandbox.exec_setup` for each setup command — runs inside the sandbox via `chroot`.
 4. Sends `workspace.create` for each `[workspace.*]` block — creates namespace isolation + mounts.
-5. Sends `workspace.start` — executes the `run` command (if defined) inside the workspace.
+5. Sends one bounded `workspace.start_many` request — starts workspace runtimes concurrently and launches configured `run` commands detached inside each workspace cgroup.
 
 - Setup commands run during sandbox creation and are re-run on later `enclave up` / `enclave restart` calls so Enclavefile changes can be applied to an existing sandbox.
 - Re-running `enclave up` when the sandbox exists skips sandbox creation, re-applies setup commands, and starts workspaces.

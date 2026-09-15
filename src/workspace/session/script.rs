@@ -19,6 +19,7 @@ DISK_BACKED_TMP="${17}"
 ROOT_OVERLAY_UPPER="${18}"
 ROOT_OVERLAY_WORK="${19}"
 ROOT_OVERLAY_MERGED="${20}"
+WORKSPACE_ID="${21}"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -80,6 +81,7 @@ run_bootstrap() {
   set -- "$SESSION_HELPER" internal workspace-session-bootstrap \
     --rootfs "$ROOTFS" \
     --workspace-fs "$WS_FS" \
+    --workspace-id "$WORKSPACE_ID" \
     --mount-target "$MOUNT_TARGET" \
     --workspace-idmap-option "$WORKSPACE_IDMAP_OPTION"
   if [ "$DISK_BACKED_TMP" = "true" ]; then

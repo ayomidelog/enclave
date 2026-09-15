@@ -24,15 +24,17 @@ pub use control::{
     remove_workspace, start_workspace, stop_workspace, workspace_status, BatchDestroyReport,
 };
 pub(crate) use control::{
-    reconcile_workspace_runtime_state, resize_workspace_disk_with_security,
-    stop_running_workspaces_in_sandbox, sync_sandbox_runtime_limits, sync_workspace_runtime_limits,
-    update_workspace_definition, workspace_metadata, workspace_runtime_is_active,
+    freeze_workspaces_in_sandbox, reconcile_workspace_runtime_state,
+    resize_workspace_disk_with_security, stop_running_workspaces_in_sandbox,
+    sync_sandbox_runtime_limits, sync_workspace_runtime_limits, update_workspace_definition,
+    workspace_metadata, workspace_runtime_is_active,
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;
 pub(crate) use cp::CopyOptions;
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
 pub use exec::exec_workspace_command;
+pub(crate) use exec::spawn_workspace_command_detached;
 pub use logs::workspace_logs;
 pub use ports::{
     configured_port_statuses, merge_published_port_statuses, validate_published_ports,
@@ -60,6 +62,7 @@ pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) 
 pub(crate) use cwd::sanitize_workspace_cwd;
 pub(crate) use storage::{
     create_workspace_storage, ensure_workspace_storage_ready, ensure_workspace_storage_unmounted,
-    reset_workspace_tmp, unmount_mounts_at_or_below_excluding, validate_workspace_storage_limits,
+    ensure_workspace_storage_unmounted_many, reset_workspace_tmp,
+    unmount_mounts_at_or_below_excluding, validate_workspace_storage_limits,
     with_workspace_storage_mounted,
 };

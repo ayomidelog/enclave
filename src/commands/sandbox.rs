@@ -300,6 +300,20 @@ pub(crate) fn run_stop(socket: &Path, sandbox: &str) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn run_pause(socket: &Path, sandbox: &str) -> Result<()> {
+    tracing::info!("pausing sandbox '{}'...", sandbox);
+    send_managed(socket, "sandbox.pause", json!({ "sandbox": sandbox }))?;
+    println!("paused sandbox '{}'", sandbox);
+    Ok(())
+}
+
+pub(crate) fn run_resume(socket: &Path, sandbox: &str) -> Result<()> {
+    tracing::info!("resuming sandbox '{}'...", sandbox);
+    send_managed(socket, "sandbox.resume", json!({ "sandbox": sandbox }))?;
+    println!("resumed sandbox '{}'", sandbox);
+    Ok(())
+}
+
 pub(crate) fn run_destroy(socket: &Path, sandbox: &str) -> Result<()> {
     tracing::info!("destroying sandbox '{}'...", sandbox);
     send_managed(socket, "sandbox.destroy", json!({ "sandbox": sandbox }))?;

@@ -238,8 +238,24 @@ fn send_command(
     cwd: &str,
     command: &[String],
 ) -> Result<PersistentCommandOutput> {
-    let mut stream = UnixStream::connect(&helper.socket)
-        .with_context(|| format!("failed to connect to {}", helper.socket.display()))?;
+    let started = Instant::now();
+    let mut stream = loop {
+        match UnixStream::connect(&helper.socket) {
+            Ok(stream) => break stream,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) && started.elapsed() < Duration::from_secs(1) =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to connect to {}", helper.socket.display()))
+            }
+        }
+    };
     let request = CommandRequest {
         auth_token: &helper.auth_token,
         runtime_pid,

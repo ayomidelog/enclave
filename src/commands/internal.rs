@@ -21,7 +21,6 @@ use crate::cli::{
     WorkspaceSessionLaunchArgs, WorkspaceSessionLoopArgs, WorkspaceSessionPersistentHelperArgs,
 };
 
-const PIVOTED_OLD_ROOT: &str = "/.old_root";
 const RUNTIME_TMPFS_DATA: &str = "mode=700";
 
 pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> Result<()> {
@@ -68,8 +67,10 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
 
 pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArgs) -> Result<()> {
     let rootfs = validate_workspace_rootfs(Path::new(&args.rootfs))?;
+    let old_root_name = workspace_old_root_name(&args.workspace_id)?;
+    let pivoted_old_root = PathBuf::from("/").join(&old_root_name);
     let (new_root, host_old_root) = if args.root_overlay_merged.is_empty() {
-        let host_old_root = rootfs.join(".old_root");
+        let host_old_root = workspace_old_root_path(&rootfs, &args.workspace_id)?;
         fs::create_dir_all(&host_old_root)
             .with_context(|| format!("failed to create {}", host_old_root.display()))?;
         bind_mount_self(&rootfs)?;
@@ -88,18 +89,33 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
     pivot_into_rootfs(&new_root, &host_old_root)?;
     std::env::set_current_dir("/").context("failed to chdir to / after pivot_root")?;
     mount_workspace_source(
-        Path::new(PIVOTED_OLD_ROOT),
+        &pivoted_old_root,
         Path::new(&args.workspace_fs),
         Path::new(&args.mount_target),
         &args.workspace_idmap_option,
     )?;
     mount_post_pivot_filesystems(
-        Path::new(PIVOTED_OLD_ROOT),
+        &pivoted_old_root,
         Path::new(&args.workspace_fs),
         &args.workspace_idmap_option,
         args.disk_backed_tmp,
     )?;
-    run_workspace_session_loop_inner(Path::new(PIVOTED_OLD_ROOT), Path::new(&args.ready_file))
+    run_workspace_session_loop_inner(&pivoted_old_root, Path::new(&args.ready_file))
+}
+
+fn workspace_old_root_path(rootfs: &Path, workspace_id: &str) -> Result<PathBuf> {
+    Ok(rootfs.join(workspace_old_root_name(workspace_id)?))
+}
+
+fn workspace_old_root_name(workspace_id: &str) -> Result<String> {
+    if workspace_id.is_empty()
+        || !workspace_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        bail!("workspace id is unsafe for old-root mount path: {workspace_id}");
+    }
+    Ok(format!(".old_root-{workspace_id}"))
 }
 
 fn validate_workspace_overlay_path(raw: &str, label: &str) -> Result<PathBuf> {
@@ -444,6 +460,14 @@ pub(crate) fn run_workspace_command(args: WorkspaceCommandInternalArgs) -> Resul
             "workspace runtime pid {} is not alive or no longer matches the expected process",
             args.runtime_pid
         );
+    }
+
+    if !args.cgroup_path.is_empty() {
+        crate::sandbox::cgroup::add_process_to_cgroup(
+            std::path::Path::new(&args.cgroup_path),
+            std::process::id(),
+        )
+        .context("failed to attach workspace command helper to cgroup")?;
     }
 
     let namespaces = NamespaceHandles::from_optional_fds(
@@ -877,6 +901,7 @@ fn exec_workspace_session_script(args: &WorkspaceSessionLaunchArgs) -> Result<()
         .arg(&args.root_overlay_upper)
         .arg(&args.root_overlay_work)
         .arg(&args.root_overlay_merged)
+        .arg(&args.workspace_id)
         .exec();
     Err(err).context("failed to exec workspace session bootstrap script")
 }

@@ -78,7 +78,10 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         let mut active_roots = Vec::new();
         let mut stopped_workspaces = Vec::new();
         for sandbox in registry.sandboxes.values() {
-            if sandbox.metadata.status == crate::sandbox::SandboxStatus::Running {
+            if matches!(
+                sandbox.metadata.status,
+                crate::sandbox::SandboxStatus::Running | crate::sandbox::SandboxStatus::Paused
+            ) {
                 active_roots.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
             }
             for workspace in sandbox.workspaces.values() {
@@ -221,7 +224,11 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
                 let running_mounted: Vec<String> = with_registry(state_dir, |reg| {
                     let mut paths = Vec::new();
                     for sandbox in reg.sandboxes.values() {
-                        if sandbox.metadata.status == crate::sandbox::SandboxStatus::Running {
+                        if matches!(
+                            sandbox.metadata.status,
+                            crate::sandbox::SandboxStatus::Running
+                                | crate::sandbox::SandboxStatus::Paused
+                        ) {
                             paths.push(sandbox.metadata.mounted_rootfs_path.clone());
                         }
                     }

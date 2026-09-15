@@ -46,7 +46,7 @@ enclave rootfs fetch  [--state-dir PATH] (--suite SUITE | --base) [--replace] UR
 | Command | Description |
 |---------|-------------|
 | `init` | Scaffold a blank `Enclavefile` in the current directory. |
-| `up` | Read the Enclavefile, create sandbox, run setup, create and start all workspaces. |
+| `up` | Read the Enclavefile, create sandbox, run setup, create and start all workspaces, and launch configured `run` commands detached inside each workspace cgroup. |
 | `up --rebuild` | Force sandbox recreation and rerun setup commands. |
 | `down` | Stop all workspaces in the sandbox as a coordinated batch, then stop the sandbox. |
 | `restart` | Stop and restart the entire environment. |
@@ -78,6 +78,8 @@ enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/rele
 enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs]
 enclave start   <sandbox>
 enclave stop    <sandbox>
+enclave pause   <sandbox>
+enclave resume  <sandbox>
 enclave destroy <sandbox>
 enclave list
 enclave stats
@@ -93,6 +95,8 @@ enclave wipe
 | `create` | Bootstrap a new sandbox with `debootstrap` or `cached_rootfs`. |
 | `start` | Start a stopped sandbox (mount rootfs). |
 | `stop` | Stop all workspaces in the sandbox, then stop the sandbox. |
+| `pause` | Freeze the sandbox cgroup while preserving workspace processes, namespaces, mounts, and storage for fast resume. |
+| `resume` | Thaw a paused sandbox and best-effort restore its published ports. Port conflicts are reported without stopping workspaces. |
 | `destroy` | Stop and permanently delete a sandbox and all its workspaces. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List all sandboxes. |
 | `stats` | Show live stats for all running workspaces across all sandboxes. |

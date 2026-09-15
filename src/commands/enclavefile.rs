@@ -260,30 +260,12 @@ fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Resul
         })
         .collect::<Result<Vec<_>>>()?;
 
-    start_workspace_definitions(socket, &ef.sandbox.name, &definitions)?;
-
-    for (_, key, ws, _) in definitions {
-        if let Some(run_cmd) = &ws.run {
-            tracing::info!("  executing: {}", run_cmd);
-            let exec_result = send(
-                socket,
-                "workspace.exec",
-                json!({
-                    "sandbox_id": ef.sandbox.name,
-                    "workspace_id": ws.name,
-                    "cwd": "/home",
-                    "command": ["sh", "-c", run_cmd],
-                }),
-            );
-            if let Err(err) = exec_result {
-                tracing::warn!("  run command for workspace '{}' failed: {err:#}", key);
-            }
-        }
-    }
+    start_workspace_definitions_bulk(socket, &ef.sandbox.name, &definitions)?;
 
     Ok(())
 }
 
+#[allow(dead_code)]
 fn start_workspace_definitions(
     socket: &Path,
     sandbox_name: &str,
@@ -302,7 +284,11 @@ fn start_workspace_definitions(
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get().saturating_mul(2).max(1))
+                .unwrap_or(4)
+        })
         .min(definitions.len());
     let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..definitions.len())));
     let (result_sender, result_receiver) = std::sync::mpsc::channel();
@@ -349,6 +335,71 @@ fn start_workspace_definitions(
     })
 }
 
+fn start_workspace_definitions_bulk(
+    socket: &Path,
+    sandbox_name: &str,
+    definitions: &[(
+        usize,
+        &str,
+        &crate::enclavefile::WorkspaceSection,
+        Option<String>,
+    )],
+) -> Result<()> {
+    if definitions.is_empty() {
+        return Ok(());
+    }
+    let workspaces = definitions
+        .iter()
+        .map(|(_, _, workspace, workspace_dir)| {
+            json!({
+                "sandbox_id": sandbox_name,
+                "name": workspace.name,
+                "path": workspace_dir,
+                "cpu_seconds": workspace.cpu_seconds,
+                "cpu_percent": workspace.cpu_percent,
+                "memory_mb": workspace.memory_mb,
+                "max_procs": workspace.max_procs,
+                "max_open_files": workspace.max_open_files,
+                "disk_mb": workspace.disk_mb,
+                "clear_tmp_on_restart": workspace.clear_tmp_on_restart,
+                "auth": workspace.auth,
+                "env_tokens": workspace.env_tokens,
+                "ports": workspace.ports,
+                "run": workspace.run,
+            })
+        })
+        .collect::<Vec<_>>();
+    let result = send_managed(
+        socket,
+        "workspace.start_many",
+        json!({ "workspaces": workspaces }),
+    )?;
+    let failures = result
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            item.get("ok")
+                .and_then(|value| value.as_bool())
+                .is_some_and(|ok| !ok)
+        })
+        .map(|item| {
+            item.get("error")
+                .and_then(|error| error.as_str())
+                .unwrap_or("workspace startup failed")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
+        bail!(
+            "one or more workspaces failed to start: {}",
+            failures.join("; ")
+        );
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn ensure_workspace_started(
     socket: &Path,
     sandbox_name: &str,

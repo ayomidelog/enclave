@@ -93,6 +93,39 @@ pub fn teardown_workspace_network(assigned_ip: &str, workspace_id: &str) {
     }
 }
 
+/// Tear down several workspace networks concurrently. The bridge and NAT are
+/// shared resources, but veth and anti-spoofing cleanup is workspace-local.
+pub fn teardown_workspace_networks(workspaces: &[(String, String)]) {
+    if workspaces.is_empty() {
+        return;
+    }
+    let worker_count = std::env::var("ENCLAVE_CLEANUP_WORKERS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=64).contains(value))
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get().clamp(1, 4))
+                .unwrap_or(4)
+        })
+        .min(workspaces.len());
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::from_iter(workspaces.iter().cloned()),
+    ));
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let queue = std::sync::Arc::clone(&queue);
+            scope.spawn(move || loop {
+                let Some((ip, id)) = queue.lock().ok().and_then(|mut queue| queue.pop_front())
+                else {
+                    return;
+                };
+                teardown_workspace_network(&ip, &id);
+            });
+        }
+    });
+}
+
 pub fn collect_used_ips<'a, I>(ips: I) -> BTreeSet<u8>
 where
     I: Iterator<Item = &'a str>,

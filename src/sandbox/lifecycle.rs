@@ -326,6 +326,78 @@ pub fn stop_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata>
     Ok(metadata)
 }
 
+pub fn pause_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata> {
+    let metadata = with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, selector)?;
+        let entry = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow::anyhow!("sandbox '{}' not found", selector))?;
+        if entry.metadata.status != SandboxStatus::Running {
+            bail!("sandbox '{}' is not running", selector);
+        }
+        Ok(entry.metadata.clone())
+    })?;
+
+    crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, true)?;
+    let commit = with_registry_mut(state_dir, |registry| {
+        let entry = registry
+            .sandboxes
+            .get_mut(&metadata.id)
+            .ok_or_else(|| anyhow::anyhow!("sandbox '{}' not found", metadata.id))?;
+        entry.metadata.status = SandboxStatus::Paused;
+        persist_sandbox_metadata(&entry.metadata)?;
+        Ok(entry.metadata.clone())
+    });
+    if let Err(error) = commit {
+        if let Err(rollback_error) =
+            crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, false)
+        {
+            tracing::error!(
+                "failed to roll back sandbox pause after registry error: {rollback_error:#}"
+            );
+        }
+        return Err(error);
+    }
+    commit
+}
+
+pub fn resume_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata> {
+    let metadata = with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, selector)?;
+        let entry = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow::anyhow!("sandbox '{}' not found", selector))?;
+        if entry.metadata.status != SandboxStatus::Paused {
+            bail!("sandbox '{}' is not paused", selector);
+        }
+        Ok(entry.metadata.clone())
+    })?;
+
+    crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, false)?;
+    let commit = with_registry_mut(state_dir, |registry| {
+        let entry = registry
+            .sandboxes
+            .get_mut(&metadata.id)
+            .ok_or_else(|| anyhow::anyhow!("sandbox '{}' not found", metadata.id))?;
+        entry.metadata.status = SandboxStatus::Running;
+        persist_sandbox_metadata(&entry.metadata)?;
+        Ok(entry.metadata.clone())
+    });
+    if let Err(error) = commit {
+        if let Err(rollback_error) =
+            crate::workspace::freeze_workspaces_in_sandbox(state_dir, &metadata.id, true)
+        {
+            tracing::error!(
+                "failed to roll back sandbox resume after registry error: {rollback_error:#}"
+            );
+        }
+        return Err(error);
+    }
+    commit
+}
+
 pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
     let (sandbox_id, sandbox) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, selector)?;

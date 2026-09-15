@@ -777,7 +777,27 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
                 .map(|pid| (pid, workspace.runtime_starttime_ticks))
         })
         .collect::<Vec<_>>();
-    let stop_result = session::stop_sessions_batch(&stop_targets)?;
+    let network_targets = running
+        .iter()
+        .filter_map(|workspace| {
+            workspace
+                .assigned_ip
+                .clone()
+                .map(|ip| (ip, workspace.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    let mut network_cleanup = None;
+    let stop_result = session::stop_sessions_batch_with_hook(&stop_targets, || {
+        let network_targets = network_targets.clone();
+        network_cleanup = Some(thread::spawn(move || {
+            crate::network::teardown_workspace_networks(&network_targets);
+        }));
+    })?;
+    if let Some(handle) = network_cleanup {
+        if let Err(error) = handle.join() {
+            tracing::warn!("workspace network cleanup thread panicked: {:?}", error);
+        }
+    }
 
     let mut stopped_ids = BTreeSet::new();
     let mut cleanup_jobs = Vec::new();
@@ -808,7 +828,8 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
         Ok(())
     })?;
 
-    run_workspace_stop_cleanups(cleanup_jobs);
+    let cleanup_errors = run_workspace_stop_cleanups(cleanup_jobs, true);
+    failed_ids.extend(cleanup_errors);
 
     with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
@@ -821,6 +842,42 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
     })?;
 
     Ok(failed_ids)
+}
+
+pub(crate) fn freeze_workspaces_in_sandbox(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    frozen: bool,
+) -> Result<()> {
+    let (sandbox_id, has_running_workspace) = with_registry(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_selector))?;
+        Ok((
+            sandbox_id,
+            sandbox
+                .workspaces
+                .values()
+                .filter(|workspace| workspace.status == WorkspaceStatus::Running)
+                .count()
+                > 0,
+        ))
+    })?;
+
+    if !has_running_workspace {
+        return Ok(());
+    }
+    let cgroup_path = std::path::PathBuf::from("/sys/fs/cgroup")
+        .join(crate::sandbox::cgroup::sandbox_cgroup_name(&sandbox_id));
+    if !crate::sandbox::cgroup::set_cgroup_frozen(&cgroup_path, frozen)? {
+        bail!(
+            "sandbox cgroup {} does not support freezing",
+            cgroup_path.display()
+        );
+    }
+    Ok(())
 }
 
 pub fn list_workspace_items(
@@ -960,7 +1017,7 @@ pub(crate) fn set_workspace_stopped(
     workspace_id: &str,
 ) -> Result<()> {
     if let Some(job) = mark_workspace_stopped(sandbox, workspace_id)? {
-        run_workspace_stop_cleanup(job);
+        run_workspace_stop_cleanup(job, false, false)?;
     }
     remove_sandbox_cgroup_if_idle(sandbox);
     Ok(())
@@ -1081,16 +1138,50 @@ fn clear_workspace_namespace_refs(workspace: &mut WorkspaceMetadata) {
     workspace.namespace_refs = Default::default();
 }
 
-fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
+fn run_workspace_stop_cleanups(
+    cleanups: Vec<WorkspaceStopCleanup>,
+    network_already_cleaned: bool,
+) -> Vec<String> {
     if cleanups.is_empty() {
-        return;
+        return Vec::new();
     }
+
+    let network_targets = cleanups
+        .iter()
+        .filter_map(|cleanup| {
+            cleanup
+                .workspace
+                .assigned_ip
+                .clone()
+                .map(|ip| (ip, cleanup.workspace.id.clone()))
+        })
+        .collect::<Vec<_>>();
+    if !network_already_cleaned {
+        crate::network::teardown_workspace_networks(&network_targets);
+    }
+    let storage_workspaces = cleanups
+        .iter()
+        .map(|cleanup| cleanup.workspace.clone())
+        .collect::<Vec<_>>();
+    // A successful batch unmount already used one consistent mountinfo
+    // snapshot. Avoid re-reading mountinfo once per workspace; retain the
+    // per-workspace path as a retry fallback when the batch operation fails.
+    let storage_batch_succeeded =
+        match crate::workspace::ensure_workspace_storage_unmounted_many(&storage_workspaces) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!("batch workspace storage cleanup failed: {err:#}");
+                false
+            }
+        };
 
     let worker_count = cleanup_worker_count(cleanups.len());
     let queue = Arc::new(Mutex::new(VecDeque::from(cleanups)));
+    let (result_sender, result_receiver) = std::sync::mpsc::channel();
     let handles = (0..worker_count)
         .map(|worker_id| {
             let queue = Arc::clone(&queue);
+            let result_sender = result_sender.clone();
             thread::Builder::new()
                 .name(format!("enclave-workspace-cleanup-{worker_id}"))
                 .spawn(move || loop {
@@ -1101,7 +1192,13 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
                     let Some(cleanup) = cleanup else {
                         return;
                     };
-                    run_workspace_stop_cleanup(cleanup);
+                    let workspace_id = cleanup.workspace.id.clone();
+                    let result = run_workspace_stop_cleanup(
+                        cleanup,
+                        network_already_cleaned,
+                        storage_batch_succeeded,
+                    );
+                    let _ = result_sender.send((workspace_id, result));
                 })
                 .expect("failed to spawn workspace cleanup worker")
         })
@@ -1112,6 +1209,15 @@ fn run_workspace_stop_cleanups(cleanups: Vec<WorkspaceStopCleanup>) {
             tracing::warn!("workspace cleanup thread panicked: {:?}", err);
         }
     }
+    drop(result_sender);
+    result_receiver
+        .into_iter()
+        .filter_map(|(workspace_id, result)| {
+            result
+                .err()
+                .map(|error| format!("{workspace_id}: {error:#}"))
+        })
+        .collect()
 }
 
 fn cleanup_worker_count(job_count: usize) -> usize {
@@ -1119,11 +1225,19 @@ fn cleanup_worker_count(job_count: usize) -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|parallelism| parallelism.get().clamp(1, 4))
+                .unwrap_or(4)
+        })
         .min(job_count)
 }
 
-fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
+fn run_workspace_stop_cleanup(
+    cleanup: WorkspaceStopCleanup,
+    network_already_cleaned: bool,
+    storage_already_unmounted: bool,
+) -> Result<()> {
     let workspace = cleanup.workspace;
     let sandbox = cleanup.sandbox;
 
@@ -1131,24 +1245,29 @@ fn run_workspace_stop_cleanup(cleanup: WorkspaceStopCleanup) {
         remove_workspace_cgroups(&sandbox, pid);
     }
 
-    if let Some(ref ip) = workspace.assigned_ip {
-        network::teardown_workspace_network(ip, &workspace.id);
+    if !network_already_cleaned {
+        if let Some(ip) = workspace.assigned_ip.as_deref() {
+            crate::network::teardown_workspace_network(ip, &workspace.id);
+        }
     }
+
+    if storage_already_unmounted {
+        if workspace.clear_tmp_on_restart {
+            crate::workspace::reset_workspace_tmp(&workspace)
+                .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?;
+        }
+        return Ok(());
+    }
+
     match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
         Ok(()) if workspace.clear_tmp_on_restart => {
-            if let Err(err) = crate::workspace::reset_workspace_tmp(&workspace) {
-                tracing::warn!(
-                    "failed to reset workspace /tmp for {}: {err:#}",
-                    workspace.id
-                );
-            }
+            crate::workspace::reset_workspace_tmp(&workspace)
+                .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?
         }
         Ok(()) => {}
-        Err(err) => tracing::warn!(
-            "failed to unmount quota-backed workspace storage for {}: {err:#}",
-            workspace.id
-        ),
+        Err(err) => return Err(err).context("failed to unmount workspace storage"),
     }
+    Ok(())
 }
 
 fn remove_sandbox_cgroup_if_idle(sandbox: &RegistrySandbox) {
@@ -1318,7 +1437,11 @@ fn ensure_workspace_cgroup_hierarchy(
             workspace.id
         );
     }
-    if !cgroup_v2_available || (!sandbox_config.has_limits() && !workspace_config.has_limits()) {
+    // Keep a cgroup hierarchy even for unlimited workspaces. It provides the
+    // process boundary required by warm pause/resume and fast cgroup.kill
+    // shutdown; resource limits remain unlimited through the configured `max`
+    // values.
+    if !cgroup_v2_available {
         return Ok(());
     }
 
