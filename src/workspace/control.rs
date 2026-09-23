@@ -93,16 +93,30 @@ pub fn destroy_workspace(
     })?;
 
     let workspace_id = workspace.id.clone();
-    cleanup::cleanup_workspace_artifacts(&sandbox, &workspace)?;
+    let mut journal = crate::operation::Journal::begin(
+        state_dir,
+        "workspace.destroy",
+        format!("{}/{}", sandbox.id, workspace_id),
+    )?;
+    journal.phase("cleanup")?;
+    if let Err(error) = cleanup::cleanup_workspace_artifacts(&sandbox, &workspace) {
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
+    }
+    journal.phase("remove_registry_record")?;
 
-    with_registry_mut(state_dir, |registry| {
+    if let Err(error) = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
             .get_mut(&sandbox.id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox.id))?;
         sandbox.workspaces.remove(&workspace_id);
         Ok(())
-    })?;
+    }) {
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
+    }
+    journal.succeed()?;
 
     Ok(workspace_id)
 }
@@ -660,11 +674,21 @@ pub fn stop_workspace(
         Ok((sandbox_id, workspace_id, current))
     })?;
 
+    let mut journal = crate::operation::Journal::begin(
+        state_dir,
+        "workspace.stop",
+        format!("{}/{}", sandbox_id, workspace_id),
+    )?;
+    journal.phase("stop_runtime")?;
     if let Some(pid) = current.runtime_pid {
-        session::stop_session(pid, current.runtime_starttime_ticks)?;
+        if let Err(error) = session::stop_session(pid, current.runtime_starttime_ticks) {
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
     }
 
-    with_registry_mut(state_dir, |registry| {
+    journal.phase("cleanup_resources")?;
+    let result = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
             .get_mut(&sandbox_id)
@@ -689,7 +713,17 @@ pub fn stop_workspace(
             .cloned()
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
         Ok(result)
-    })
+    });
+    match result {
+        Ok(metadata) => {
+            journal.succeed()?;
+            Ok(metadata)
+        }
+        Err(error) => {
+            let _ = journal.fail(format!("{error:#}"));
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn stop_running_workspaces_in_sandbox(

@@ -14,6 +14,7 @@ mod config;
 mod daemon;
 mod doctor;
 mod network;
+pub mod operation;
 mod paths;
 mod perf;
 mod protocol;

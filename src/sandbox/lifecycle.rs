@@ -408,6 +408,9 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
 
         Ok((sandbox_id, sandbox.clone()))
     })?;
+    let mut journal =
+        crate::operation::Journal::begin(state_dir, "sandbox.destroy", sandbox_id.clone())?;
+    journal.phase("destroy_workspaces")?;
 
     if !Path::new(&sandbox.metadata.sandbox_path).exists() {
         let workspace_ids = sandbox.workspaces.keys().cloned().collect::<Vec<_>>();
@@ -420,13 +423,15 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
             }
         }
         if !errors.is_empty() {
-            bail!(
+            let error = anyhow!(
                 "cannot destroy sandbox '{}' while workspace cleanup is incomplete: {}",
                 sandbox_id,
                 errors.join("; ")
             );
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
         }
-        with_registry_mut(state_dir, |registry| {
+        if let Err(error) = with_registry_mut(state_dir, |registry| {
             let current = registry
                 .sandboxes
                 .get(&sandbox_id)
@@ -440,7 +445,11 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
             }
             registry.sandboxes.remove(&sandbox_id);
             Ok(())
-        })?;
+        }) {
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
+        journal.succeed()?;
         return Ok(sandbox_id);
     }
 
@@ -453,11 +462,13 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
         }
     }
     if !cleanup_errors.is_empty() {
-        bail!(
+        let error = anyhow!(
             "failed to destroy sandbox '{}'; workspace cleanup is incomplete and sandbox resources were retained: {}",
             sandbox_id,
             cleanup_errors.join("; ")
         );
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
     }
 
     let sandbox_dir = PathBuf::from(&sandbox.metadata.sandbox_path);
@@ -500,14 +511,17 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
     }
 
     if !cleanup_errors.is_empty() {
-        bail!(
+        let error = anyhow!(
             "failed to fully destroy sandbox '{}': {}",
             sandbox_id,
             cleanup_errors.join("; ")
         );
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
     }
 
-    with_registry_mut(state_dir, |registry| {
+    journal.phase("remove_registry_record")?;
+    if let Err(error) = with_registry_mut(state_dir, |registry| {
         let current = registry
             .sandboxes
             .get(&sandbox_id)
@@ -521,7 +535,11 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
         }
         registry.sandboxes.remove(&sandbox_id);
         Ok(())
-    })?;
+    }) {
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
+    }
+    journal.succeed()?;
 
     Ok(sandbox_id)
 }
