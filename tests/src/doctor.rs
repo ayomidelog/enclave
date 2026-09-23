@@ -83,6 +83,32 @@ fn check_stale_cgroups_does_not_panic() {
 }
 
 #[test]
+fn operation_journal_check_reports_unfinished_and_malformed_records() {
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-doctor-journal-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(state_dir.join("operations")).expect("create journal fixture");
+    let record = crate::operation::OperationRecord::new("workspace.stop", "sb/ws");
+    std::fs::write(
+        state_dir
+            .join("operations")
+            .join(format!("{}.json", record.id)),
+        serde_json::to_vec(&record).expect("serialize journal fixture"),
+    )
+    .expect("write unfinished journal");
+    std::fs::write(state_dir.join("operations").join("broken.json"), b"{broken")
+        .expect("write malformed journal");
+
+    let check = check_operation_journal(&state_dir);
+    assert_eq!(check.status, "warn");
+    assert!(check.detail.contains("unfinished"));
+    assert!(check.detail.contains("malformed"));
+    std::fs::remove_dir_all(state_dir).expect("remove journal fixture");
+}
+
+#[test]
 fn doctor_report_all_ok_is_healthy() {
     let checks = [DoctorCheck::ok("a", "good"), DoctorCheck::ok("b", "good")];
     let all_ok = checks.iter().all(|c| c.status == "ok");
