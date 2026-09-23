@@ -1,6 +1,8 @@
-use super::prepare_runtime_paths;
+use super::{prepare_runtime_paths, wait_for_listener};
 use std::fs;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::thread;
+use std::time::Duration;
 
 #[test]
 fn prepare_runtime_paths_removes_stale_socket_file() {
@@ -45,5 +47,27 @@ fn prepare_runtime_paths_rejects_active_socket() {
     );
     drop(listener);
     let _ = fs::remove_file(&socket);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn wait_for_listener_returns_when_a_connection_is_ready() {
+    let dir = std::env::temp_dir().join(format!("enclave-daemon-poll-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create poll test dir");
+    let socket = dir.join("daemon.sock");
+    let listener = UnixListener::bind(&socket).expect("bind poll socket");
+    listener.set_nonblocking(true).expect("set nonblocking");
+    let connector = thread::spawn({
+        let socket = socket.clone();
+        move || {
+            thread::sleep(Duration::from_millis(20));
+            let _ = UnixStream::connect(socket);
+        }
+    });
+
+    wait_for_listener(&listener).expect("poll should report readiness");
+    assert!(listener.accept().is_ok());
+    connector.join().expect("connector thread");
     let _ = fs::remove_dir_all(&dir);
 }

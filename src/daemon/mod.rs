@@ -11,7 +11,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
 use std::time::Duration;
 
 use crate::policy;
@@ -156,10 +155,14 @@ fn serve(
             break;
         }
 
+        wait_for_listener(&listener)?;
+        if shutdown_requested(shutdown) {
+            break;
+        }
+
         let stream = match listener.accept() {
             Ok((stream, _)) => stream,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(5));
                 continue;
             }
             Err(error) => {
@@ -174,6 +177,34 @@ fn serve(
     workers.finish();
 
     Ok(())
+}
+
+fn wait_for_listener(listener: &UnixListener) -> Result<()> {
+    let mut readiness = libc::pollfd {
+        fd: std::os::fd::AsRawFd::as_raw_fd(listener),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe { libc::poll(&mut readiness, 1, 1_000) };
+        if result > 0 {
+            if readiness.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                bail!(
+                    "daemon listener became unusable (poll events 0x{:x})",
+                    readiness.revents
+                );
+            }
+            return Ok(());
+        }
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error).context("failed to wait for daemon listener readiness");
+    }
 }
 
 fn handle_client(
