@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,10 +13,18 @@ use nix::sched::{setns, CloneFlags};
 use crate::workspace::{validate_published_ports, PublishedPortSpec, PublishedPortStatus};
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_CONNECTIONS_PER_PUBLISHER: usize = 128;
 
-#[derive(Default)]
 pub struct PortPublisher {
     inner: Mutex<PublisherState>,
+    connections: Arc<ConnectionLimiter>,
+}
+
+impl Default for PortPublisher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Default)]
@@ -38,6 +46,62 @@ struct ActivePublication {
     accept_thread: Option<JoinHandle<()>>,
 }
 
+struct ConnectionLimiter {
+    state: Mutex<ConnectionState>,
+    limit: usize,
+}
+
+#[derive(Default)]
+struct ConnectionState {
+    active: usize,
+}
+
+struct ConnectionPermit {
+    limiter: Arc<ConnectionLimiter>,
+}
+
+impl ConnectionLimiter {
+    fn new(limit: usize) -> Self {
+        Self {
+            state: Mutex::new(ConnectionState::default()),
+            limit,
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>) -> Option<ConnectionPermit> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("connection limiter mutex poisoned");
+        if state.active >= self.limit {
+            return None;
+        }
+        state.active += 1;
+        Some(ConnectionPermit {
+            limiter: Arc::clone(self),
+        })
+    }
+
+    #[cfg(test)]
+    fn active(&self) -> usize {
+        self.state
+            .lock()
+            .expect("connection limiter mutex poisoned")
+            .active
+    }
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        let mut state = self
+            .limiter
+            .state
+            .lock()
+            .expect("connection limiter mutex poisoned");
+        state.active = state.active.saturating_sub(1);
+    }
+}
+
 impl std::fmt::Debug for PortPublisher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = self.inner.lock().expect("port publisher mutex poisoned");
@@ -50,7 +114,10 @@ impl std::fmt::Debug for PortPublisher {
 
 impl PortPublisher {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Mutex::new(PublisherState::default()),
+            connections: Arc::new(ConnectionLimiter::new(MAX_CONNECTIONS_PER_PUBLISHER)),
+        }
     }
 
     pub fn apply_workspace_ports_strict(
@@ -140,7 +207,12 @@ impl PortPublisher {
         let mut failures = Vec::new();
 
         for spec in specs {
-            match ActivePublication::bind(spec.clone(), runtime_pid, workspace_ip) {
+            match ActivePublication::bind(
+                spec.clone(),
+                runtime_pid,
+                workspace_ip,
+                Arc::clone(&self.connections),
+            ) {
                 Ok(publication) => active.push(publication),
                 Err(err) => match mode {
                     PublishMode::Strict => {
@@ -213,7 +285,12 @@ impl WorkspacePublishKey {
 }
 
 impl ActivePublication {
-    fn bind(spec: PublishedPortSpec, runtime_pid: u32, workspace_ip: &str) -> Result<Self> {
+    fn bind(
+        spec: PublishedPortSpec,
+        runtime_pid: u32,
+        workspace_ip: &str,
+        connections: Arc<ConnectionLimiter>,
+    ) -> Result<Self> {
         let bind_addr = format!("{}:{}", spec.host_ip, spec.host_port);
         let listener =
             TcpListener::bind(&bind_addr).map_err(|err| publish_bind_error(&spec, err))?;
@@ -227,7 +304,15 @@ impl ActivePublication {
         let workspace_port = spec.workspace_port;
         let accept_thread = thread::Builder::new()
             .name(thread_name)
-            .spawn(move || run_accept_loop(listener, accept_shutdown, runtime_pid, workspace_port))
+            .spawn(move || {
+                run_accept_loop(
+                    listener,
+                    accept_shutdown,
+                    runtime_pid,
+                    workspace_port,
+                    connections,
+                )
+            })
             .context("failed to spawn published-port accept thread")?;
 
         Ok(Self {
@@ -292,13 +377,29 @@ fn run_accept_loop(
     shutdown: Arc<AtomicBool>,
     runtime_pid: u32,
     workspace_port: u16,
+    connections: Arc<ConnectionLimiter>,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _)) => {
-                let _ = thread::Builder::new()
+                let Some(permit) = connections.try_acquire() else {
+                    tracing::debug!(
+                        "published port connection limit reached for workspace pid {} port {}; rejecting connection",
+                        runtime_pid, workspace_port
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                };
+                let connection_shutdown = Arc::clone(&shutdown);
+                if let Err(err) = thread::Builder::new()
                     .name("enclave-port-conn".to_string())
-                    .spawn(move || handle_connection(stream, runtime_pid, workspace_port));
+                    .spawn(move || {
+                        let _permit = permit;
+                        handle_connection(stream, runtime_pid, workspace_port, connection_shutdown);
+                    })
+                {
+                    tracing::warn!("failed to spawn published-port connection worker: {err}");
+                }
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(ACCEPT_POLL_INTERVAL);
@@ -318,7 +419,14 @@ fn run_accept_loop(
     }
 }
 
-fn handle_connection(mut client_stream: TcpStream, runtime_pid: u32, workspace_port: u16) {
+fn handle_connection(
+    mut client_stream: TcpStream,
+    runtime_pid: u32,
+    workspace_port: u16,
+    shutdown: Arc<AtomicBool>,
+) {
+    let _ = client_stream.set_read_timeout(Some(CONNECTION_POLL_INTERVAL));
+    let _ = client_stream.set_write_timeout(Some(CONNECTION_POLL_INTERVAL));
     let mut workspace_stream = match connect_to_workspace_service(runtime_pid, workspace_port) {
         Ok(stream) => stream,
         Err(err) => {
@@ -331,6 +439,8 @@ fn handle_connection(mut client_stream: TcpStream, runtime_pid: u32, workspace_p
             return;
         }
     };
+    let _ = workspace_stream.set_read_timeout(Some(CONNECTION_POLL_INTERVAL));
+    let _ = workspace_stream.set_write_timeout(Some(CONNECTION_POLL_INTERVAL));
 
     let mut client_reader = match client_stream.try_clone() {
         Ok(stream) => stream,
@@ -347,14 +457,43 @@ fn handle_connection(mut client_stream: TcpStream, runtime_pid: u32, workspace_p
         }
     };
 
+    let upstream_shutdown = Arc::clone(&shutdown);
     let upstream = thread::spawn(move || {
-        let _ = io::copy(&mut client_reader, &mut workspace_writer);
+        let _ = copy_until_shutdown(
+            &mut client_reader,
+            &mut workspace_writer,
+            &upstream_shutdown,
+        );
         let _ = workspace_writer.shutdown(Shutdown::Write);
     });
 
-    let _ = io::copy(&mut workspace_stream, &mut client_stream);
+    let _ = copy_until_shutdown(&mut workspace_stream, &mut client_stream, &shutdown);
     let _ = client_stream.shutdown(Shutdown::Write);
     let _ = upstream.join();
+}
+
+fn copy_until_shutdown(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    shutdown: &AtomicBool,
+) -> io::Result<()> {
+    let mut buffer = [0u8; 16 * 1024];
+    while !shutdown.load(Ordering::SeqCst) {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => writer.write_all(&buffer[..read])?,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 fn connect_to_workspace_service(runtime_pid: u32, workspace_port: u16) -> io::Result<TcpStream> {
@@ -370,3 +509,7 @@ fn connect_to_workspace_service(runtime_pid: u32, workspace_port: u16) -> io::Re
 fn nix_to_io_error(err: nix::errno::Errno) -> io::Error {
     io::Error::from_raw_os_error(err as i32)
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/network/publish.rs"]
+mod tests;
