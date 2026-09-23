@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::cli::{RestartArgs, UpArgs};
 use crate::enclavefile::{self, Enclavefile, ENCLAVEFILE_NAME};
-use crate::sandbox::{SandboxListItem, DEFAULT_DEBIAN_MIRROR};
+use crate::sandbox::{SandboxListItem, SandboxStatus, DEFAULT_DEBIAN_MIRROR};
 
 use super::{daemon, send, send_managed};
 
@@ -38,24 +38,29 @@ pub(crate) fn run_up(socket: &Path, args: UpArgs) -> Result<()> {
 
     daemon::ensure_daemon_running(socket)?;
 
-    let sandbox_exists = sandbox_exists_by_name(socket, &ef.sandbox.name)?;
-
-    if args.rebuild && sandbox_exists {
-        tracing::info!("rebuilding sandbox '{}'...", ef.sandbox.name);
-        teardown_sandbox(socket, &ef.sandbox.name)?;
-        destroy_sandbox(socket, &ef.sandbox.name)?;
-        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
-    } else if sandbox_exists {
-        tracing::info!("sandbox '{}' already exists, starting...", ef.sandbox.name);
-        start_sandbox_if_stopped(socket, &ef.sandbox.name)?;
-        reconcile_sandbox_definition(socket, &ef)?;
-
-        run_setup_commands(socket, &ef, args.cache_setup)?;
-    } else {
-        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
+    let initial_status = sandbox_status_by_name(socket, &ef.sandbox.name)?;
+    let operation = (|| {
+        if args.rebuild {
+            if initial_status.is_some() {
+                tracing::info!("rebuilding sandbox '{}'...", ef.sandbox.name);
+                teardown_sandbox(socket, &ef.sandbox.name)?;
+                destroy_sandbox(socket, &ef.sandbox.name)?;
+            }
+            create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
+        } else if initial_status.is_some() {
+            tracing::info!("sandbox '{}' already exists, starting...", ef.sandbox.name);
+            start_sandbox_if_stopped(socket, &ef.sandbox.name)?;
+            reconcile_sandbox_definition(socket, &ef)?;
+            run_setup_commands(socket, &ef, args.cache_setup)?;
+        } else {
+            create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
+        }
+        bring_up_workspaces(socket, &ef, &ef_path)
+    })();
+    if let Err(error) = operation {
+        let target = failed_up_rollback_target(initial_status.as_ref(), args.rebuild);
+        return Err(rollback_failed_up(socket, &ef.sandbox.name, target, error));
     }
-
-    bring_up_workspaces(socket, &ef, &ef_path)?;
 
     println!("environment is up");
     Ok(())
@@ -98,34 +103,104 @@ pub(crate) fn run_restart(socket: &Path, args: RestartArgs) -> Result<()> {
 
     daemon::ensure_daemon_running(socket)?;
 
-    let sandbox_exists = sandbox_exists_by_name(socket, &ef.sandbox.name)?;
-
-    if args.rebuild {
-        if sandbox_exists {
-            tracing::info!("rebuilding sandbox '{}'...", ef.sandbox.name);
+    let sandbox_exists = sandbox_status_by_name(socket, &ef.sandbox.name)?.is_some();
+    let operation = (|| {
+        if args.rebuild {
+            if sandbox_exists {
+                tracing::info!("rebuilding sandbox '{}'...", ef.sandbox.name);
+                teardown_sandbox(socket, &ef.sandbox.name)?;
+                destroy_sandbox(socket, &ef.sandbox.name)?;
+            }
+            create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
+        } else if sandbox_exists {
             teardown_sandbox(socket, &ef.sandbox.name)?;
-            destroy_sandbox(socket, &ef.sandbox.name)?;
+            start_sandbox_if_stopped(socket, &ef.sandbox.name)?;
+            reconcile_sandbox_definition(socket, &ef)?;
+            run_setup_commands(socket, &ef, args.cache_setup)?;
+        } else {
+            create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
         }
-        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
-    } else if sandbox_exists {
-        teardown_sandbox(socket, &ef.sandbox.name)?;
-        start_sandbox_if_stopped(socket, &ef.sandbox.name)?;
-        reconcile_sandbox_definition(socket, &ef)?;
-        run_setup_commands(socket, &ef, args.cache_setup)?;
-    } else {
-        create_and_setup_sandbox(socket, &ef, args.cache_setup)?;
+        bring_up_workspaces(socket, &ef, &ef_path)
+    })();
+    if let Err(error) = operation {
+        return Err(rollback_failed_up(
+            socket,
+            &ef.sandbox.name,
+            Some(SandboxStatus::Stopped),
+            error,
+        ));
     }
-
-    bring_up_workspaces(socket, &ef, &ef_path)?;
 
     println!("environment restarted");
     Ok(())
 }
 
 fn sandbox_exists_by_name(socket: &Path, name: &str) -> Result<bool> {
+    Ok(sandbox_status_by_name(socket, name)?.is_some())
+}
+
+fn sandbox_status_by_name(socket: &Path, name: &str) -> Result<Option<SandboxStatus>> {
     let response = send(socket, "sandbox.list", json!({}))?;
     let sandboxes: Vec<SandboxListItem> = serde_json::from_value(response)?;
-    Ok(sandboxes.iter().any(|s| s.name == name))
+    Ok(sandboxes
+        .into_iter()
+        .find(|sandbox| sandbox.name == name)
+        .map(|sandbox| sandbox.status))
+}
+
+fn failed_up_rollback_target(
+    initial_status: Option<&SandboxStatus>,
+    rebuilding: bool,
+) -> Option<SandboxStatus> {
+    if rebuilding || initial_status.is_none() {
+        return Some(SandboxStatus::Stopped);
+    }
+    match initial_status.expect("checked above") {
+        SandboxStatus::Running => None,
+        SandboxStatus::Paused => Some(SandboxStatus::Paused),
+        SandboxStatus::Stopped => Some(SandboxStatus::Stopped),
+    }
+}
+
+fn rollback_failed_up(
+    socket: &Path,
+    sandbox_name: &str,
+    target_status: Option<SandboxStatus>,
+    cause: anyhow::Error,
+) -> anyhow::Error {
+    let Some(target_status) = target_status else {
+        return cause;
+    };
+    let current_status = match sandbox_status_by_name(socket, sandbox_name) {
+        Ok(Some(status)) => status,
+        Ok(None) => return cause,
+        Err(error) => {
+            return anyhow::anyhow!(
+                "environment setup failed: {cause:#}; could not inspect sandbox '{}' for rollback: {error:#}",
+                sandbox_name
+            );
+        }
+    };
+    if current_status == target_status {
+        return cause;
+    }
+
+    let (action, description) = match target_status {
+        SandboxStatus::Stopped => ("sandbox.stop", "stop"),
+        SandboxStatus::Paused => ("sandbox.pause", "pause"),
+        SandboxStatus::Running => return cause,
+    };
+    if let Err(error) = send(socket, action, json!({ "sandbox": sandbox_name })) {
+        return anyhow::anyhow!(
+            "environment setup failed: {cause:#}; sandbox '{}' remains {:?} because rollback could not {description} it: {error:#}",
+            sandbox_name,
+            current_status
+        );
+    }
+    cause.context(format!(
+        "sandbox '{}' was rolled back to {:?} after setup failed",
+        sandbox_name, target_status
+    ))
 }
 
 fn start_sandbox_if_stopped(socket: &Path, name: &str) -> Result<()> {
@@ -467,5 +542,43 @@ fn ensure_workspace_started(
             .map(|_| ())
         }
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failed_up_rollback_target;
+    use crate::sandbox::SandboxStatus;
+
+    #[test]
+    fn failed_up_rolls_back_new_and_stopped_sandboxes() {
+        assert_eq!(
+            failed_up_rollback_target(None, false),
+            Some(SandboxStatus::Stopped)
+        );
+        assert_eq!(
+            failed_up_rollback_target(Some(&SandboxStatus::Stopped), false),
+            Some(SandboxStatus::Stopped)
+        );
+    }
+
+    #[test]
+    fn failed_up_restores_paused_sandboxes_and_preserves_running_ones() {
+        assert_eq!(
+            failed_up_rollback_target(Some(&SandboxStatus::Paused), false),
+            Some(SandboxStatus::Paused)
+        );
+        assert_eq!(
+            failed_up_rollback_target(Some(&SandboxStatus::Running), false),
+            None
+        );
+    }
+
+    #[test]
+    fn failed_rebuild_rolls_back_to_stopped() {
+        assert_eq!(
+            failed_up_rollback_target(Some(&SandboxStatus::Running), true),
+            Some(SandboxStatus::Stopped)
+        );
     }
 }

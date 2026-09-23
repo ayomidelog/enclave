@@ -37,7 +37,9 @@ jobs:
 
   build-and-release:
     needs: verify
-    runs-on: ubuntu-latest
+    # Build against glibc 2.35 so release binaries also run on Ubuntu 22.04
+    # and Debian 12, instead of inheriting the newer ubuntu-latest libc.
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
 

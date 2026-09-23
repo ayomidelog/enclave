@@ -16,7 +16,7 @@ use crate::cli::{DaemonCommands, StartArgs};
 use crate::config::FileConfig;
 use crate::daemon::{run_daemon, DaemonConfig};
 use crate::paths;
-use crate::sandbox::{validate_debootstrap_binary, SandboxListItem};
+use crate::sandbox::SandboxListItem;
 use crate::workspace::WorkspaceMetadata;
 
 use super::send;
@@ -38,7 +38,6 @@ struct AutoStartDefaults {
 pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Result<()> {
     match command {
         DaemonCommands::Run(args) => {
-            validate_debootstrap_binary(&args.debootstrap_binary)?;
             if send(socket, "ping", json!({})).is_ok() {
                 bail!(
                     "daemon already running on {}. Stop it first with `enclave daemon stop`.",
@@ -91,7 +90,6 @@ pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Resu
 }
 
 fn start_daemon(socket: &Path, args: StartArgs) -> Result<()> {
-    validate_debootstrap_binary(&args.debootstrap_binary)?;
     if send(socket, "ping", json!({})).is_ok() {
         println!("daemon already running on {}", socket.display());
         return Ok(());

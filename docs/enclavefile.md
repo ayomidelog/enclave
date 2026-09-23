@@ -168,6 +168,7 @@ Workspace names must:
 - `enclave workspace resize <sandbox> <workspace> --disk-mb N` increases an existing Enclave-managed `fs.img` allocation and its ext4 filesystem. A running workspace is restarted through the normal lifecycle and published ports are restored; host-backed `workspace_dir`/`path` mounts and allocation decreases are not supported.
 - Setup commands run at creation time and are re-applied on later `up` / `restart` runs.
 - `--rebuild` forces sandbox destruction and recreation, re-running all setup commands.
+- If `up` fails after creating or starting a sandbox that was previously absent or stopped, Enclave attempts to stop it before returning the error. A previously paused sandbox is re-paused; a sandbox that was already running is left running. A failed rollback is included in the reported error.
 - If no Enclavefile is found in the current directory, commands produce a clear error pointing to `enclave init`.
 - Workspaces with a `run` command start executing it immediately. Workspaces without `run` start idle.
 

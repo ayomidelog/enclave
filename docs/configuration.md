@@ -36,7 +36,7 @@ Since Enclave requires root privileges, the defaults below are the values used w
 | `socket` | `/run/enclave/manager.sock` | Path to the daemon Unix socket. Non-root: `$XDG_RUNTIME_DIR/enclave/manager.sock`. |
 | `state_dir` | `/root/.local/state/enclave` | Directory where Enclave stores all sandbox and workspace data. Non-root: `$XDG_STATE_HOME/enclave` or `$HOME/.local/state/enclave`. |
 | `pid_file` | `/run/enclave/manager.pid` | Path to the daemon PID file. Non-root: `$XDG_RUNTIME_DIR/enclave/manager.pid`. |
-| `debootstrap_binary` | `debootstrap` | Name or path of the `debootstrap` binary. |
+| `debootstrap_binary` | `debootstrap` | Name or path of the `debootstrap` binary. Required only when creating a sandbox with the `debootstrap` bootstrap method. |
 | `workspace_apparmor_profile` | unset | Optional AppArmor profile name applied to workspace runtime helpers via `setpriv`. The profile must already exist on the host. |
 | `workspace_selinux_label` | unset | Optional SELinux label applied to workspace runtime helpers via `setpriv`. The label must already exist and be valid on the host. |
 | `suite` | `bookworm` | Default Debian suite for sandbox creation. |

@@ -139,7 +139,15 @@ enclave create mybox --suite bookworm
 
 ### Using a cached rootfs
 
-Place a minimal rootfs under `<state_dir>/sandboxes/rootfs-cache/<suite>/` for a suite-specific cache, or `<state_dir>/sandboxes/rootfs-cache/base/` for a generic cache, then create a sandbox with:
+Import a rootfs archive to register it in the cache index. Hand-placing a directory in `rootfs-cache` can leave it unindexed when the cache index already exists. Use `--suite` for a suite-specific cache or `--base` for a generic cache:
+
+```bash
+enclave rootfs import --suite bookworm ./bookworm-rootfs.tar.gz
+# or
+enclave rootfs import --base ./minimal-rootfs.tar.gz
+```
+
+Then create a sandbox with:
 
 ```bash
 enclave create mybox --bootstrap-method cached_rootfs
@@ -187,11 +195,30 @@ bootstrap_method = "cached_rootfs"
 
 and first-time `enclave up` will copy the prebuilt rootfs instead of constructing one from `debootstrap`.
 
-## Install
+## Install from source
 
 ```bash
 ./scripts/install.sh
 ```
+
+## Install a release binary
+
+Release binaries target x86_64 Linux and are built on Ubuntu 22.04 so they run
+on supported glibc-based distributions including Ubuntu 22.04 and Debian 12.
+Download and install the archive with:
+
+```bash
+curl -fL https://github.com/ayomidelog/enclave/releases/latest/download/enclave-linux-x86_64.tar.gz -o enclave-linux-x86_64.tar.gz
+curl -fL https://github.com/ayomidelog/enclave/releases/latest/download/enclave-linux-x86_64.tar.gz.sha256 -o enclave-linux-x86_64.tar.gz.sha256
+sha256sum -c enclave-linux-x86_64.tar.gz.sha256
+tar -xzf enclave-linux-x86_64.tar.gz
+sudo install -m 0755 enclave-linux-x86_64 /usr/local/bin/enclave
+enclave --version
+```
+
+The release archive contains a binary named `enclave-linux-x86_64`. Runtime
+tools such as `iproute2`, `iptables`, util-linux, and (for the default bootstrap
+method) `debootstrap` are still required on the host.
 
 ## Quickstart
 

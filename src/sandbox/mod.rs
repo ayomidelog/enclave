@@ -20,7 +20,6 @@ pub use types::{
     BootstrapMethod, SandboxLimits, SandboxLimitsUpdate, SandboxListItem, SandboxMetadata,
     SandboxStatus, SandboxStatusReport, DEFAULT_DEBIAN_MIRROR, DEFAULT_DEBIAN_SUITE,
 };
-pub(crate) use util::validate_debootstrap_binary;
 pub(crate) use util::validate_debootstrap_inputs;
 pub use util::{
     effective_rootfs_path, ensure_sandbox_layout, normalize_sandbox_metadata, resolve_sandbox_id,
