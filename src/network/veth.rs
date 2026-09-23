@@ -5,9 +5,6 @@ use anyhow::{bail, Context, Result};
 use super::bridge::BRIDGE_NAME;
 use super::ipam;
 
-const ROUTE_READY_TIMEOUT_MS: u64 = 2_000;
-const ROUTE_READY_POLL_INTERVAL_MS: u64 = 50;
-
 pub fn setup_workspace_networking(
     pid: u32,
     workspace_ip: &str,
@@ -117,15 +114,9 @@ ip link set lo up
 ip addr add "$addr_cidr" dev "$new_name"
 ip link set "$new_name" up
 ip route replace default via "$gateway_ip" dev "$new_name"
-
-elapsed_ms=0
-while [ "$elapsed_ms" -lt "$timeout_ms" ]; do
-  if ip route show default | grep -F "default via ${gateway_ip} dev ${new_name}" >/dev/null 2>&1; then
-    exit 0
-  fi
-  sleep "0.$(printf '%03d' "$poll_ms")"
-  elapsed_ms=$((elapsed_ms + poll_ms))
-done
+if ip route show default | grep -F "default via ${gateway_ip} dev ${new_name}" >/dev/null 2>&1; then
+  exit 0
+fi
 exit 1"#;
     let output = Command::new("nsenter")
         .arg("--net")
@@ -140,8 +131,6 @@ exit 1"#;
         .arg(new_name)
         .arg(&addr_cidr)
         .arg(ipam::GATEWAY_IP)
-        .arg(ROUTE_READY_TIMEOUT_MS.to_string())
-        .arg(ROUTE_READY_POLL_INTERVAL_MS.to_string())
         .output()
         .with_context(|| format!("failed to configure network namespace of pid {pid}"))?;
     if output.status.success() {
@@ -155,10 +144,9 @@ exit 1"#;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     bail!(
-        "workspace network namespace did not finish network setup for {} via {} within {} ms ({}): {}\nroute table:\n{}\ninterface state:\n{}",
+        "workspace network namespace did not install the expected route for {} via {} ({}): {}\nroute table:\n{}\ninterface state:\n{}",
         new_name,
         ipam::GATEWAY_IP,
-        ROUTE_READY_TIMEOUT_MS,
         output.status,
         stderr.trim(),
         route_dump.trim(),
