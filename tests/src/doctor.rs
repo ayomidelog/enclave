@@ -66,12 +66,20 @@ fn doctor_report_deserializes_from_json() {
 
 #[test]
 fn check_stale_cgroups_does_not_panic() {
-    let check = check_stale_cgroups();
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-doctor-cgroups-test-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&state_dir).expect("create doctor fixture");
+    crate::registry::ensure_registry(&state_dir).expect("create registry fixture");
+    let check = check_stale_cgroups(&state_dir);
     assert!(
         check.status == "ok" || check.status == "warn",
         "unexpected status: {}",
         check.status
     );
+    std::fs::remove_dir_all(state_dir).expect("remove doctor fixture");
 }
 
 #[test]

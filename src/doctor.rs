@@ -8,8 +8,7 @@ use crate::registry::{ensure_registry, repair_registry, with_registry};
 use crate::sandbox::cgroup;
 use crate::workspace::WorkspaceStatus;
 
-const CGROUP_ROOT: &str = "/sys/fs/cgroup";
-const ENCLAVE_CGROUP_PREFIX: &str = "enclave-ws-";
+mod cgroups;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DoctorReport {
@@ -29,6 +28,8 @@ pub struct DoctorRepairReport {
     pub registry: crate::registry::RepairReport,
     pub unmounted_stale_mounts: usize,
     pub reconciled_workspace_mounts: usize,
+    #[serde(default)]
+    pub removed_stale_workspace_cgroups: usize,
     pub daemon_state_consistent: bool,
 }
 
@@ -54,7 +55,7 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
     let checks = vec![
         check_registry_consistency(state_dir),
         check_orphaned_mounts(state_dir),
-        check_stale_cgroups(),
+        check_stale_cgroups(state_dir),
         check_stale_runtime_state(state_dir),
         check_cgroup_v2_availability(),
     ];
@@ -104,6 +105,9 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         &state_dir.join("sandboxes"),
         &active_roots,
     )?;
+    let ownership = cgroups::cgroup_ownership(state_dir)?;
+    let removed_stale_workspace_cgroups =
+        cgroups::remove_empty_workspace_cgroups(Path::new(cgroups::CGROUP_ROOT), &ownership)?;
     let registry = repair_registry(state_dir, false)?;
 
     let daemon_state_consistent = crate::daemon::state_lock::read_state_lock_record(state_dir)?
@@ -125,6 +129,7 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         registry,
         unmounted_stale_mounts,
         reconciled_workspace_mounts,
+        removed_stale_workspace_cgroups,
         daemon_state_consistent,
     })
 }
@@ -269,54 +274,8 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
     }
 }
 
-fn check_stale_cgroups() -> DoctorCheck {
-    let name = "stale_cgroups";
-
-    if !cgroup::is_cgroup_v2_available() {
-        return DoctorCheck::ok(name, "cgroup v2 not available; skipped");
-    }
-
-    let cgroup_root = Path::new(CGROUP_ROOT);
-    let entries = match fs::read_dir(cgroup_root) {
-        Ok(entries) => entries,
-        Err(err) => {
-            return DoctorCheck::warn(
-                name,
-                &format!("failed to read {}: {err}", cgroup_root.display()),
-            );
-        }
-    };
-
-    let mut stale = Vec::new();
-    for entry in entries.flatten() {
-        let dir_name = entry.file_name().to_string_lossy().to_string();
-        if !dir_name.starts_with(ENCLAVE_CGROUP_PREFIX) {
-            continue;
-        }
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let procs_path = entry.path().join("cgroup.procs");
-        let has_procs = fs::read_to_string(&procs_path)
-            .map(|content| !content.trim().is_empty())
-            .unwrap_or(false);
-        if !has_procs {
-            stale.push(dir_name);
-        }
-    }
-
-    if stale.is_empty() {
-        DoctorCheck::ok(name, "no stale enclave cgroups found")
-    } else {
-        DoctorCheck::warn(
-            name,
-            &format!(
-                "{} stale cgroup(s) found: {}",
-                stale.len(),
-                stale.join(", ")
-            ),
-        )
-    }
+fn check_stale_cgroups(state_dir: &Path) -> DoctorCheck {
+    cgroups::check_stale_workspace_cgroups(state_dir)
 }
 
 fn check_stale_runtime_state(state_dir: &Path) -> DoctorCheck {
