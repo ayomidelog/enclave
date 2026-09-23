@@ -182,73 +182,168 @@ fn cleanup_workspace_artifacts(
     sandbox: &SandboxMetadata,
     workspace: &WorkspaceMetadata,
 ) -> Result<()> {
-    if !std::path::Path::new(&sandbox.workspaces_path).exists() {
-        return Ok(());
-    }
-    let workspace_path = validated_workspace_dir_from_metadata(sandbox, workspace)?;
+    let workspace_path = workspace_dir_for_cleanup(sandbox, workspace)?;
     let mut errors = Vec::new();
 
     if let Some(pid) = workspace.runtime_pid {
         if let Err(err) = session::stop_session(pid, workspace.runtime_starttime_ticks) {
-            errors.push(format!("stop runtime {}: {err:#}", pid));
+            bail!(
+                "workspace '{}' runtime pid {} did not produce a successful stop result; retaining workspace files and registry record: {err:#}",
+                workspace.id,
+                pid,
+            );
         }
-        remove_workspace_cgroups(sandbox, pid);
-    }
-    if let Some(ip) = workspace.assigned_ip.as_deref() {
-        network::teardown_workspace_network(ip, &workspace.id);
-    }
-
-    let storage_unmounted = match crate::workspace::ensure_workspace_storage_unmounted(workspace) {
-        Ok(()) => true,
-        Err(err) => {
-            errors.push(format!("unmount workspace storage: {err:#}"));
-            false
+        if session::process_matches(pid, workspace.runtime_starttime_ticks) {
+            bail!(
+                "workspace '{}' runtime pid {} is still alive after stop; retaining workspace files and registry record",
+                workspace.id,
+                pid
+            );
         }
-    };
-
-    let mut artifacts = vec![
-        workspace_path.join("workspace.json"),
-        workspace_path.join("fs.img"),
-        workspace_path.join("ns"),
-        workspace_path.join("home-upper"),
-        workspace_path.join("home-work"),
-        workspace_path.join("home-merged"),
-        workspace_path.join("runtime"),
-    ];
-    if storage_unmounted {
-        artifacts.push(workspace_path.join("fs"));
-    }
-
-    for artifact in artifacts {
-        if let Err(err) = remove_path_if_present(&artifact) {
-            errors.push(format!("remove {}: {err:#}", artifact.display()));
-        }
-    }
-    if storage_unmounted {
-        if let Err(err) = remove_path_if_present(&workspace_path) {
-            errors.push(format!("remove {}: {err:#}", workspace_path.display()));
-        }
-        if workspace_path.exists() {
+        if let Err(err) = remove_workspace_cgroups(sandbox, pid) {
             errors.push(format!(
-                "workspace directory {} still exists",
-                workspace_path.display()
+                "remove workspace cgroups for runtime {}: {err:#}",
+                pid
             ));
         }
-    } else {
-        errors.push(format!(
-            "workspace directory {} retained until all managed mounts are absent",
-            workspace_path.display()
-        ));
+    }
+    if let Some(ip) = workspace.assigned_ip.as_deref() {
+        let report = network::teardown_workspace_network(ip, &workspace.id);
+        if !report.is_complete() {
+            errors.extend(report.failures.into_iter().map(|failure| {
+                format!("network {} cleanup: {}", failure.resource, failure.message)
+            }));
+        }
     }
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
+    if let Err(err) = crate::workspace::ensure_workspace_storage_unmounted(workspace) {
+        errors.push(format!("unmount workspace storage: {err:#}"));
+    }
+
+    if !errors.is_empty() {
         bail!(
             "workspace '{}' cleanup incomplete: {}",
             workspace.id,
             errors.join("; ")
-        )
+        );
+    }
+
+    if let Some(workspace_path) = workspace_path {
+        for artifact in [
+            workspace_path.join("workspace.json"),
+            workspace_path.join("fs.img"),
+            workspace_path.join("ns"),
+            workspace_path.join("home-upper"),
+            workspace_path.join("home-work"),
+            workspace_path.join("home-merged"),
+            workspace_path.join("runtime"),
+            workspace_path.join("fs"),
+        ] {
+            remove_path_if_present(&artifact)?;
+        }
+        remove_path_if_present(&workspace_path)?;
+        if workspace_path.exists() {
+            bail!(
+                "workspace directory {} still exists",
+                workspace_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn workspace_dir_for_cleanup(
+    sandbox: &SandboxMetadata,
+    workspace: &WorkspaceMetadata,
+) -> Result<Option<PathBuf>> {
+    if workspace.id.is_empty()
+        || !workspace
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        bail!("workspace id is unsafe for cleanup: {}", workspace.id);
+    }
+    let sandbox_path = PathBuf::from(&sandbox.sandbox_path);
+    let workspaces_root = PathBuf::from(&sandbox.workspaces_path);
+    let workspace_path = PathBuf::from(&workspace.workspace_path);
+    if workspaces_root != sandbox_path.join("workspaces")
+        || workspace_path != workspaces_root.join(&workspace.id)
+    {
+        bail!(
+            "workspace '{}' paths do not match their sandbox layout",
+            workspace.id
+        );
+    }
+    let sandbox_metadata = match fs::symlink_metadata(&sandbox_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect sandbox path {}", sandbox_path.display())
+            })
+        }
+    };
+    if sandbox_metadata.file_type().is_symlink() {
+        bail!("sandbox path {} is a symlink", sandbox_path.display());
+    }
+    let sandbox_root = fs::canonicalize(&sandbox.sandbox_path)
+        .with_context(|| format!("failed to resolve sandbox path {}", sandbox.sandbox_path))?;
+    let expected_root = sandbox_root.join("workspaces");
+    if workspaces_root != expected_root {
+        bail!(
+            "sandbox '{}' workspace root {} does not match expected path {}",
+            sandbox.id,
+            workspaces_root.display(),
+            expected_root.display()
+        );
+    }
+    let expected_workspace = workspaces_root.join(&workspace.id);
+    if workspace_path != expected_workspace {
+        bail!(
+            "workspace '{}' path {} does not match expected path {}",
+            workspace.id,
+            workspace_path.display(),
+            expected_workspace.display()
+        );
+    }
+    match fs::symlink_metadata(&workspaces_root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!(
+                "sandbox workspace root {} is a symlink",
+                workspaces_root.display()
+            );
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect {}", workspaces_root.display()))
+        }
+    }
+
+    match fs::symlink_metadata(&workspace_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("workspace path {} is a symlink", workspace_path.display());
+        }
+        Ok(_) => {
+            let canonical = crate::fsutil::ensure_path_within(
+                &workspaces_root,
+                &workspace_path,
+                "workspace directory",
+            )?;
+            if canonical != expected_workspace {
+                bail!(
+                    "workspace path {} resolves unexpectedly",
+                    workspace_path.display()
+                );
+            }
+            Ok(Some(canonical))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect {}", workspace_path.display()))
+        }
     }
 }
 
@@ -611,9 +706,22 @@ pub fn start_workspace_with_security(
         Ok(metadata) => Ok(metadata),
         Err(error) => {
             let _ = session::stop_session(started.pid, Some(started.starttime_ticks));
-            network::teardown_workspace_network(&started.assigned_ip, &workspace_id);
-            let _ = crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
-            Err(error)
+            let network_report =
+                network::teardown_workspace_network(&started.assigned_ip, &workspace_id);
+            let cgroup_cleanup = remove_workspace_cgroups(&sandbox_snapshot, started.pid);
+            let storage_cleanup =
+                crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
+            if !network_report.is_complete() || cgroup_cleanup.is_err() || storage_cleanup.is_err()
+            {
+                Err(error.context(format!(
+                    "workspace startup rollback incomplete: network={:?}, cgroup={:?}, storage={:?}",
+                    network_report.failures,
+                    cgroup_cleanup.err(),
+                    storage_cleanup.err()
+                )))
+            } else {
+                Err(error)
+            }
         }
     }
 }
@@ -639,6 +747,9 @@ fn launch_workspace_runtime(
                 session_info.pid
             );
         }
+        if let Err(cleanup_err) = remove_workspace_cgroups(sandbox_snapshot, session_info.pid) {
+            tracing::warn!("failed to clean cgroup after cgroup setup failure: {cleanup_err:#}");
+        }
         return Err(err).context("failed to apply workspace cgroup limits");
     }
 
@@ -649,7 +760,9 @@ fn launch_workspace_runtime(
         &workspace_snapshot.auth_providers,
         &workspace_snapshot.env_tokens,
     ) {
-        remove_workspace_cgroups(sandbox_snapshot, session_info.pid);
+        if let Err(cleanup_err) = remove_workspace_cgroups(sandbox_snapshot, session_info.pid) {
+            tracing::warn!("failed to clean cgroup after auth sync failure: {cleanup_err:#}");
+        }
         if let Err(stop_err) =
             session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
         {
@@ -673,7 +786,13 @@ fn launch_workspace_runtime(
             ) {
                 Ok(ip) => ip,
                 Err(err) => {
-                    remove_workspace_cgroups(sandbox_snapshot, session_info.pid);
+                    if let Err(cleanup_err) =
+                        remove_workspace_cgroups(sandbox_snapshot, session_info.pid)
+                    {
+                        tracing::warn!(
+                            "failed to clean cgroup after network setup failure: {cleanup_err:#}"
+                        );
+                    }
                     if let Err(stop_err) =
                         session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
                     {
@@ -786,18 +905,43 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
                 .map(|ip| (ip, workspace.id.clone()))
         })
         .collect::<Vec<_>>();
+    let network_owner_ids = running
+        .iter()
+        .filter(|workspace| workspace.assigned_ip.is_some())
+        .map(|workspace| workspace.id.clone())
+        .collect::<BTreeSet<_>>();
     let mut network_cleanup = None;
     let stop_result = session::stop_sessions_batch_with_hook(&stop_targets, || {
         let network_targets = network_targets.clone();
         network_cleanup = Some(thread::spawn(move || {
-            crate::network::teardown_workspace_networks(&network_targets);
+            crate::network::teardown_workspace_networks(&network_targets)
         }));
-    })?;
-    if let Some(handle) = network_cleanup {
-        if let Err(error) = handle.join() {
-            tracing::warn!("workspace network cleanup thread panicked: {:?}", error);
+    });
+    let network_reports = if let Some(handle) = network_cleanup {
+        match handle.join() {
+            Ok(reports) => reports,
+            Err(error) => {
+                tracing::error!("workspace network cleanup thread panicked: {:?}", error);
+                network_targets
+                    .iter()
+                    .map(|(ip, id)| network::NetworkCleanupReport {
+                        workspace_id: id.clone(),
+                        assigned_ip: ip.clone(),
+                        veth_host: None,
+                        anti_spoof_rules_absent: false,
+                        veth_absent: false,
+                        failures: vec![network::NetworkCleanupFailure {
+                            resource: "cleanup-worker".to_string(),
+                            message: "network cleanup thread panicked".to_string(),
+                        }],
+                    })
+                    .collect()
+            }
         }
-    }
+    } else {
+        Vec::new()
+    };
+    let stop_result = stop_result?;
 
     let mut stopped_ids = BTreeSet::new();
     let mut cleanup_jobs = Vec::new();
@@ -810,6 +954,14 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
             failed_ids.push(workspace.id.clone());
         } else {
             stopped_ids.insert(workspace.id.clone());
+        }
+    }
+    for report in network_reports {
+        if !report.is_complete() {
+            if network_owner_ids.contains(&report.workspace_id) {
+                stopped_ids.remove(&report.workspace_id);
+            }
+            failed_ids.push(format_network_cleanup_error(&report));
         }
     }
 
@@ -1156,9 +1308,23 @@ fn run_workspace_stop_cleanups(
                 .map(|ip| (ip, cleanup.workspace.id.clone()))
         })
         .collect::<Vec<_>>();
-    if !network_already_cleaned {
-        crate::network::teardown_workspace_networks(&network_targets);
-    }
+    let network_reports = if network_already_cleaned {
+        Vec::new()
+    } else {
+        crate::network::teardown_workspace_networks(&network_targets)
+    };
+    let network_failures = Arc::new(
+        network_reports
+            .into_iter()
+            .filter(|report| !report.is_complete())
+            .map(|report| {
+                (
+                    report.workspace_id.clone(),
+                    format_network_cleanup_error(&report),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    );
     let storage_workspaces = cleanups
         .iter()
         .map(|cleanup| cleanup.workspace.clone())
@@ -1181,6 +1347,7 @@ fn run_workspace_stop_cleanups(
     let handles = (0..worker_count)
         .map(|worker_id| {
             let queue = Arc::clone(&queue);
+            let network_failures = Arc::clone(&network_failures);
             let result_sender = result_sender.clone();
             thread::Builder::new()
                 .name(format!("enclave-workspace-cleanup-{worker_id}"))
@@ -1193,6 +1360,10 @@ fn run_workspace_stop_cleanups(
                         return;
                     };
                     let workspace_id = cleanup.workspace.id.clone();
+                    if let Some(network_error) = network_failures.get(&workspace_id) {
+                        let _ = result_sender.send((workspace_id, Err(anyhow!("{network_error}"))));
+                        continue;
+                    }
                     let result = run_workspace_stop_cleanup(
                         cleanup,
                         network_already_cleaned,
@@ -1220,6 +1391,19 @@ fn run_workspace_stop_cleanups(
         .collect()
 }
 
+fn format_network_cleanup_error(report: &network::NetworkCleanupReport) -> String {
+    format!(
+        "{}: network cleanup incomplete ({})",
+        report.workspace_id,
+        report
+            .failures
+            .iter()
+            .map(|failure| format!("{}: {}", failure.resource, failure.message))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )
+}
+
 fn cleanup_worker_count(job_count: usize) -> usize {
     std::env::var("ENCLAVE_CLEANUP_WORKERS")
         .ok()
@@ -1242,12 +1426,15 @@ fn run_workspace_stop_cleanup(
     let sandbox = cleanup.sandbox;
 
     if let Some(pid) = workspace.runtime_pid {
-        remove_workspace_cgroups(&sandbox, pid);
+        remove_workspace_cgroups(&sandbox, pid)?;
     }
 
     if !network_already_cleaned {
         if let Some(ip) = workspace.assigned_ip.as_deref() {
-            crate::network::teardown_workspace_network(ip, &workspace.id);
+            let report = crate::network::teardown_workspace_network(ip, &workspace.id);
+            if !report.is_complete() {
+                bail!("{}", format_network_cleanup_error(&report));
+            }
         }
     }
 
@@ -1384,18 +1571,6 @@ fn persist_workspace_metadata(workspace: &WorkspaceMetadata) -> Result<()> {
     )
 }
 
-fn validated_workspace_dir_from_metadata(
-    sandbox: &SandboxMetadata,
-    workspace: &WorkspaceMetadata,
-) -> Result<PathBuf> {
-    let sandbox_base = PathBuf::from(&sandbox.sandbox_path);
-    let workspace_root = PathBuf::from(&sandbox.workspaces_path);
-    let sandbox_dir =
-        crate::fsutil::ensure_path_within(&sandbox_base, &workspace_root, "workspace root")?;
-    let workspace_dir = PathBuf::from(&workspace.workspace_path);
-    crate::fsutil::ensure_path_within(&sandbox_dir, &workspace_dir, "workspace directory")
-}
-
 fn collect_all_used_ip_octets(
     registry: &crate::registry::Registry,
 ) -> std::collections::BTreeSet<u8> {
@@ -1489,22 +1664,30 @@ fn build_workspace_cgroup_config(
     )
 }
 
-fn remove_workspace_cgroups(sandbox: &SandboxMetadata, pid: u32) {
+fn remove_workspace_cgroups(sandbox: &SandboxMetadata, pid: u32) -> Result<()> {
     let workspace_name = workspace_cgroup_name(pid);
     let sandbox_path = std::path::PathBuf::from("/sys/fs/cgroup")
         .join(crate::sandbox::cgroup::sandbox_cgroup_name(&sandbox.id))
         .join(&workspace_name);
-    if let Err(err) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path) {
-        tracing::warn!(
-            "failed to remove workspace cgroup '{}' during stop: {err:#}",
-            sandbox_path.display()
-        );
+    let mut errors = Vec::new();
+    for (label, result) in [
+        (
+            sandbox_path.display().to_string(),
+            crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path),
+        ),
+        (
+            format!("legacy {workspace_name}"),
+            crate::sandbox::cgroup::remove_workspace_cgroup(&workspace_name),
+        ),
+    ] {
+        if let Err(error) = result {
+            errors.push(format!("{label}: {error:#}"));
+        }
     }
-    if let Err(err) = crate::sandbox::cgroup::remove_workspace_cgroup(&workspace_name) {
-        tracing::debug!(
-            "legacy workspace cgroup '{}' cleanup skipped: {err:#}",
-            workspace_name
-        );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        bail!("workspace cgroup cleanup incomplete: {}", errors.join("; "))
     }
 }
 

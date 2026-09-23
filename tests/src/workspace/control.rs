@@ -157,6 +157,156 @@ fn cleanup_workspace_artifacts_accepts_missing_workspace_root() {
 }
 
 #[test]
+fn cleanup_workspace_artifacts_preserves_a_live_runtime_when_workspace_root_is_missing() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-workspace-orphan-runtime-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+    let sandbox_dir = temp_dir.join("sandbox");
+    fs::create_dir_all(&sandbox_dir).unwrap();
+
+    let sandbox = SandboxMetadata {
+        id: "sandbox-id".to_string(),
+        name: "sandbox".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "https://deb.debian.org/debian".to_string(),
+        bootstrap_method: crate::sandbox::BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        mounted_rootfs_path: sandbox_dir
+            .join("runtime")
+            .join("rootfs.mnt")
+            .to_string_lossy()
+            .to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status: SandboxStatus::Stopped,
+    };
+    let pid = std::process::id();
+    let starttime = super::session::process_starttime_ticks(pid).unwrap();
+    let workspace_path = sandbox_dir.join("workspaces").join("workspace-id");
+    let workspace = WorkspaceMetadata {
+        id: "workspace-id".to_string(),
+        sandbox_id: sandbox.id.clone(),
+        name: "workspace".to_string(),
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        workspace_path: workspace_path.to_string_lossy().to_string(),
+        filesystem_path: workspace_path.join("fs").to_string_lossy().to_string(),
+        filesystem_mount_target: "/home".to_string(),
+        home_mount_source_path: None,
+        sandbox_rootfs_path: sandbox.rootfs_path.clone(),
+        overlay_home_base_path: sandbox.home_base_path.clone(),
+        overlay_home_upper_path: workspace_path
+            .join("home-upper")
+            .to_string_lossy()
+            .to_string(),
+        overlay_home_work_path: workspace_path
+            .join("home-work")
+            .to_string_lossy()
+            .to_string(),
+        overlay_home_merged_path: workspace_path
+            .join("home-merged")
+            .to_string_lossy()
+            .to_string(),
+        auth_providers: Vec::new(),
+        env_tokens: Vec::new(),
+        published_ports: Vec::new(),
+        status: WorkspaceStatus::Running,
+        runtime_pid: Some(pid),
+        runtime_starttime_ticks: Some(starttime),
+        namespace_refs: NamespaceRefs::default(),
+        clear_tmp_on_restart: false,
+        limits: WorkspaceLimits::default(),
+        assigned_ip: None,
+    };
+
+    let error = cleanup_workspace_artifacts(&sandbox, &workspace)
+        .expect_err("live PID evidence must block deletion when the workspace path is missing");
+    assert!(error.to_string().contains("still alive after stop"));
+    assert!(super::session::process_matches(pid, Some(starttime)));
+    assert!(!workspace_path.exists());
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn cleanup_workspace_artifacts_retains_record_when_runtime_outlives_missing_root() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-workspace-live-missing-root-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+    let sandbox_dir = temp_dir.join("sandbox");
+    fs::create_dir_all(&sandbox_dir).unwrap();
+
+    let sandbox = SandboxMetadata {
+        id: "sandbox-id".to_string(),
+        name: "sandbox".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "https://deb.debian.org/debian".to_string(),
+        bootstrap_method: crate::sandbox::BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        mounted_rootfs_path: sandbox_dir
+            .join("runtime")
+            .join("rootfs.mnt")
+            .to_string_lossy()
+            .to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status: SandboxStatus::Stopped,
+    };
+    let pid = std::process::id();
+    let starttime = super::session::process_starttime_ticks(pid).unwrap();
+    let workspace_path = sandbox_dir.join("workspaces").join("workspace-id");
+    let workspace = WorkspaceMetadata {
+        id: "workspace-id".to_string(),
+        sandbox_id: sandbox.id.clone(),
+        name: "workspace".to_string(),
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        workspace_path: workspace_path.to_string_lossy().to_string(),
+        filesystem_path: workspace_path.join("fs").to_string_lossy().to_string(),
+        filesystem_mount_target: "/home".to_string(),
+        home_mount_source_path: None,
+        sandbox_rootfs_path: sandbox.rootfs_path.clone(),
+        overlay_home_base_path: sandbox.home_base_path.clone(),
+        overlay_home_upper_path: workspace_path
+            .join("home-upper")
+            .to_string_lossy()
+            .to_string(),
+        overlay_home_work_path: workspace_path
+            .join("home-work")
+            .to_string_lossy()
+            .to_string(),
+        overlay_home_merged_path: workspace_path
+            .join("home-merged")
+            .to_string_lossy()
+            .to_string(),
+        auth_providers: Vec::new(),
+        env_tokens: Vec::new(),
+        published_ports: Vec::new(),
+        status: WorkspaceStatus::Running,
+        runtime_pid: Some(pid),
+        runtime_starttime_ticks: Some(starttime),
+        namespace_refs: NamespaceRefs::default(),
+        clear_tmp_on_restart: false,
+        limits: WorkspaceLimits::default(),
+        assigned_ip: None,
+    };
+
+    let error = cleanup_workspace_artifacts(&sandbox, &workspace)
+        .expect_err("a live runtime must block cleanup after its workspace root disappears");
+    assert!(error.to_string().contains("still alive after stop"));
+    assert!(super::session::process_matches(pid, Some(starttime)));
+    assert!(!workspace_path.exists());
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
 fn destroy_all_workspaces_returns_empty_plan_without_spawning_cleanup_workers() {
     let temp_dir = std::env::temp_dir().join(format!(
         "enclave-workspace-batch-empty-{}",

@@ -221,11 +221,12 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
     match fs::remove_dir(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-            tracing::warn!(
-                "cgroup {} is not empty; kernel will clean up on process exit",
-                path.display()
-            );
-            Ok(())
+            Err(err).with_context(|| {
+                format!(
+                    "cgroup {} is not empty; processes or child cgroups remain",
+                    path.display()
+                )
+            })
         }
         Err(err) => Err(err).with_context(|| format!("failed to remove cgroup {}", path.display())),
     }

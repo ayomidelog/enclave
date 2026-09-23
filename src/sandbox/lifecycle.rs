@@ -410,7 +410,34 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
     })?;
 
     if !Path::new(&sandbox.metadata.sandbox_path).exists() {
+        let workspace_ids = sandbox.workspaces.keys().cloned().collect::<Vec<_>>();
+        let mut errors = Vec::new();
+        for workspace_id in workspace_ids {
+            if let Err(error) =
+                crate::workspace::destroy_workspace(state_dir, &sandbox_id, &workspace_id)
+            {
+                errors.push(format!("workspace {workspace_id} cleanup: {error:#}"));
+            }
+        }
+        if !errors.is_empty() {
+            bail!(
+                "cannot destroy sandbox '{}' while workspace cleanup is incomplete: {}",
+                sandbox_id,
+                errors.join("; ")
+            );
+        }
         with_registry_mut(state_dir, |registry| {
+            let current = registry
+                .sandboxes
+                .get(&sandbox_id)
+                .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+            if !current.workspaces.is_empty() {
+                bail!(
+                    "sandbox '{}' still has {} workspace record(s) after cleanup",
+                    sandbox_id,
+                    current.workspaces.len()
+                );
+            }
             registry.sandboxes.remove(&sandbox_id);
             Ok(())
         })?;
@@ -424,6 +451,13 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
         {
             cleanup_errors.push(format!("workspace {workspace_id} cleanup: {err:#}"));
         }
+    }
+    if !cleanup_errors.is_empty() {
+        bail!(
+            "failed to destroy sandbox '{}'; workspace cleanup is incomplete and sandbox resources were retained: {}",
+            sandbox_id,
+            cleanup_errors.join("; ")
+        );
     }
 
     let sandbox_dir = PathBuf::from(&sandbox.metadata.sandbox_path);

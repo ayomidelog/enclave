@@ -1,32 +1,29 @@
 use std::process::Command;
 
-use anyhow::Context;
+use anyhow::{bail, Context, Result};
 
-pub fn remove_veth(veth_host: &str) {
-    let status = Command::new("ip")
-        .args(["link", "show", veth_host])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    let exists = matches!(status, Ok(s) if s.success());
-    if !exists {
-        return;
-    }
-
-    if let Err(err) = delete_link(veth_host) {
-        tracing::warn!("failed to delete veth {veth_host}: {err:#}");
-    }
-}
-
-fn delete_link(name: &str) -> anyhow::Result<()> {
+pub fn remove_veth(veth_host: &str) -> Result<()> {
     let output = Command::new("ip")
-        .args(["link", "delete", name])
+        .args(["link", "delete", veth_host])
         .output()
-        .with_context(|| format!("failed to delete link {name}"))?;
+        .with_context(|| format!("failed to delete veth {veth_host}"))?;
     if !output.status.success() {
+        if link_is_already_absent(&output.stderr) {
+            return Ok(());
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("ip link delete {name} failed: {}", stderr.trim());
+        bail!("ip link delete {veth_host} failed: {}", stderr.trim());
     }
     Ok(())
 }
+
+fn link_is_already_absent(stderr: &[u8]) -> bool {
+    let message = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    message.contains("cannot find device")
+        || message.contains("does not exist")
+        || message.contains("no such device")
+}
+
+#[cfg(test)]
+#[path = "../../tests/src/network/teardown.rs"]
+mod tests;

@@ -229,10 +229,12 @@ pub(crate) fn dispatch(
         }
         Action::WorkspaceWipe => {
             let workspaces = workspace::list_workspaces(&config.state_dir, None)?;
-            for workspace in &workspaces {
-                port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
-            }
             let report = workspace::destroy_all_workspaces(&config.state_dir)?;
+            for workspace in &workspaces {
+                if report.removed.contains(&workspace.id) {
+                    port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
+                }
+            }
             if !report.errors.is_empty() {
                 bail!(
                     "workspace wipe completed with {} error(s): {}",
@@ -393,11 +395,6 @@ fn dispatch_sandbox_stop(
         sandbox::resume_sandbox(&config.state_dir, selector)?;
     }
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
-    for ws in workspaces {
-        if ws.status == crate::workspace::WorkspaceStatus::Running {
-            port_publisher.clear_workspace_ports(&ws.sandbox_id, &ws.id);
-        }
-    }
     let failed = workspace::stop_running_workspaces_in_sandbox(&config.state_dir, selector)?;
     if !failed.is_empty() {
         bail!(
@@ -405,6 +402,11 @@ fn dispatch_sandbox_stop(
             failed.len(),
             failed.join(", ")
         );
+    }
+    for workspace in workspaces {
+        if workspace.status == crate::workspace::WorkspaceStatus::Running {
+            port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
+        }
     }
     let metadata = sandbox::stop_sandbox(&config.state_dir, selector)?;
     Ok(serde_json::to_value(metadata)?)
@@ -490,15 +492,15 @@ fn dispatch_sandbox_destroy(
         sandbox::resume_sandbox(&config.state_dir, selector)?;
     }
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
-    for ws in workspaces {
-        port_publisher.clear_workspace_ports(&ws.sandbox_id, &ws.id);
-    }
     let failed = workspace::stop_running_workspaces_in_sandbox(&config.state_dir, selector)?;
     if !failed.is_empty() {
-        tracing::warn!(
-            "failed to stop workspace(s) during sandbox destroy: {}",
-            failed.join(", ")
+        bail!(
+            "sandbox destroy aborted because workspace cleanup did not complete: {}",
+            failed.join("; ")
         );
+    }
+    for workspace in workspaces {
+        port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
     }
     let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
     Ok(json!({ "removed": removed }))
@@ -712,19 +714,17 @@ fn dispatch_workspace_target(
             Ok(serde_json::to_value(metadata)?)
         }
         "stop" => {
-            let metadata_before =
-                workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-            port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
             let metadata =
                 workspace::stop_workspace(&config.state_dir, sandbox, workspace_selector)?;
+            port_publisher.clear_workspace_ports(&metadata.sandbox_id, &metadata.id);
             Ok(serde_json::to_value(metadata)?)
         }
         "destroy" => {
             let metadata_before =
                 workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-            port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
             let removed =
                 workspace::destroy_workspace(&config.state_dir, sandbox, workspace_selector)?;
+            port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
             Ok(json!({ "removed": removed, "sandbox": sandbox }))
         }
         "status" => {
@@ -746,8 +746,8 @@ fn dispatch_workspace_target(
         "remove" => {
             let metadata_before =
                 workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-            port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
             workspace::remove_workspace(&config.state_dir, sandbox, workspace_selector)?;
+            port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
             Ok(json!({
                 "removed": workspace_selector,
                 "sandbox": sandbox,
