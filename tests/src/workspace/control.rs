@@ -1,3 +1,4 @@
+use super::super::cleanup::cleanup_workspace_artifacts;
 use super::*;
 use std::fs;
 

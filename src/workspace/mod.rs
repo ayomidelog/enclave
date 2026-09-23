@@ -1,3 +1,4 @@
+mod cleanup;
 mod control;
 mod cp;
 mod create;
@@ -7,6 +8,7 @@ mod logs;
 mod ports;
 pub mod ps;
 mod runtime;
+mod runtime_limits;
 pub(crate) mod session;
 mod snapshot;
 mod stats;
@@ -26,8 +28,7 @@ pub use control::{
 pub(crate) use control::{
     freeze_workspaces_in_sandbox, reconcile_workspace_runtime_state,
     resize_workspace_disk_with_security, stop_running_workspaces_in_sandbox,
-    sync_sandbox_runtime_limits, sync_workspace_runtime_limits, update_workspace_definition,
-    workspace_metadata, workspace_runtime_is_active,
+    update_workspace_definition, workspace_metadata, workspace_runtime_is_active,
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;
@@ -42,6 +43,7 @@ pub use ports::{
 };
 pub use ps::{list_process_status, ProcessEntry};
 pub use runtime::workspace_runtime_info;
+pub(crate) use runtime_limits::{sync_sandbox_runtime_limits, sync_workspace_runtime_limits};
 pub use snapshot::{
     create_workspace_snapshot, export_workspace_snapshot_archive, gc_workspace_snapshots,
     import_workspace_snapshot_archive, list_workspace_snapshots, restore_workspace_snapshot,
