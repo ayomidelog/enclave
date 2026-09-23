@@ -81,14 +81,45 @@ fn ensure_bridge_address() -> Result<()> {
         .context("failed to inspect bridge address")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let expected = format!("{}/{}", ipam::GATEWAY_IP, SUBNET_PREFIX_LEN);
-    if stdout
-        .lines()
-        .any(|line| line.trim_start().starts_with("inet ") && line.contains(&expected))
-    {
+    let addresses = parse_ipv4_addresses(&stdout);
+    if addresses.iter().any(|address| address == &expected) {
         return Ok(());
+    }
+    if addresses
+        .iter()
+        .any(|address| address.starts_with("10.200.0."))
+    {
+        bail!(
+            "bridge {} has an incompatible Enclave subnet address; expected {} but found {}",
+            BRIDGE_NAME,
+            expected,
+            addresses.join(", ")
+        );
+    }
+    if !addresses.is_empty() {
+        bail!(
+            "bridge {} already exists with incompatible IPv4 address(es): {}",
+            BRIDGE_NAME,
+            addresses.join(", ")
+        );
     }
 
     assign_bridge_address()
+}
+
+fn parse_ipv4_addresses(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            while let Some(field) = fields.next() {
+                if field == "inet" {
+                    return fields.next().map(str::to_string);
+                }
+            }
+            None
+        })
+        .collect()
 }
 
 fn run_ip(args: &[&str]) -> Result<()> {
@@ -119,3 +150,7 @@ pub fn disable_ipv6(interface: &str) -> Result<()> {
         .with_context(|| format!("failed to disable IPv6 on interface {}", interface))?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/network/bridge.rs"]
+mod tests;
