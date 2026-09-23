@@ -1,13 +1,14 @@
 use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
 };
 use enclave::workspace::{
-    create_workspace, create_workspace_snapshot, destroy_workspace, list_workspaces,
-    resize_workspace_disk, restore_workspace_snapshot, start_workspace, stop_workspace,
-    workspace_runtime_info, WorkspaceLimits,
+    create_workspace, create_workspace_snapshot, destroy_workspace, exec_workspace_command,
+    list_workspaces, resize_workspace_disk, restore_workspace_snapshot, start_workspace,
+    stop_workspace, workspace_runtime_info, WorkspaceLimits,
 };
 
 fn root_only() -> bool {
@@ -19,6 +20,33 @@ fn state_dir(name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create state dir");
     dir
+}
+
+struct SandboxCleanup {
+    state_dir: PathBuf,
+    sandbox_id: Option<String>,
+}
+
+impl SandboxCleanup {
+    fn new(state_dir: PathBuf) -> Self {
+        Self {
+            state_dir,
+            sandbox_id: None,
+        }
+    }
+
+    fn record(&mut self, sandbox_id: &str) {
+        self.sandbox_id = Some(sandbox_id.to_string());
+    }
+}
+
+impl Drop for SandboxCleanup {
+    fn drop(&mut self) {
+        if let Some(sandbox_id) = self.sandbox_id.as_deref() {
+            let _ = destroy_sandbox(&self.state_dir, sandbox_id);
+        }
+        let _ = fs::remove_dir_all(&self.state_dir);
+    }
 }
 
 fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
@@ -287,6 +315,77 @@ fn workspace_disk_quota_caps_enclave_managed_home_storage() {
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn workspace_disk_backed_tmp_is_linked_writable_and_uses_workspace_storage() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-disk-backed-tmp");
+    let mut cleanup = SandboxCleanup::new(state.clone());
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-disk-backed-tmp-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    cleanup.record(&sandbox.id);
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let workspace = create_workspace(
+        &state,
+        &sandbox.id,
+        "tmp",
+        WorkspaceLimits {
+            disk_bytes: Some(64 * 1024 * 1024),
+            ..WorkspaceLimits::default()
+        },
+    )
+    .expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let runtime_pid = started.runtime_pid.expect("runtime pid");
+    let runtime_root = Path::new("/proc")
+        .join(runtime_pid.to_string())
+        .join("root");
+    let runtime_tmp = runtime_root.join("tmp");
+    let runtime_home_tmp = runtime_root.join("home/tmp");
+
+    let tmp_metadata = fs::metadata(&runtime_tmp).expect("workspace /tmp metadata");
+    let home_tmp_metadata = fs::metadata(&runtime_home_tmp).expect("workspace /home/tmp metadata");
+    assert!(tmp_metadata.is_dir());
+    assert!(
+        tmp_metadata.nlink() >= 2,
+        "workspace /tmp must have a live directory link"
+    );
+    assert_eq!(tmp_metadata.dev(), home_tmp_metadata.dev());
+    assert_eq!(tmp_metadata.ino(), home_tmp_metadata.ino());
+    assert_eq!(tmp_metadata.permissions().mode() & 0o1777, 0o1777);
+
+    let result = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "test \"$TMPDIR\" = /tmp && printf ok > /tmp/enclave-tmp-probe && test \"$(cat /tmp/enclave-tmp-probe)\" = ok && rm /tmp/enclave-tmp-probe".to_string(),
+        ],
+    )
+    .expect("execute /tmp write probe");
+    assert_eq!(
+        result.exit_code, 0,
+        "workspace command failed: {}",
+        result.stderr
+    );
 }
 
 #[test]

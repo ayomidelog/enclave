@@ -3,14 +3,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use nix::mount::{mount, MsFlags};
+use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sched::{setns, CloneFlags};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{fork, ForkResult, Pid};
@@ -80,7 +80,7 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
         let work = validate_workspace_overlay_path(&args.root_overlay_work, "work")?;
         let merged = validate_workspace_overlay_path(&args.root_overlay_merged, "merged")?;
         mount_workspace_root_overlay(&rootfs, &upper, &work, &merged)?;
-        let host_old_root = merged.join(".old_root");
+        let host_old_root = workspace_old_root_path(&merged, &args.workspace_id)?;
         fs::create_dir_all(&host_old_root)
             .with_context(|| format!("failed to create {}", host_old_root.display()))?;
         (merged, host_old_root)
@@ -1077,12 +1077,25 @@ fn mount_workspace_tmp_if_needed(
     disk_backed_tmp: bool,
 ) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("failed to create {}", target.display()))?;
-    if is_mountpoint(target)? {
-        return Ok(());
-    }
     if disk_backed_tmp {
         let workspace_tmp = workspace_fs.join("tmp");
         ensure_workspace_tmp_source(old_root, &workspace_tmp)?;
+        let source = path_inside_old_root(old_root, &workspace_tmp)?;
+        let source_identity = directory_identity(&source)?;
+        if is_mountpoint(target)? {
+            let current_is_expected = directory_identity(target)
+                .is_ok_and(|identity| identity == source_identity)
+                && tmp_directory_is_usable(target);
+            if current_is_expected {
+                return Ok(());
+            }
+            umount2(target, MntFlags::MNT_DETACH).with_context(|| {
+                format!(
+                    "failed to detach stale workspace /tmp mount at {}",
+                    target.display()
+                )
+            })?;
+        }
         mount_workspace_source(old_root, &workspace_tmp, target, workspace_idmap_option)
             .with_context(|| {
                 format!(
@@ -1092,7 +1105,18 @@ fn mount_workspace_tmp_if_needed(
                 )
             })?;
         crate::perf::record_mount();
-        return Ok(());
+        return verify_workspace_tmp_mount(target, Some(source_identity));
+    }
+    if is_mountpoint(target)? {
+        if tmp_directory_is_usable(target) {
+            return Ok(());
+        }
+        umount2(target, MntFlags::MNT_DETACH).with_context(|| {
+            format!(
+                "failed to detach stale workspace /tmp mount at {}",
+                target.display()
+            )
+        })?;
     }
     mount(
         Some("tmpfs"),
@@ -1108,7 +1132,7 @@ fn mount_workspace_tmp_if_needed(
         )
     })?;
     crate::perf::record_mount();
-    Ok(())
+    verify_workspace_tmp_mount(target, None)
 }
 
 fn runtime_tmpfs_mount_flags() -> MsFlags {
@@ -1125,8 +1149,83 @@ fn ensure_workspace_tmp_source(old_root: &Path, workspace_tmp: &Path) -> Result<
     let source = path_inside_old_root(old_root, workspace_tmp)?;
     fs::create_dir_all(&source)
         .with_context(|| format!("failed to create {}", source.display()))?;
+    let metadata = fs::symlink_metadata(&source).with_context(|| {
+        format!(
+            "failed to inspect workspace tmp source {}",
+            source.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "workspace tmp source must be a real directory: {}",
+            source.display()
+        );
+    }
     fs::set_permissions(&source, fs::Permissions::from_mode(0o1777))
         .with_context(|| format!("failed to chmod {}", source.display()))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirectoryIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn directory_identity(path: &Path) -> Result<DirectoryIdentity> {
+    let metadata = fs::metadata(path).with_context(|| {
+        format!(
+            "failed to inspect workspace tmp directory {}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        bail!("workspace tmp path is not a directory: {}", path.display());
+    }
+    Ok(DirectoryIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+fn tmp_directory_is_usable(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_dir() || metadata.nlink() < 2 || metadata.mode() & 0o1777 != 0o1777 {
+        return false;
+    }
+    let probe = path.join(format!(
+        ".enclave-tmp-probe-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    match OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(file) => {
+            drop(file);
+            fs::remove_file(probe).is_ok()
+        }
+        Err(_) => false,
+    }
+}
+
+fn verify_workspace_tmp_mount(
+    target: &Path,
+    expected_identity: Option<DirectoryIdentity>,
+) -> Result<()> {
+    let identity = directory_identity(target)?;
+    if expected_identity.is_some_and(|expected| expected != identity) {
+        bail!(
+            "workspace /tmp mount at {} does not reference its configured backing directory",
+            target.display()
+        );
+    }
+    if !tmp_directory_is_usable(target) {
+        bail!(
+            "workspace /tmp at {} is not a linked, writable directory with mode 1777",
+            target.display()
+        );
+    }
     Ok(())
 }
 
@@ -1208,6 +1307,9 @@ fn run_workspace_command_child(
     let mut cmd = Command::new("/usr/bin/env");
     cmd.arg("-i")
         .arg("HOME=/home")
+        .arg("TMPDIR=/tmp")
+        .arg("TMP=/tmp")
+        .arg("TEMP=/tmp")
         .arg("USER=root")
         .arg("LOGNAME=root")
         .arg("TERM=xterm")

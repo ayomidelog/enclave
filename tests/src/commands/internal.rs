@@ -1,8 +1,10 @@
 use super::{
-    open_ready_file_via_old_root, runtime_tmpfs_mount_flags, validate_workspace_file_target,
-    workspace_old_root_path, RUNTIME_TMPFS_DATA,
+    open_ready_file_via_old_root, runtime_tmpfs_mount_flags, tmp_directory_is_usable,
+    validate_workspace_file_target, verify_workspace_tmp_mount, workspace_old_root_path,
+    DirectoryIdentity, RUNTIME_TMPFS_DATA, WORKSPACE_TMP_DATA,
 };
 use std::fs;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 struct TempDir {
@@ -17,6 +19,15 @@ fn workspace_old_root_path_is_unique_and_rejects_unsafe_ids() {
         PathBuf::from("/state/rootfs/.old_root-workspace-abc_123")
     );
     assert!(workspace_old_root_path(rootfs, "../escape").is_err());
+}
+
+#[test]
+fn root_overlay_put_old_path_matches_the_path_used_after_pivot() {
+    let merged = Path::new("/state/workspaces/ws/root-merged");
+    let host_old_root = workspace_old_root_path(merged, "workspace-abc_123").unwrap();
+    let pivoted_old_root = Path::new("/").join(host_old_root.file_name().unwrap());
+    assert_eq!(host_old_root, merged.join(".old_root-workspace-abc_123"));
+    assert_eq!(pivoted_old_root, Path::new("/.old_root-workspace-abc_123"));
 }
 
 impl TempDir {
@@ -101,6 +112,42 @@ fn runtime_tmpfs_mount_options_split_vfs_flags_from_fs_data() {
     assert!(flags.contains(nix::mount::MsFlags::MS_NOSUID));
     assert!(flags.contains(nix::mount::MsFlags::MS_NOEXEC));
     assert_eq!(RUNTIME_TMPFS_DATA, "mode=700");
+    assert_eq!(WORKSPACE_TMP_DATA, "mode=1777");
+}
+
+#[test]
+fn workspace_tmp_probe_rejects_unlinked_or_non_sticky_directories() {
+    let base = temp_dir("tmp-validation");
+    let linked = base.path().join("linked");
+    fs::create_dir(&linked).expect("create linked temp directory");
+    fs::set_permissions(&linked, fs::Permissions::from_mode(0o1777)).expect("set sticky mode");
+    assert!(tmp_directory_is_usable(&linked));
+
+    fs::set_permissions(&linked, fs::Permissions::from_mode(0o0777)).expect("clear sticky mode");
+    assert!(!tmp_directory_is_usable(&linked));
+
+    fs::set_permissions(&linked, fs::Permissions::from_mode(0o1777)).expect("restore sticky mode");
+    fs::remove_dir(&linked).expect("unlink temp directory");
+    assert!(!tmp_directory_is_usable(&linked));
+}
+
+#[test]
+fn workspace_tmp_mount_verification_checks_backing_inode() {
+    let base = temp_dir("tmp-identity");
+    let target = base.path().join("target");
+    fs::create_dir(&target).expect("create temp target");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o1777)).expect("set sticky mode");
+    let metadata = fs::metadata(&target).expect("stat target");
+    let identity = DirectoryIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    verify_workspace_tmp_mount(&target, Some(identity)).expect("matching inode should pass");
+    let wrong_identity = DirectoryIdentity {
+        device: identity.device,
+        inode: identity.inode.wrapping_add(1),
+    };
+    assert!(verify_workspace_tmp_mount(&target, Some(wrong_identity)).is_err());
 }
 
 #[test]
