@@ -6,7 +6,11 @@ use crate::workspace::types::WorkspaceMetadata;
 
 use super::control::{resolve_workspace_id, workspace_runtime_is_active};
 
-pub(super) fn workspace_cgroup_name(pid: u32) -> String {
+pub(crate) fn workspace_cgroup_name(sandbox_id: &str, workspace_id: &str) -> String {
+    format!("enclave-ws-{sandbox_id}-{workspace_id}")
+}
+
+pub(crate) fn legacy_workspace_cgroup_name(pid: u32) -> String {
     format!("enclave-ws-{pid}")
 }
 
@@ -133,7 +137,7 @@ fn ensure_workspace_cgroup_hierarchy(
         true,
     )?
     .ok_or_else(|| anyhow!("failed to prepare sandbox cgroup for '{}'", sandbox.id))?;
-    let workspace_name = workspace_cgroup_name(pid);
+    let workspace_name = workspace_cgroup_name(&sandbox.id, &workspace.id);
     if let Some(workspace_path) = crate::sandbox::cgroup::ensure_workspace_cgroup(
         &sandbox_path,
         &workspace_name,
@@ -142,7 +146,9 @@ fn ensure_workspace_cgroup_hierarchy(
     )? {
         crate::sandbox::cgroup::add_process_to_cgroup(&workspace_path, pid)?;
     }
-    if let Err(err) = crate::sandbox::cgroup::remove_workspace_cgroup(&workspace_name) {
+    if let Err(err) =
+        crate::sandbox::cgroup::remove_workspace_cgroup(&legacy_workspace_cgroup_name(pid))
+    {
         tracing::debug!(
             "legacy workspace cgroup cleanup skipped for {}: {err:#}",
             workspace.id

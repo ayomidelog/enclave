@@ -43,7 +43,9 @@ pub use ports::{
 };
 pub use ps::{list_process_status, ProcessEntry};
 pub use runtime::workspace_runtime_info;
-pub(crate) use runtime_limits::{sync_sandbox_runtime_limits, sync_workspace_runtime_limits};
+pub(crate) use runtime_limits::{
+    sync_sandbox_runtime_limits, sync_workspace_runtime_limits, workspace_cgroup_name,
+};
 pub use snapshot::{
     create_workspace_snapshot, export_workspace_snapshot_archive, gc_workspace_snapshots,
     import_workspace_snapshot_archive, list_workspace_snapshots, restore_workspace_snapshot,

@@ -6,7 +6,7 @@ use std::thread;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use super::runtime_limits::workspace_cgroup_name;
+use super::runtime_limits::{legacy_workspace_cgroup_name, workspace_cgroup_name};
 use crate::network;
 use crate::sandbox::SandboxMetadata;
 use crate::workspace::session;
@@ -40,7 +40,7 @@ pub(super) fn cleanup_workspace_artifacts(
                 pid
             );
         }
-        if let Err(err) = remove_workspace_cgroups(sandbox, pid) {
+        if let Err(err) = remove_workspace_cgroups(sandbox, &workspace.id, pid) {
             errors.push(format!(
                 "remove workspace cgroups for runtime {}: {err:#}",
                 pid
@@ -341,7 +341,7 @@ pub(super) fn run_workspace_stop_cleanup(
     let sandbox = cleanup.sandbox;
 
     if let Some(pid) = workspace.runtime_pid {
-        remove_workspace_cgroups(&sandbox, pid)?;
+        remove_workspace_cgroups(&sandbox, &workspace.id, pid)?;
     }
 
     if !network_already_cleaned {
@@ -372,8 +372,13 @@ pub(super) fn run_workspace_stop_cleanup(
     Ok(())
 }
 
-pub(super) fn remove_workspace_cgroups(sandbox: &SandboxMetadata, pid: u32) -> Result<()> {
-    let workspace_name = workspace_cgroup_name(pid);
+pub(super) fn remove_workspace_cgroups(
+    sandbox: &SandboxMetadata,
+    workspace_id: &str,
+    pid: u32,
+) -> Result<()> {
+    let workspace_name = workspace_cgroup_name(&sandbox.id, workspace_id);
+    let legacy_name = legacy_workspace_cgroup_name(pid);
     let sandbox_path = std::path::PathBuf::from("/sys/fs/cgroup")
         .join(crate::sandbox::cgroup::sandbox_cgroup_name(&sandbox.id))
         .join(&workspace_name);
@@ -384,8 +389,8 @@ pub(super) fn remove_workspace_cgroups(sandbox: &SandboxMetadata, pid: u32) -> R
             crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path),
         ),
         (
-            format!("legacy {workspace_name}"),
-            crate::sandbox::cgroup::remove_workspace_cgroup(&workspace_name),
+            format!("legacy {legacy_name}"),
+            crate::sandbox::cgroup::remove_workspace_cgroup(&legacy_name),
         ),
     ] {
         if let Err(error) = result {

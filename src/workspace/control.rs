@@ -538,7 +538,11 @@ pub fn start_workspace_with_security(
             let _ = session::stop_session(started.pid, Some(started.starttime_ticks));
             let network_report =
                 network::teardown_workspace_network(&started.assigned_ip, &workspace_id);
-            let cgroup_cleanup = cleanup::remove_workspace_cgroups(&sandbox_snapshot, started.pid);
+            let cgroup_cleanup = cleanup::remove_workspace_cgroups(
+                &sandbox_snapshot,
+                &workspace_snapshot.id,
+                started.pid,
+            );
             let storage_cleanup =
                 crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
             if !network_report.is_complete() || cgroup_cleanup.is_err() || storage_cleanup.is_err()
@@ -579,9 +583,11 @@ fn launch_workspace_runtime(
                 session_info.pid
             );
         }
-        if let Err(cleanup_err) =
-            cleanup::remove_workspace_cgroups(sandbox_snapshot, session_info.pid)
-        {
+        if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
+            sandbox_snapshot,
+            &workspace_snapshot.id,
+            session_info.pid,
+        ) {
             tracing::warn!("failed to clean cgroup after cgroup setup failure: {cleanup_err:#}");
         }
         return Err(err).context("failed to apply workspace cgroup limits");
@@ -594,9 +600,11 @@ fn launch_workspace_runtime(
         &workspace_snapshot.auth_providers,
         &workspace_snapshot.env_tokens,
     ) {
-        if let Err(cleanup_err) =
-            cleanup::remove_workspace_cgroups(sandbox_snapshot, session_info.pid)
-        {
+        if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
+            sandbox_snapshot,
+            &workspace_snapshot.id,
+            session_info.pid,
+        ) {
             tracing::warn!("failed to clean cgroup after auth sync failure: {cleanup_err:#}");
         }
         if let Err(stop_err) =
@@ -622,9 +630,11 @@ fn launch_workspace_runtime(
             ) {
                 Ok(ip) => ip,
                 Err(err) => {
-                    if let Err(cleanup_err) =
-                        cleanup::remove_workspace_cgroups(sandbox_snapshot, session_info.pid)
-                    {
+                    if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
+                        sandbox_snapshot,
+                        &workspace_snapshot.id,
+                        session_info.pid,
+                    ) {
                         tracing::warn!(
                             "failed to clean cgroup after network setup failure: {cleanup_err:#}"
                         );

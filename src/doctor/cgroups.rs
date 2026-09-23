@@ -75,8 +75,18 @@ pub(super) fn cgroup_ownership(state_dir: &Path) -> anyhow::Result<CgroupOwnersh
             for workspace in sandbox.workspaces.values() {
                 if let Some(pid) = workspace.runtime_pid {
                     ownership.workspace_paths.insert(
+                        sandbox_path.join(format!(
+                            "{WORKSPACE_CGROUP_PREFIX}{sandbox_id}-{}",
+                            workspace.id
+                        )),
+                        format!(
+                            "sandbox {sandbox_id}, workspace {} (pid {pid})",
+                            workspace.id
+                        ),
+                    );
+                    ownership.workspace_paths.insert(
                         sandbox_path.join(format!("{WORKSPACE_CGROUP_PREFIX}{pid}")),
-                        format!("sandbox {sandbox_id}, workspace {}", workspace.id),
+                        format!("legacy sandbox {sandbox_id}, workspace {}", workspace.id),
                     );
                 }
             }

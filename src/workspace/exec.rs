@@ -282,9 +282,9 @@ fn runtime_exec_command_args_base(
         workspace_id.to_string(),
         "--cgroup-path".to_string(),
         format!(
-            "/sys/fs/cgroup/{}/enclave-ws-{}",
+            "/sys/fs/cgroup/{}/{}",
             crate::sandbox::cgroup::sandbox_cgroup_name(sandbox_id),
-            runtime_pid
+            crate::workspace::workspace_cgroup_name(sandbox_id, workspace_id)
         ),
     ];
     if let Some(fds) = fds {
