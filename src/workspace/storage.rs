@@ -180,10 +180,29 @@ pub(crate) fn reset_workspace_tmp(workspace: &WorkspaceMetadata) -> Result<()> {
     if !workspace_uses_disk_image(workspace) {
         return Ok(());
     }
+    // `/tmp` for a quota-backed workspace lives inside the workspace disk
+    // image. Clearing the host mountpoint after the image is unmounted would
+    // leave the image untouched, so mount the image when the caller is not
+    // already holding it.
+    with_workspace_storage_mounted(workspace, || reset_mounted_workspace_tmp(workspace))
+}
 
+fn reset_mounted_workspace_tmp(workspace: &WorkspaceMetadata) -> Result<()> {
     let workspace_root = PathBuf::from(&workspace.filesystem_path);
+    if !crate::fsutil::is_mountpoint(&workspace_root)? {
+        bail!(
+            "refusing to reset workspace /tmp: {} is not mounted",
+            workspace_root.display()
+        );
+    }
+    clear_workspace_tmp_contents(&workspace_root)
+}
+
+/// Remove every entry under `<workspace filesystem>/tmp`, keeping the directory
+/// itself. The caller owns the storage mount; this only touches paths.
+fn clear_workspace_tmp_contents(workspace_root: &Path) -> Result<()> {
     let tmp_path = workspace_root.join("tmp");
-    let canonical_root = fs::canonicalize(&workspace_root).with_context(|| {
+    let canonical_root = fs::canonicalize(workspace_root).with_context(|| {
         format!(
             "failed to resolve workspace filesystem {}",
             workspace_root.display()

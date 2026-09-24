@@ -240,6 +240,25 @@ pub(super) fn run_workspace_stop_cleanups(
             })
             .collect::<std::collections::BTreeMap<_, _>>(),
     );
+    // `/tmp` lives inside the workspace disk image, so clear it while the
+    // image is still mounted. Doing this after the batch unmount would only
+    // empty the host mountpoint and silently leave the image untouched.
+    let tmp_reset_failures = Arc::new(
+        cleanups
+            .iter()
+            .filter(|cleanup| cleanup.workspace.clear_tmp_on_restart)
+            .filter_map(|cleanup| {
+                crate::workspace::reset_workspace_tmp(&cleanup.workspace)
+                    .err()
+                    .map(|error| {
+                        (
+                            cleanup.workspace.id.clone(),
+                            format!("failed to reset workspace /tmp: {error:#}"),
+                        )
+                    })
+            })
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    );
     let storage_workspaces = cleanups
         .iter()
         .map(|cleanup| cleanup.workspace.clone())
@@ -263,6 +282,7 @@ pub(super) fn run_workspace_stop_cleanups(
         .map(|worker_id| {
             let queue = Arc::clone(&queue);
             let network_failures = Arc::clone(&network_failures);
+            let tmp_reset_failures = Arc::clone(&tmp_reset_failures);
             let result_sender = result_sender.clone();
             thread::Builder::new()
                 .name(format!("enclave-workspace-cleanup-{worker_id}"))
@@ -275,8 +295,16 @@ pub(super) fn run_workspace_stop_cleanups(
                         return;
                     };
                     let workspace_id = cleanup.workspace.id.clone();
+                    let mut pre_failures = Vec::new();
                     if let Some(network_error) = network_failures.get(&workspace_id) {
-                        let _ = result_sender.send((workspace_id, Err(anyhow!("{network_error}"))));
+                        pre_failures.push(network_error.clone());
+                    }
+                    if let Some(tmp_error) = tmp_reset_failures.get(&workspace_id) {
+                        pre_failures.push(tmp_error.clone());
+                    }
+                    if !pre_failures.is_empty() {
+                        let _ = result_sender
+                            .send((workspace_id, Err(anyhow!("{}", pre_failures.join("; ")))));
                         continue;
                     }
                     let result = run_workspace_stop_cleanup(
@@ -354,21 +382,17 @@ pub(super) fn run_workspace_stop_cleanup(
     }
 
     if storage_already_unmounted {
-        if workspace.clear_tmp_on_restart {
-            crate::workspace::reset_workspace_tmp(&workspace)
-                .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?;
-        }
         return Ok(());
     }
 
-    match crate::workspace::ensure_workspace_storage_unmounted(&workspace) {
-        Ok(()) if workspace.clear_tmp_on_restart => {
-            crate::workspace::reset_workspace_tmp(&workspace)
-                .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?
-        }
-        Ok(()) => {}
-        Err(err) => return Err(err).context("failed to unmount workspace storage"),
+    // `/tmp` is backed by the workspace disk image, so it must be cleared
+    // before that image is unmounted.
+    if workspace.clear_tmp_on_restart {
+        crate::workspace::reset_workspace_tmp(&workspace)
+            .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?;
     }
+    crate::workspace::ensure_workspace_storage_unmounted(&workspace)
+        .context("failed to unmount workspace storage")?;
     Ok(())
 }
 

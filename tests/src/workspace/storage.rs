@@ -91,18 +91,38 @@ fn root_overlay_paths_use_quota_filesystem_for_upper_and_work() {
 fn reset_workspace_tmp_removes_contents_but_keeps_directory() {
     let root = std::env::temp_dir().join(format!("enclave-tmp-reset-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let mut workspace = workspace_fixture();
-    workspace.workspace_path = root.join("workspace").to_string_lossy().to_string();
-    workspace.filesystem_path = root.join("workspace/fs").to_string_lossy().to_string();
-    workspace.limits.disk_bytes = Some(MIN_DISK_BYTES);
     std::fs::create_dir_all(root.join("workspace/fs/tmp/nested")).expect("create tmp fixture");
     std::fs::write(root.join("workspace/fs/tmp/file"), "data").expect("write tmp fixture");
 
-    reset_workspace_tmp(&workspace).expect("reset workspace tmp");
+    clear_workspace_tmp_contents(&root.join("workspace/fs")).expect("reset workspace tmp");
 
     assert!(root.join("workspace/fs/tmp").is_dir());
     assert!(!root.join("workspace/fs/tmp/file").exists());
     assert!(!root.join("workspace/fs/tmp/nested").exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// `/tmp` lives inside the workspace disk image. Resetting it when the image is
+/// not mounted must fail loudly instead of clearing the host mountpoint and
+/// reporting success while the image keeps its contents.
+#[test]
+fn reset_workspace_tmp_never_succeeds_without_mounted_storage() {
+    let root = std::env::temp_dir().join(format!("enclave-tmp-unmounted-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let mut workspace = workspace_fixture();
+    workspace.workspace_path = root.join("workspace").to_string_lossy().to_string();
+    workspace.filesystem_path = root.join("workspace/fs").to_string_lossy().to_string();
+    workspace.limits.disk_bytes = Some(MIN_DISK_BYTES);
+    std::fs::create_dir_all(root.join("workspace/fs/tmp")).expect("create tmp fixture");
+    std::fs::write(root.join("workspace/fs/tmp/file"), "data").expect("write tmp fixture");
+
+    let error = reset_mounted_workspace_tmp(&workspace)
+        .expect_err("an unmounted workspace filesystem must be refused");
+    assert!(
+        error.to_string().contains("not mounted"),
+        "unexpected error: {error:#}"
+    );
+    assert!(root.join("workspace/fs/tmp/file").exists());
     let _ = std::fs::remove_dir_all(root);
 }
 
