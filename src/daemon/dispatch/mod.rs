@@ -96,13 +96,15 @@ fn parse_workspace_limits_create(params: &Value) -> Result<workspace::WorkspaceL
     let max_procs = params.get("max_procs").and_then(Value::as_u64);
     let max_open_files = params.get("max_open_files").and_then(Value::as_u64);
     let disk_mb = params.get("disk_mb").and_then(Value::as_u64);
+    let memory_bytes = checked_megabytes(memory_mb, "memory_mb")?;
+    let disk_bytes = checked_megabytes(disk_mb, "disk_mb")?;
     let limits = workspace::WorkspaceLimits {
         cpu_seconds,
         cpu_percent,
-        memory_bytes: memory_mb.map(|v| v.saturating_mul(1024 * 1024)),
+        memory_bytes,
         max_processes: max_procs,
         max_open_files,
-        disk_bytes: disk_mb.map(|v| v.saturating_mul(1024 * 1024)),
+        disk_bytes,
     };
     limits.validate()?;
     Ok(limits)
@@ -119,17 +121,36 @@ fn parse_required_disk_bytes(params: &Value) -> Result<u64> {
 }
 
 fn parse_workspace_limits_update(params: &Value) -> Result<workspace::WorkspaceLimitsUpdate> {
+    let memory_bytes =
+        checked_optional_megabytes(parse_optional_u64_field(params, "memory_mb")?, "memory_mb")?;
+    let disk_bytes =
+        checked_optional_megabytes(parse_optional_u64_field(params, "disk_mb")?, "disk_mb")?;
     Ok(workspace::WorkspaceLimitsUpdate {
         clear_tmp_on_restart: parse_optional_bool_field(params, "clear_tmp_on_restart")?,
         cpu_seconds: parse_optional_u64_field(params, "cpu_seconds")?,
         cpu_percent: parse_optional_f64_field(params, "cpu_percent")?,
-        memory_bytes: parse_optional_u64_field(params, "memory_mb")?
-            .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
+        memory_bytes,
         max_processes: parse_optional_u64_field(params, "max_procs")?,
         max_open_files: parse_optional_u64_field(params, "max_open_files")?,
-        disk_bytes: parse_optional_u64_field(params, "disk_mb")?
-            .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
+        disk_bytes,
     })
+}
+
+fn checked_megabytes(value: Option<u64>, key: &str) -> Result<Option<u64>> {
+    value
+        .map(|value| {
+            value
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| anyhow::anyhow!("'{key}' is too large"))
+        })
+        .transpose()
+}
+
+fn checked_optional_megabytes(
+    value: Option<Option<u64>>,
+    key: &str,
+) -> Result<Option<Option<u64>>> {
+    value.map(|value| checked_megabytes(value, key)).transpose()
 }
 
 fn parse_optional_bool_field(params: &Value, key: &str) -> Result<Option<bool>> {

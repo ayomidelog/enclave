@@ -142,6 +142,19 @@ fn parse_required_disk_bytes_rejects_missing_and_overflowing_values() {
 }
 
 #[test]
+fn workspace_limit_parsing_rejects_overflow_in_create_and_update() {
+    let params = serde_json::json!({"memory_mb": u64::MAX, "disk_mb": u64::MAX});
+    assert!(parse_workspace_limits_create(&params)
+        .expect_err("create overflow must fail")
+        .to_string()
+        .contains("memory_mb"));
+    assert!(parse_workspace_limits_update(&params)
+        .expect_err("update overflow must fail")
+        .to_string()
+        .contains("memory_mb"));
+}
+
+#[test]
 fn clear_tmp_on_restart_accepts_boolean_values() {
     assert_eq!(
         parse_optional_bool_field(
