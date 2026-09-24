@@ -60,9 +60,7 @@ pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Resu
                     println!("daemon stop signal sent");
                 }
                 Err(err) => {
-                    let msg = format!("{err:#}");
-                    if msg.contains("daemon socket not found") || msg.contains("failed to connect")
-                    {
+                    if crate::client::is_daemon_unreachable(&err) {
                         println!("daemon is not running");
                     } else {
                         return Err(err);
@@ -201,8 +199,10 @@ pub(crate) fn ensure_daemon_running_for_action(socket: &Path, action: &str) -> R
     match send(socket, "ping", json!({})) {
         Ok(_) => return Ok(()),
         Err(err) => {
-            let msg = format!("{err:#}");
-            if msg.contains("policy denied") {
+            // A daemon that answers the ping with an error is running; only an
+            // unreachable one should be started here. Anything else — a policy
+            // denial, a malformed response — has to reach the caller unchanged.
+            if !crate::client::is_daemon_unreachable(&err) {
                 return Err(err);
             }
         }

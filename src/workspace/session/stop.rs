@@ -34,23 +34,20 @@ where
             continue;
         }
         match process::verify_signal_target(pid, expected_starttime_ticks) {
-            Ok(()) => pending.push((pid, expected_starttime_ticks)),
-            Err(err) => {
-                let msg = format!("{err:#}");
-                if msg.contains("refusing to signal") || msg.contains("does not look like") {
-                    tracing::warn!(
-                        "stale session pid {} detected (not an enclave process); treating as already stopped",
-                        pid
-                    );
-                    result.stopped_pids.insert(pid);
-                    namespace_cache::invalidate(pid, expected_starttime_ticks);
-                    if let Some(starttime_ticks) = expected_starttime_ticks {
-                        persistent::invalidate(pid, starttime_ticks);
-                    }
-                    continue;
+            Ok(process::SignalTarget::Signallable) => pending.push((pid, expected_starttime_ticks)),
+            Ok(process::SignalTarget::Stale(reason)) => {
+                tracing::warn!(
+                    "stale session pid {} detected ({reason}); treating as already stopped",
+                    pid
+                );
+                result.stopped_pids.insert(pid);
+                namespace_cache::invalidate(pid, expected_starttime_ticks);
+                if let Some(starttime_ticks) = expected_starttime_ticks {
+                    persistent::invalidate(pid, starttime_ticks);
                 }
-                return Err(err);
+                continue;
             }
+            Err(err) => return Err(err),
         }
     }
 
@@ -82,7 +79,9 @@ where
     // signal so a surviving runtime cannot make the whole sandbox stop fail.
     let still_running = collect_running_targets(&pending);
     for (pid, expected_starttime_ticks) in &still_running {
-        if process::verify_signal_target(*pid, *expected_starttime_ticks).is_ok() {
+        let signallable = process::verify_signal_target(*pid, *expected_starttime_ticks)
+            .is_ok_and(|target| target.is_signallable());
+        if signallable {
             process::send_signal(*pid, libc::SIGKILL)?;
         }
     }

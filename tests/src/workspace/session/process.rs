@@ -125,3 +125,28 @@ fn runtime_cmdline_detection_accepts_bootstrap_helper() {
 fn runtime_cmdline_detection_rejects_unrelated_process() {
     assert!(!looks_like_enclave_runtime_cmdline("/usr/bin/bash -lc env"));
 }
+
+#[test]
+fn a_live_pid_that_is_not_an_enclave_runtime_is_reported_as_stale() {
+    // This test binary is alive and owned by the current user, but its command
+    // line is not an Enclave runtime, so the record naming it is stale.
+    let target = verify_signal_target(std::process::id(), None).expect("inspect self");
+    assert!(matches!(
+        target,
+        SignalTarget::Stale(StaleTarget::NotEnclaveProcess)
+    ));
+}
+
+#[test]
+fn a_pid_whose_start_time_does_not_match_is_signallable() {
+    // A reused pid is not the process the record described, so there is nothing
+    // to refuse: the recorded process is already gone.
+    let target = verify_signal_target(std::process::id(), Some(0)).expect("inspect self");
+    assert!(target.is_signallable());
+}
+
+#[test]
+fn a_pid_that_no_longer_exists_is_signallable() {
+    let target = verify_signal_target(u32::MAX, None).expect("inspect missing pid");
+    assert!(target.is_signallable());
+}
