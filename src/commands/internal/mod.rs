@@ -1,3 +1,4 @@
+mod runtime_init;
 mod session;
 
 use std::ffi::CString;

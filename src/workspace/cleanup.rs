@@ -369,12 +369,16 @@ pub(super) fn run_workspace_stop_cleanup(
     let sandbox = cleanup.sandbox;
 
     if let Some(pid) = workspace.runtime_pid {
+        let cgroups = crate::perf::Timer::new("workspace.stop.cgroups");
         remove_workspace_cgroups(&sandbox, &workspace.id, pid)?;
+        drop(cgroups);
     }
 
     if !network_already_cleaned {
         if let Some(ip) = workspace.assigned_ip.as_deref() {
+            let network = crate::perf::Timer::new("workspace.stop.network");
             let report = crate::network::teardown_workspace_network(ip, &workspace.id);
+            drop(network);
             if !report.is_complete() {
                 bail!("{}", format_network_cleanup_error(&report));
             }
@@ -388,11 +392,15 @@ pub(super) fn run_workspace_stop_cleanup(
     // `/tmp` is backed by the workspace disk image, so it must be cleared
     // before that image is unmounted.
     if workspace.clear_tmp_on_restart {
+        let reset = crate::perf::Timer::new("workspace.stop.tmp_reset");
         crate::workspace::reset_workspace_tmp(&workspace)
             .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?;
+        drop(reset);
     }
+    let unmount = crate::perf::Timer::new("workspace.stop.unmount");
     crate::workspace::ensure_workspace_storage_unmounted(&workspace)
         .context("failed to unmount workspace storage")?;
+    drop(unmount);
     Ok(())
 }
 

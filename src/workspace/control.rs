@@ -588,13 +588,24 @@ fn launch_workspace_runtime(
     selinux_label: Option<&str>,
     network_plan: NetworkStartPlan,
 ) -> Result<WorkspaceRuntimeStart> {
+    // Each phase below is on the user-visible startup critical path. Timing
+    // them separately is what makes a slow start attributable to storage,
+    // namespace launch, cgroups, auth, or networking instead of "startup".
+    let storage = crate::perf::Timer::new("workspace.start.storage");
     crate::workspace::ensure_workspace_storage_ready(workspace_snapshot)?;
+    drop(storage);
+
+    let launch = crate::perf::Timer::new("workspace.start.session");
     let session_info = session::start_session(workspace_snapshot, apparmor_profile, selinux_label)?;
+    drop(launch);
+
+    let limits = crate::perf::Timer::new("workspace.start.cgroup");
     if let Err(err) = runtime_limits::apply_workspace_runtime_constraints(
         sandbox_snapshot,
         workspace_snapshot,
         session_info.pid,
     ) {
+        drop(limits);
         if let Err(stop_err) =
             session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
         {
@@ -612,7 +623,9 @@ fn launch_workspace_runtime(
         }
         return Err(err).context("failed to apply workspace cgroup limits");
     }
+    drop(limits);
 
+    let auth = crate::perf::Timer::new("workspace.start.auth");
     let workspace_rootfs_path = format!("/proc/{}/root", session_info.pid);
     let auth_manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
     if let Err(err) = auth_manager.sync_workspace_auth(
@@ -620,6 +633,7 @@ fn launch_workspace_runtime(
         &workspace_snapshot.auth_providers,
         &workspace_snapshot.env_tokens,
     ) {
+        drop(auth);
         if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
             sandbox_snapshot,
             &workspace_snapshot.id,
@@ -638,7 +652,9 @@ fn launch_workspace_runtime(
         return Err(err)
             .context("failed to sync workspace auth; attempted to stop workspace session");
     }
+    drop(auth);
 
+    let network = crate::perf::Timer::new("workspace.start.network");
     let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
     let assigned_ip = match network_plan {
         NetworkStartPlan::AllocateFromUsedIps(used_ips) => {
@@ -650,6 +666,7 @@ fn launch_workspace_runtime(
             ) {
                 Ok(ip) => ip,
                 Err(err) => {
+                    drop(network);
                     if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
                         sandbox_snapshot,
                         &workspace_snapshot.id,
@@ -674,6 +691,7 @@ fn launch_workspace_runtime(
             }
         }
     };
+    drop(network);
 
     Ok(WorkspaceRuntimeStart {
         pid: session_info.pid,
@@ -710,14 +728,18 @@ pub fn stop_workspace(
         format!("{}/{}", sandbox_id, workspace_id),
     )?;
     journal.phase("stop_runtime")?;
+    let stop_runtime = crate::perf::Timer::new("workspace.stop.runtime");
     if let Some(pid) = current.runtime_pid {
         if let Err(error) = session::stop_session(pid, current.runtime_starttime_ticks) {
+            drop(stop_runtime);
             let _ = journal.fail(format!("{error:#}"));
             return Err(error);
         }
     }
+    drop(stop_runtime);
 
     journal.phase("cleanup_resources")?;
+    let cleanup_phase = crate::perf::Timer::new("workspace.stop.cleanup");
     let result = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
@@ -744,6 +766,7 @@ pub fn stop_workspace(
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
         Ok(result)
     });
+    drop(cleanup_phase);
     match result {
         Ok(metadata) => {
             journal.succeed()?;

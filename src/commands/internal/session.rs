@@ -298,10 +298,7 @@ fn run_workspace_session_loop_inner(old_root: &Path, ready_file: &Path) -> Resul
     crate::workspace::session::detach_old_root(old_root)?;
     crate::workspace::session::apply_session_restrictions()?;
     signal_ready(ready_handle)?;
-
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(3600));
-    }
+    super::runtime_init::run_runtime_init_loop()
 }
 
 fn signal_ready(mut ready_handle: File) -> Result<()> {
