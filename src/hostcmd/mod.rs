@@ -15,17 +15,29 @@
 //! Commands that are expected to be long lived (`debootstrap`, the session
 //! helper, the workspace runtime) do not belong here; they have their own
 //! supervision.
+//!
+//! The command builder is in this file; the pieces it depends on are split out:
+//! `error` for the failure and output types, `namespace` for entering another
+//! process's network namespace, `lookup` for finding an executable and reading
+//! the configured deadline, and `capture` for draining and capping the pipes.
 
 mod capture;
+mod error;
+mod lookup;
+mod namespace;
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 
 use capture::{wait_until_deadline, OUTPUT_GRACE};
+
+pub(crate) use error::{HostCommandError, HostCommandFailure, HostOutput};
+pub(crate) use lookup::{command_on_path, configured_timeout, is_timeout};
+use namespace::enter_network_namespace;
 
 /// Default deadline for a host command.
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,99 +49,6 @@ pub(crate) const MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Default cap on each of stdout and stderr.
 pub(crate) const DEFAULT_OUTPUT_CAP: usize = 1024 * 1024;
 
-/// How a host command failed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostCommandFailure {
-    /// The program could not be started at all.
-    Spawn,
-    /// The deadline expired and the command was stopped.
-    TimedOut,
-    /// The command ran to completion with a non-zero status.
-    ExitStatus,
-}
-
-/// A failed host command, carrying the detail a caller needs to report it.
-#[derive(Debug)]
-pub(crate) struct HostCommandError {
-    pub(crate) program: String,
-    pub(crate) args: Vec<String>,
-    pub(crate) kind: HostCommandFailure,
-    pub(crate) status: Option<i32>,
-    pub(crate) stderr: String,
-    pub(crate) timeout: Duration,
-}
-
-impl std::fmt::Display for HostCommandError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let command = self.describe();
-        match self.kind {
-            HostCommandFailure::Spawn => write!(formatter, "failed to run: {command}"),
-            HostCommandFailure::TimedOut => write!(
-                formatter,
-                "{command} did not finish within {:?} and was stopped",
-                self.timeout
-            ),
-            HostCommandFailure::ExitStatus => {
-                let status = self
-                    .status
-                    .map(|code| code.to_string())
-                    .unwrap_or_else(|| "signal".to_string());
-                if self.stderr.is_empty() {
-                    write!(formatter, "{command} failed (status {status})")
-                } else {
-                    write!(
-                        formatter,
-                        "{command} failed (status {status}): {}",
-                        self.stderr
-                    )
-                }
-            }
-        }
-    }
-}
-
-impl std::error::Error for HostCommandError {}
-
-impl HostCommandError {
-    /// The command line, for a report that names what was run.
-    pub(crate) fn describe(&self) -> String {
-        if self.args.is_empty() {
-            return self.program.clone();
-        }
-        format!("{} {}", self.program, self.args.join(" "))
-    }
-
-    /// True when the deadline expired rather than the command failing.
-    pub(crate) fn is_timeout(&self) -> bool {
-        self.kind == HostCommandFailure::TimedOut
-    }
-}
-
-/// The result of a host command that completed within its deadline.
-#[derive(Debug)]
-pub(crate) struct HostOutput {
-    pub(crate) status: ExitStatus,
-    pub(crate) stdout: Vec<u8>,
-    pub(crate) stderr: Vec<u8>,
-}
-
-impl HostOutput {
-    pub(crate) fn success(&self) -> bool {
-        self.status.success()
-    }
-
-    /// stdout as text, lossily decoded because command output is diagnostic.
-    pub(crate) fn stdout_text(&self) -> String {
-        String::from_utf8_lossy(&self.stdout).into_owned()
-    }
-
-    /// stderr as text, trimmed of the trailing newline commands usually add.
-    pub(crate) fn stderr_text(&self) -> String {
-        String::from_utf8_lossy(&self.stderr).trim().to_string()
-    }
-}
-
-/// One host command, with its deadline and output cap.
 #[derive(Debug)]
 pub(crate) struct HostCommand {
     program: OsString,
@@ -380,111 +299,6 @@ impl HostCommand {
         }
         .into())
     }
-}
-
-/// The deadline for a host command that does not set its own.
-///
-/// Operators can raise it for a slow host, but never past MAX_TIMEOUT.
-/// Join the network namespace of another process, from the child before exec.
-///
-/// This runs between fork and exec, so it may only call async-signal-safe
-/// functions: open, setns, and close qualify. Allocation and any Rust-level error
-/// formatting do not, which is why the failure is returned as a raw errno.
-fn enter_network_namespace(pid: u32) -> std::io::Result<()> {
-    let mut path = [0u8; 32];
-    let mut length = 0usize;
-    for byte in b"/proc/" {
-        path[length] = *byte;
-        length += 1;
-    }
-    // Render the pid without formatting machinery.
-    let mut digits = [0u8; 10];
-    let mut digit_count = 0usize;
-    let mut value = pid;
-    if value == 0 {
-        digits[0] = b'0';
-        digit_count = 1;
-    } else {
-        while value > 0 {
-            digits[digit_count] = b'0' + (value % 10) as u8;
-            digit_count += 1;
-            value /= 10;
-        }
-    }
-    for index in (0..digit_count).rev() {
-        path[length] = digits[index];
-        length += 1;
-    }
-    for byte in b"/ns/net" {
-        path[length] = *byte;
-        length += 1;
-    }
-    path[length] = 0;
-
-    let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let result = unsafe { libc::setns(fd, libc::CLONE_NEWNET) };
-    let error = std::io::Error::last_os_error();
-    unsafe { libc::close(fd) };
-    if result != 0 {
-        return Err(error);
-    }
-    Ok(())
-}
-
-fn configured_timeout() -> Duration {
-    match std::env::var("ENCLAVE_HOST_COMMAND_TIMEOUT_SECS") {
-        Ok(value) => match value.parse::<u64>() {
-            Ok(seconds) if seconds > 0 => Duration::from_secs(seconds).min(MAX_TIMEOUT),
-            _ => {
-                tracing::warn!(
-                    "ignoring ENCLAVE_HOST_COMMAND_TIMEOUT_SECS value {value}; using {:?}",
-                    DEFAULT_TIMEOUT
-                );
-                DEFAULT_TIMEOUT
-            }
-        },
-        Err(_) => DEFAULT_TIMEOUT,
-    }
-}
-
-/// Resolve a program the way a shell would, without starting one.
-///
-/// Capability probes run on every daemon start and every quota-backed workspace
-/// start. Answering them from the filesystem avoids a fork per probe and keeps
-/// the answer stable for the life of the process.
-pub(crate) fn command_on_path(program: &str) -> Option<std::path::PathBuf> {
-    let candidate = std::path::Path::new(program);
-    if candidate.is_absolute() {
-        return is_executable(candidate).then(|| candidate.to_path_buf());
-    }
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        if directory.as_os_str().is_empty() {
-            continue;
-        }
-        let candidate = directory.join(program);
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn is_executable(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-/// True when the error is a host-command deadline that expired.
-pub(crate) fn is_timeout(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<HostCommandError>()
-        .is_some_and(HostCommandError::is_timeout)
 }
 
 #[cfg(test)]
