@@ -289,6 +289,12 @@ pub struct WorkspaceLogsResult {
     /// of a slice of unrelated bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_id: Option<String>,
+    /// Whether more content is already waiting beyond this response.
+    ///
+    /// A follow poll returns a bounded chunk, so the follower needs to know
+    /// whether to come back immediately or to wait for new output.
+    #[serde(default)]
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

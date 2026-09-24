@@ -17,6 +17,15 @@ use super::types::{WorkspaceLogsResult, WorkspaceMetadata};
 
 const MAX_LOG_READ_BYTES: u64 = 1_048_576;
 
+/// Largest slice of appended log a single follow poll returns.
+///
+/// A follower polls repeatedly, so it does not need one response to carry
+/// everything: it needs the next chunk. This is well below the client's response
+/// cap even after JSON escaping, which doubles the size of a log full of
+/// newlines, so a fast writer cannot make the follower fail with an oversized
+/// response instead of printing the log.
+const MAX_LOG_DELTA_BYTES: u64 = 128 * 1024;
+
 pub fn append_workspace_command_log(
     workspace: &WorkspaceMetadata,
     cwd: &str,
@@ -86,6 +95,7 @@ pub fn workspace_logs(
                 next_offset: 0,
                 reset: offset.is_some(),
                 stream_id: None,
+                has_more: false,
             });
         }
         if let Some(offset) = offset {
@@ -108,6 +118,7 @@ pub fn workspace_logs(
             next_offset: tail_read.end_offset,
             reset: false,
             stream_id: Some(tail_read.stream_id),
+            has_more: false,
         })
     })
 }
@@ -135,20 +146,28 @@ fn read_log_delta(
             next_offset: tail_read.end_offset,
             reset: true,
             stream_id: Some(tail_read.stream_id),
+            has_more: false,
         });
     }
     file.seek(SeekFrom::Start(offset))?;
-    let mut raw = Vec::new();
-    file.read_to_end(&mut raw)?;
-    // Read the offset back from the handle rather than trusting the length taken
-    // before the read, so a write racing the read cannot make the next poll
-    // repeat bytes.
+    // Take a bounded slice rather than everything: the follower comes back for
+    // the rest, and an unbounded slice would exceed the response cap once the
+    // JSON escaping is counted.
+    let available = metadata.len().saturating_sub(offset);
+    let limit = available.min(MAX_LOG_DELTA_BYTES);
+    let mut raw = Vec::with_capacity(limit as usize);
+    std::io::Read::take(&mut file, limit).read_to_end(&mut raw)?;
+    // Read the offset back from the handle rather than computing it from the
+    // length taken before the read, so a write racing the read cannot make the
+    // next poll repeat bytes.
     let next_offset = file.stream_position()?;
     Ok(WorkspaceLogsResult {
         content: String::from_utf8_lossy(&raw).to_string(),
         next_offset,
         reset: false,
         stream_id: Some(stream_id),
+        // The slice was bounded, so anything past it is waiting.
+        has_more: limit < available,
     })
 }
 

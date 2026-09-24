@@ -21,7 +21,12 @@ pub(super) fn run_workspace_logs(
     let mut stream_id = logs.stream_id;
     let mut poll_interval = LOG_FOLLOW_POLL_INTERVAL;
     loop {
-        thread::sleep(poll_interval);
+        // When the daemon still has buffered content, come straight back for it
+        // instead of sleeping: a follower catching up on a large log should not
+        // pay the idle poll interval for every chunk.
+        if !logs.has_more {
+            thread::sleep(poll_interval);
+        }
         logs = fetch_workspace_logs_at_offset(
             ctx,
             &sandbox,
