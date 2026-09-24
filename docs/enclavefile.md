@@ -57,6 +57,21 @@ Each command runs sequentially inside the sandbox rootfs via `chroot`. If any co
 
 Because setup commands are re-run, they should be idempotent (for example `apt install -y ...`).
 
+### Setup Cache
+
+By default every setup command runs on every `enclave up` and `enclave restart`. That is the always-run contract: setup is re-applied so Enclavefile changes reach an existing sandbox, and commands must stay idempotent.
+
+Pass `--cache-setup` to skip a command whose result is already recorded for the sandbox. The cache key covers every input that can change what a command does:
+
+- the sandbox name, suite, mirror, and bootstrap method;
+- the base rootfs the command runs against, including the shared lower layer's identity, so re-importing the cache invalidates recorded results;
+- the whole setup command list, in order, so adding, removing, or reordering commands invalidates them;
+- the Enclave version that runs the commands.
+
+Each command reports whether it ran or was answered from the cache, and why, on stderr. A recorded result is per command index, so a partially completed setup resumes from the first command without a result.
+
+Use `--cache-setup` only when setup commands are known to be safe to skip after an unchanged Enclavefile digest and an unchanged rootfs.
+
 Common uses:
 - Installing packages: `apt install -y nodejs python3`
 - Installing language toolchains: `npm install -g typescript`

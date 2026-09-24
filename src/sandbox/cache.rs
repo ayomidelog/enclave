@@ -189,6 +189,22 @@ pub(crate) fn contains(cache_root: &Path, key: &str, path: &Path) -> bool {
     valid
 }
 
+/// The content identity recorded for a cache entry at the given path, when the
+/// index knows one.
+///
+/// The digest is computed once when the entry is registered, so a caller that
+/// only needs to know whether the content changed can compare digests instead of
+/// walking the tree.
+pub(crate) fn content_identity(cache_root: &Path, path: &Path) -> Option<String> {
+    let index = read(cache_root).ok()?;
+    index
+        .entries
+        .iter()
+        .find(|entry| Path::new(&entry.path) == path)
+        .map(|entry| entry.content_digest.clone())
+        .filter(|digest| !digest.is_empty())
+}
+
 fn read(cache_root: &Path) -> Result<CacheIndex> {
     let raw = fs::read(index_path(cache_root))?;
     Ok(serde_json::from_slice(&raw)?)

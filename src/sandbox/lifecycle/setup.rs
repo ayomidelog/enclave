@@ -12,12 +12,13 @@ pub fn exec_setup_command(
     selector: &str,
     command: &str,
     cache_setup: bool,
-    setup_digest: Option<&str>,
+    setup_commands: Option<&[String]>,
+    legacy_setup_digest: Option<&str>,
     setup_index: Option<u64>,
 ) -> Result<serde_json::Value> {
     use crate::registry::with_registry;
 
-    let rootfs_path = with_registry(state_dir, |registry| {
+    let (metadata, rootfs_path) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, selector)?;
         let entry = registry
             .sandboxes
@@ -25,14 +26,30 @@ pub fn exec_setup_command(
             .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
         let mut metadata = entry.metadata.clone();
         normalize_sandbox_metadata(&mut metadata);
-        Ok(crate::sandbox::effective_rootfs_path(&metadata))
+        let rootfs_path = crate::sandbox::effective_rootfs_path(&metadata);
+        Ok((metadata, rootfs_path))
     })?;
 
     let cache_marker = if cache_setup {
-        let digest = setup_digest.ok_or_else(|| anyhow!("cached setup requires setup_digest"))?;
+        // The daemon computes the key from the sandbox metadata and the ordered
+        // command list. A caller that only sends the older digest field is still
+        // honoured, so a new CLI can talk to a daemon that has not been upgraded.
+        let computed;
+        let digest = match setup_commands {
+            Some(commands) => {
+                computed = setup_cache::key_for(state_dir, &metadata, commands);
+                computed.as_str()
+            }
+            None => legacy_setup_digest
+                .ok_or_else(|| anyhow!("cached setup requires the setup command list"))?,
+        };
         let index = setup_index.ok_or_else(|| anyhow!("cached setup requires setup_index"))?;
-        if setup_cache::is_complete(Path::new(&rootfs_path), digest, index)? {
-            return Ok(serde_json::json!({"cached": true, "exit_code": 0}));
+        if setup_cache::is_complete(Path::new(&metadata.sandbox_path), digest, index)? {
+            return Ok(serde_json::json!({
+                "cached": true,
+                "exit_code": 0,
+                "reason": format!("setup result for index {index} already recorded under key {digest}"),
+            }));
         }
         Some((digest.to_string(), index))
     } else {
@@ -65,14 +82,21 @@ pub fn exec_setup_command(
         );
     }
 
+    let recorded = cache_marker.is_some();
     if let Some((digest, index)) = cache_marker {
-        setup_cache::mark_complete(Path::new(&rootfs_path), &digest, index)?;
+        setup_cache::mark_complete(Path::new(&metadata.sandbox_path), &digest, index)?;
     }
 
     Ok(serde_json::json!({
         "exit_code": exit_code,
         "stdout": stdout,
         "stderr": stderr,
+        "cached": false,
+        "reason": if recorded {
+            "no recorded setup result for this key; ran the command and recorded it"
+        } else {
+            "cached setup is disabled for this run; the command always runs"
+        },
     }))
 }
 

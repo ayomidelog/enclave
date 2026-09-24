@@ -137,12 +137,28 @@ pub(crate) fn dispatch(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let setup_digest = request.params.get("setup_digest").and_then(Value::as_str);
+            let setup_commands = request
+                .params
+                .get("setup_commands")
+                .and_then(Value::as_array)
+                .map(|commands| {
+                    commands
+                        .iter()
+                        .map(|command| {
+                            command.as_str().map(str::to_string).ok_or_else(|| {
+                                anyhow::anyhow!("setup_commands entries must be strings")
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
             let setup_index = request.params.get("setup_index").and_then(Value::as_u64);
             sandbox::exec_setup_command(
                 &config.state_dir,
                 selector,
                 command,
                 cache_setup,
+                setup_commands.as_deref(),
                 setup_digest,
                 setup_index,
             )

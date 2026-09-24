@@ -9,7 +9,8 @@ mod setup_cache;
 mod types;
 mod util;
 
-pub(crate) use bootstrap::{ensure_rootfs_cache, has_rootfs_content};
+pub(crate) use bootstrap::{ensure_rootfs_cache, has_rootfs_content, rootfs_cache_dir};
+pub(crate) use cache::content_identity as rootfs_cache_content_identity;
 pub(crate) use cache::register as register_rootfs_cache;
 pub use lifecycle::{
     create_sandbox, create_sandbox_with_options, destroy_sandbox, destroy_sandbox_with_mode,

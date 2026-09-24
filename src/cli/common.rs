@@ -19,6 +19,11 @@ pub struct DoctorArgs {
 pub struct UpArgs {
     #[arg(long)]
     pub rebuild: bool,
+    /// Skip a setup command whose result is already recorded for this sandbox.
+    ///
+    /// The recorded result is keyed on the sandbox definition, the base rootfs,
+    /// the ordered command list, and the Enclave version, so any change to those
+    /// makes the command run again.
     #[arg(long)]
     pub cache_setup: bool,
 }
@@ -27,6 +32,7 @@ pub struct UpArgs {
 pub struct RestartArgs {
     #[arg(long)]
     pub rebuild: bool,
+    /// Skip a setup command whose result is already recorded for this sandbox.
     #[arg(long)]
     pub cache_setup: bool,
 }
