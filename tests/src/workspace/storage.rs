@@ -204,6 +204,10 @@ fn disk_resize_grows_real_ext4_image() {
         std::fs::metadata(&image).expect("image metadata").len(),
         expanded_bytes
     );
+    assert!(
+        super::ext4::filesystem_size(&image).expect("read ext4 size") >= expanded_bytes,
+        "the ext4 filesystem must grow with the image"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

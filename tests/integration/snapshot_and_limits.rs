@@ -489,6 +489,42 @@ fn workspace_disk_backed_tmp_is_linked_writable_and_uses_workspace_storage() {
     );
 }
 
+/// Size of the ext2/3/4 filesystem recorded in a disk image's superblock.
+///
+/// Resizing an image can grow the file while leaving the filesystem inside it
+/// at the previous size, so tests assert the filesystem itself reached the
+/// requested allocation instead of trusting the image file size.
+fn ext4_filesystem_size(image: &Path) -> std::io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(image)?;
+    let mut superblock = [0u8; 1024];
+    file.seek(SeekFrom::Start(1024))?;
+    file.read_exact(&mut superblock)?;
+    let magic = u16::from_le_bytes([superblock[0x38], superblock[0x39]]);
+    if magic != 0xEF53 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} is not an ext2/3/4 filesystem", image.display()),
+        ));
+    }
+    let blocks_low = u64::from(u32::from_le_bytes(
+        superblock[0x04..0x08].try_into().expect("4 bytes"),
+    ));
+    let log_block_size = u32::from_le_bytes(superblock[0x18..0x1c].try_into().expect("4 bytes"));
+    let block_size = 1024u64 << log_block_size;
+    let incompat = u32::from_le_bytes(superblock[0x60..0x64].try_into().expect("4 bytes"));
+    let blocks = if incompat & 0x80 != 0 {
+        blocks_low
+            | (u64::from(u32::from_le_bytes(
+                superblock[0x150..0x154].try_into().expect("4 bytes"),
+            )) << 32)
+    } else {
+        blocks_low
+    };
+    Ok(blocks * block_size)
+}
+
 #[test]
 #[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
 fn workspace_disk_resize_grows_running_managed_storage() {
@@ -557,6 +593,15 @@ fn workspace_disk_resize_grows_running_managed_storage() {
             .expect("disk image metadata")
             .len(),
         expanded_bytes
+    );
+    // The image file and the ext4 filesystem inside it must agree. A resize that
+    // grows only the image leaves the workspace failing its readiness checks.
+    let filesystem_bytes =
+        ext4_filesystem_size(&Path::new(&workspace.workspace_path).join("fs.img"))
+            .expect("read ext4 filesystem size");
+    assert!(
+        filesystem_bytes >= expanded_bytes,
+        "ext4 filesystem is {filesystem_bytes} bytes, below the requested {expanded_bytes}"
     );
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
