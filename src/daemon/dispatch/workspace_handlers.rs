@@ -386,6 +386,8 @@ pub(super) fn dispatch_workspace_logs(params: &Value, config: &DaemonConfig) -> 
         .get("tail")
         .and_then(Value::as_u64)
         .map(|v| v as usize);
-    let result = workspace::workspace_logs(&config.state_dir, sandbox, workspace_selector, tail)?;
+    let offset = params.get("offset").and_then(Value::as_u64);
+    let result =
+        workspace::workspace_logs(&config.state_dir, sandbox, workspace_selector, tail, offset)?;
     Ok(serde_json::to_value(result)?)
 }

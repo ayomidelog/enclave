@@ -64,6 +64,7 @@ pub fn workspace_logs(
     sandbox_selector: &str,
     workspace_selector: &str,
     tail: Option<usize>,
+    offset: Option<u64>,
 ) -> Result<WorkspaceLogsResult> {
     with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
@@ -81,7 +82,12 @@ pub fn workspace_logs(
         if !log_path.exists() {
             return Ok(WorkspaceLogsResult {
                 content: String::new(),
+                next_offset: 0,
+                reset: offset.is_some(),
             });
+        }
+        if let Some(offset) = offset {
+            return read_log_delta(&log_path, offset);
         }
 
         let (raw, truncated) = read_tail_bytes(&log_path, MAX_LOG_READ_BYTES)?;
@@ -95,7 +101,36 @@ pub fn workspace_logs(
                 MAX_LOG_READ_BYTES, content
             );
         }
-        Ok(WorkspaceLogsResult { content })
+        let next_offset = fs::metadata(&log_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        Ok(WorkspaceLogsResult {
+            content,
+            next_offset,
+            reset: false,
+        })
+    })
+}
+
+fn read_log_delta(path: &Path, offset: u64) -> Result<WorkspaceLogsResult> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let len = file.metadata()?.len();
+    if len < offset {
+        let (content, _) = read_tail_bytes(path, MAX_LOG_READ_BYTES)?;
+        return Ok(WorkspaceLogsResult {
+            content,
+            next_offset: len,
+            reset: true,
+        });
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)?;
+    Ok(WorkspaceLogsResult {
+        content: String::from_utf8_lossy(&raw).to_string(),
+        next_offset: len,
+        reset: false,
     })
 }
 

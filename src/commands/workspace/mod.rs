@@ -374,16 +374,12 @@ fn run_workspace_logs(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceLogsArgs
         return Ok(());
     }
 
-    let mut previous = if args.tail.is_some() {
-        fetch_workspace_logs(ctx, &sandbox, &workspace, None)?.content
-    } else {
-        logs.content
-    };
+    let mut offset = logs.next_offset;
     let mut poll_interval = LOG_FOLLOW_POLL_INTERVAL;
     loop {
         thread::sleep(poll_interval);
-        logs = fetch_workspace_logs(ctx, &sandbox, &workspace, None)?;
-        if logs.content == previous {
+        logs = fetch_workspace_logs_at_offset(ctx, &sandbox, &workspace, offset)?;
+        if logs.content.is_empty() && !logs.reset {
             poll_interval = std::cmp::min(
                 poll_interval.saturating_mul(2),
                 LOG_FOLLOW_MAX_POLL_INTERVAL,
@@ -391,33 +387,13 @@ fn run_workspace_logs(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceLogsArgs
             continue;
         }
         poll_interval = LOG_FOLLOW_POLL_INTERVAL;
-        if logs.content.starts_with(&previous) {
-            print!("{}", &logs.content[previous.len()..]);
-        } else if logs.content.len() < previous.len() {
+        if logs.reset {
             print!("\n[enclave] log stream reset; showing current log content\n");
-            print!("{}", logs.content);
-        } else {
-            let common_prefix = common_prefix_byte_len(&previous, &logs.content);
-            if common_prefix == 0 {
-                print!("\n[enclave] log stream changed; showing current log content\n");
-            }
-            print!("{}", &logs.content[common_prefix..]);
         }
+        print!("{}", logs.content);
         std::io::stdout().flush()?;
-        previous = logs.content;
+        offset = logs.next_offset;
     }
-}
-
-fn common_prefix_byte_len(left: &str, right: &str) -> usize {
-    let mut len = 0usize;
-    for ((left_offset, left_char), (_, right_char)) in left.char_indices().zip(right.char_indices())
-    {
-        if left_char != right_char {
-            break;
-        }
-        len = left_offset + left_char.len_utf8();
-    }
-    len
 }
 
 fn fetch_workspace_logs(
@@ -433,6 +409,24 @@ fn fetch_workspace_logs(
             "sandbox": sandbox,
             "workspace": workspace,
             "tail": tail,
+        }),
+    )?;
+    serde_json::from_value(response).map_err(Into::into)
+}
+
+fn fetch_workspace_logs_at_offset(
+    ctx: &WorkspaceCommandContext<'_>,
+    sandbox: &str,
+    workspace: &str,
+    offset: u64,
+) -> Result<WorkspaceLogsResult> {
+    let response = send_managed(
+        ctx.socket,
+        "workspace.logs",
+        json!({
+            "sandbox": sandbox,
+            "workspace": workspace,
+            "offset": offset,
         }),
     )?;
     serde_json::from_value(response).map_err(Into::into)

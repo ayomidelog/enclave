@@ -239,6 +239,10 @@ pub struct WorkspaceRuntimeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceLogsResult {
     pub content: String,
+    #[serde(default)]
+    pub next_offset: u64,
+    #[serde(default)]
+    pub reset: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
