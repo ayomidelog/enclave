@@ -277,12 +277,19 @@ pub(crate) fn run_wipe(socket: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let total = sandboxes.len();
-    for sandbox in sandboxes {
-        tracing::info!("destroying sandbox '{}'...", sandbox.id);
-        send_managed(socket, "sandbox.destroy", json!({ "sandbox": sandbox.id }))?;
+    let response = send_managed(socket, "sandbox.wipe", json!({}))?;
+    let removed = response
+        .get("removed")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let errors = response
+        .get("errors")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    println!("deleted {removed} sandboxes; {errors} failed");
+    if errors > 0 {
+        bail!("sandbox wipe completed with {errors} error(s)");
     }
-    println!("deleted {total} sandboxes");
     Ok(())
 }
 

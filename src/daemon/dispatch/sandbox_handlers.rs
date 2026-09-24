@@ -173,3 +173,31 @@ pub(super) fn dispatch_sandbox_destroy(
     let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
     Ok(json!({ "removed": removed }))
 }
+
+#[derive(Debug, serde::Serialize)]
+struct SandboxWipeReport {
+    removed: Vec<String>,
+    errors: Vec<String>,
+}
+
+pub(super) fn dispatch_sandbox_wipe(
+    config: &DaemonConfig,
+    port_publisher: &Arc<PortPublisher>,
+) -> Result<Value> {
+    let sandboxes = sandbox::list_sandbox_items(&config.state_dir)?;
+    let mut report = SandboxWipeReport {
+        removed: Vec::new(),
+        errors: Vec::new(),
+    };
+    for item in sandboxes {
+        match dispatch_sandbox_destroy(
+            &serde_json::json!({"sandbox": item.id}),
+            config,
+            port_publisher,
+        ) {
+            Ok(_) => report.removed.push(item.id),
+            Err(error) => report.errors.push(format!("{}: {error:#}", item.id)),
+        }
+    }
+    Ok(serde_json::to_value(report)?)
+}

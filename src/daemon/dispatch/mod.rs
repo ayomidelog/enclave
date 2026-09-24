@@ -25,7 +25,7 @@ use ports::{
 use sandbox_handlers::{
     dispatch_sandbox_create, dispatch_sandbox_destroy, dispatch_sandbox_pause,
     dispatch_sandbox_resume, dispatch_sandbox_start, dispatch_sandbox_status,
-    dispatch_sandbox_stop, dispatch_sandbox_update,
+    dispatch_sandbox_stop, dispatch_sandbox_update, dispatch_sandbox_wipe,
 };
 use snapshots::{
     dispatch_workspace_restore, dispatch_workspace_snapshot, dispatch_workspace_snapshot_export,
@@ -225,6 +225,7 @@ pub(crate) fn dispatch(
         Action::SandboxResume => dispatch_sandbox_resume(&request.params, config, port_publisher),
         Action::SandboxStatus => dispatch_sandbox_status(&request.params, config),
         Action::SandboxDestroy => dispatch_sandbox_destroy(&request.params, config, port_publisher),
+        Action::SandboxWipe => dispatch_sandbox_wipe(config, port_publisher),
         Action::SandboxList => {
             let sandboxes = sandbox::list_sandbox_items(&config.state_dir)?;
             Ok(serde_json::to_value(sandboxes)?)
