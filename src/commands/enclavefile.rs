@@ -204,13 +204,17 @@ fn rollback_failed_up(
 }
 
 fn start_sandbox_if_stopped(socket: &Path, name: &str) -> Result<()> {
-    if let Err(err) = send(socket, "sandbox.start", json!({ "sandbox": name })) {
-        let msg = format!("{err:#}");
-        if !msg.contains("already running") {
-            return Err(err);
+    match send(socket, "sandbox.start", json!({ "sandbox": name })) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if sandbox_status_by_name(socket, name)?
+                .is_some_and(|status| status == SandboxStatus::Running)
+            {
+                return Ok(());
+            }
+            Err(error)
         }
     }
-    Ok(())
 }
 
 fn create_and_setup_sandbox(socket: &Path, ef: &Enclavefile, cache_setup: bool) -> Result<()> {
@@ -291,24 +295,26 @@ fn setup_digest(ef: &Enclavefile) -> String {
 
 fn teardown_sandbox(socket: &Path, name: &str) -> Result<()> {
     tracing::info!("stopping sandbox '{}'...", name);
-    if let Err(err) = send(socket, "sandbox.stop", json!({ "sandbox": name })) {
-        let msg = format!("{err:#}");
-        if !msg.contains("already stopped") && !msg.contains("not found") {
-            return Err(err);
-        }
+    match send(socket, "sandbox.stop", json!({ "sandbox": name })) {
+        Ok(_) => Ok(()),
+        Err(error) => match sandbox_status_by_name(socket, name)? {
+            None | Some(SandboxStatus::Stopped) => Ok(()),
+            Some(_) => Err(error),
+        },
     }
-    Ok(())
 }
 
 fn destroy_sandbox(socket: &Path, name: &str) -> Result<()> {
     tracing::info!("destroying sandbox '{}'...", name);
-    if let Err(err) = send(socket, "sandbox.destroy", json!({ "sandbox": name })) {
-        let msg = format!("{err:#}");
-        if !msg.contains("not found") {
-            return Err(err);
+    match send(socket, "sandbox.destroy", json!({ "sandbox": name })) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if sandbox_status_by_name(socket, name)?.is_none() {
+                return Ok(());
+            }
+            Err(error)
         }
     }
-    Ok(())
 }
 
 fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Result<()> {
