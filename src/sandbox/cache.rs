@@ -84,7 +84,61 @@ pub(crate) fn rebuild(cache_root: &Path) -> Result<()> {
 
 pub(crate) fn ensure(cache_root: &Path) -> Result<()> {
     if !index_path(cache_root).is_file() {
-        rebuild(cache_root)?;
+        return rebuild(cache_root);
+    }
+    adopt_unindexed_entries(cache_root)
+}
+
+/// Register rootfs directories that are present on disk but missing from the
+/// index.
+///
+/// A cache directory can appear without the index being rebuilt: an operator
+/// may extract a rootfs tarball directly into `rootfs-cache`, or an index may
+/// be copied alongside only some of its entries. Ignoring those directories
+/// makes a valid rootfs unusable for reasons the error message cannot explain.
+fn adopt_unindexed_entries(cache_root: &Path) -> Result<()> {
+    let mut index = read(cache_root)?;
+    let mut adopted = 0usize;
+    for entry in fs::read_dir(cache_root)
+        .with_context(|| format!("failed to read rootfs cache {}", cache_root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !entry.file_type()?.is_dir() || !has_required_dirs(&path) {
+            continue;
+        }
+        let key = entry.file_name().to_string_lossy().into_owned();
+        if index
+            .entries
+            .iter()
+            .any(|existing| existing.key == key && Path::new(&existing.path) == path)
+        {
+            continue;
+        }
+        tracing::info!(
+            "rootfs cache: registering unindexed suite '{}' at {}",
+            key,
+            path.display()
+        );
+        index.entries.push(CacheEntry {
+            key: key.clone(),
+            path: path.to_string_lossy().into_owned(),
+            fingerprint: fingerprint(&path)?,
+            suite: key,
+            architecture: std::env::consts::ARCH.to_string(),
+            source: path.to_string_lossy().into_owned(),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            content_digest: content_digest(&path)?,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+        });
+        adopted += 1;
+    }
+    if adopted > 0 {
+        index.version = 1;
+        index
+            .entries
+            .sort_by(|left, right| left.key.cmp(&right.key));
+        persist(cache_root, &index)?;
     }
     Ok(())
 }
@@ -235,7 +289,7 @@ fn collect_paths(path: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains, index_path, rebuild, register};
+    use super::{contains, ensure, index_path, rebuild, register};
     use std::fs;
     use std::path::PathBuf;
 
@@ -290,6 +344,25 @@ mod tests {
         assert!(!entry["created_at"].as_str().unwrap().is_empty());
         assert_eq!(entry["content_digest"].as_str().unwrap().len(), 16);
         assert_eq!(entry["tool_version"], env!("CARGO_PKG_VERSION"));
+        let _ = fs::remove_dir_all(cache_root);
+    }
+
+    #[test]
+    fn ensure_adopts_directories_missing_from_the_index() {
+        let cache_root = temporary_cache();
+        // Build an index that only knows about one suite, then add a second
+        // rootfs directory the way an operator extracting a tarball would.
+        rebuild(&cache_root).unwrap();
+        let manual = cache_root.join("manual");
+        for directory in ["bin", "etc", "usr"] {
+            fs::create_dir_all(manual.join(directory)).unwrap();
+        }
+        assert!(!contains(&cache_root, "manual", &manual));
+
+        ensure(&cache_root).unwrap();
+
+        assert!(contains(&cache_root, "manual", &manual));
+        assert!(contains(&cache_root, "suite", &cache_root.join("suite")));
         let _ = fs::remove_dir_all(cache_root);
     }
 }
