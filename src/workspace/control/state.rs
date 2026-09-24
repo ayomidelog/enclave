@@ -158,6 +158,49 @@ pub(crate) fn resolve_workspace_id(sandbox: &RegistrySandbox, selector: &str) ->
     }
 }
 
+/// Release the host resources a workspace still owns after its runtime is gone.
+///
+/// A runtime that died without a clean stop leaves its cgroup, its veth and
+/// anti-spoofing rules, its storage mounts, and its private tmp behind. The
+/// registry record is the only description of what to release, so the teardown
+/// runs before the record is cleared. A failed teardown keeps the record instead
+/// of claiming a clean stop while resources are still held.
+fn release_orphaned_workspace_resources(
+    sandbox: &SandboxMetadata,
+    workspace: &WorkspaceMetadata,
+    reason: &str,
+) -> bool {
+    let mut workspace = workspace.clone();
+    // An address outside the Enclave subnet cannot own an Enclave interface, so
+    // there is nothing to release for it. Treating it as a release failure would
+    // keep the record for a resource that does not exist and block the recovery
+    // of everything else the workspace still holds.
+    if let Some(ip) = workspace.assigned_ip.clone() {
+        if crate::network::ipam::parse_host_octet(&ip).is_none() {
+            tracing::warn!(
+                "reconcile: {reason} workspace '{}' recorded the non-Enclave address {ip}; skipping its network release",
+                workspace.id
+            );
+            workspace.assigned_ip = None;
+        }
+    }
+    if let Err(error) = cleanup::run_workspace_stop_cleanup(
+        WorkspaceStopCleanup {
+            sandbox: sandbox.clone(),
+            workspace: workspace.clone(),
+        },
+        false,
+        false,
+    ) {
+        tracing::warn!(
+            "reconcile: cannot release the resources of {reason} workspace '{}': {error:#}",
+            workspace.id
+        );
+        return false;
+    }
+    true
+}
+
 pub(crate) fn reconcile_workspace_runtime_state(
     sandbox: &SandboxMetadata,
     workspace: &mut WorkspaceMetadata,
@@ -220,13 +263,24 @@ pub(crate) fn reconcile_workspace_runtime_state(
     }
 
     if !workspace.status.is_running() {
-        let stale_runtime_state = workspace.runtime_pid.is_some()
-            || workspace.runtime_starttime_ticks.is_some()
-            || workspace.assigned_ip.is_some()
-            || workspace.namespace_refs.mount != "unassigned"
-            || workspace.namespace_refs.pid != "unassigned"
+        // A stopped workspace keeps no runtime identity. A recorded PID or an
+        // assigned IP is a leftover from a stop that did not finish, and either
+        // one means the host may still hold the workspace's cgroup, interface,
+        // firewall rules, or mounts. Namespace reference files count too, but an
+        // empty reference is the normal post-stop value rather than a leftover.
+        let holds_host_resources =
+            workspace.runtime_pid.is_some() || workspace.assigned_ip.is_some();
+        let namespace_refs_recorded = |value: &str| !value.is_empty() && value != "unassigned";
+        let stale_runtime_state = holds_host_resources
+            || namespace_refs_recorded(&workspace.namespace_refs.mount)
+            || namespace_refs_recorded(&workspace.namespace_refs.pid)
             || session::namespace_ref_files_exist(workspace);
         if !stale_runtime_state {
+            return Ok(false);
+        }
+        if holds_host_resources
+            && !release_orphaned_workspace_resources(sandbox, workspace, "stopped")
+        {
             return Ok(false);
         }
         workspace.runtime_pid = None;
@@ -242,11 +296,20 @@ pub(crate) fn reconcile_workspace_runtime_state(
         .zip(workspace.runtime_starttime_ticks)
         .is_some_and(|(pid, starttime)| session::process_matches(pid, Some(starttime)));
     if !runtime_is_live {
+        // The record says the workspace is running but its runtime is gone, so
+        // everything the runtime owned is now unowned. Release it before the
+        // record is cleared: the record is the only description of what to
+        // release, and clearing it first would leave the interface, its firewall
+        // rules, and its mounts on the host with nothing left to find them by.
+        if !release_orphaned_workspace_resources(sandbox, workspace, "dead-runtime") {
+            return Ok(false);
+        }
         workspace.status = WorkspaceStatus::Stopped;
         workspace.runtime_pid = None;
         workspace.runtime_starttime_ticks = None;
         workspace.assigned_ip = None;
         clear_workspace_namespace_refs(workspace);
+        remove_workspace_runtime_markers(workspace);
         persist_workspace_metadata(workspace)?;
         return Ok(true);
     }

@@ -378,6 +378,45 @@ fn destroy_all_workspaces_returns_empty_plan_without_spawning_cleanup_workers() 
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
+/// A workspace whose runtime died must not keep the interface, rules, or mounts
+/// the runtime owned.
+///
+/// The record is the only description of what to release, so reconcile releases
+/// first and clears the record second. When the release cannot be proven — for
+/// example without privileges to read the firewall — the record must survive, so
+/// the resources stay findable instead of being silently orphaned.
+#[test]
+fn reconcile_releases_host_resources_for_a_dead_runtime() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-reconcile-dead-runtime-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+    let sandbox = sandbox_metadata(&temp_dir);
+    fs::create_dir_all(&sandbox.sandbox_path).unwrap();
+    let workspace_dir = std::path::PathBuf::from(&sandbox.workspaces_path).join("workspace-id");
+    fs::create_dir_all(workspace_dir.join("ns")).unwrap();
+
+    let mut workspace = workspace_metadata(&sandbox, &workspace_dir, None);
+    workspace.status = WorkspaceStatus::Running;
+    workspace.runtime_pid = Some(u32::MAX);
+    workspace.runtime_starttime_ticks = Some(1);
+    workspace.assigned_ip = Some("10.200.0.42".to_string());
+
+    let repaired = reconcile_workspace_runtime_state(&sandbox, &mut workspace).unwrap();
+    if repaired {
+        assert_eq!(workspace.status, WorkspaceStatus::Stopped);
+        assert!(workspace.runtime_pid.is_none());
+        assert!(workspace.runtime_starttime_ticks.is_none());
+        assert!(workspace.assigned_ip.is_none());
+    } else {
+        assert_eq!(workspace.status, WorkspaceStatus::Running);
+        assert_eq!(workspace.runtime_pid, Some(u32::MAX));
+        assert_eq!(workspace.assigned_ip.as_deref(), Some("10.200.0.42"));
+    }
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
 #[test]
 fn reconcile_clears_dead_runtime_and_namespace_references() {
     let temp_dir = std::env::temp_dir().join(format!(
