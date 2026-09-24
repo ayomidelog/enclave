@@ -1,4 +1,4 @@
-use super::*;
+use super::format::column_width;
 
 #[test]
 fn column_width_uses_min_for_empty_items() {
