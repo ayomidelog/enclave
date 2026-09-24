@@ -36,7 +36,7 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
                 ForkResult::Parent { .. } => {
                     std::process::exit(0);
                 }
-                ForkResult::Child => exec_workspace_session_script(&args),
+                ForkResult::Child => exec_workspace_session_init(&args),
             }
         }
     }
@@ -104,34 +104,64 @@ pub(crate) fn write_proc_file(path: &str, contents: &str) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("failed to write {}", path))
 }
 
-pub(crate) fn exec_workspace_session_script(args: &WorkspaceSessionLaunchArgs) -> Result<()> {
-    let err = Command::new("/bin/sh")
-        .arg("-ceu")
-        .arg(crate::workspace::session::WORKSPACE_SESSION_SCRIPT)
-        .arg("enclave-workspace-session")
+/// Become the in-namespace session init, which finishes the setup in this process.
+///
+/// The work that used to happen in a shell script runs here instead: one exec of
+/// our own binary replaces the shell plus the mount, hostname, and readlink
+/// processes it spawned, all of which were on the workspace start critical path.
+pub(crate) fn exec_workspace_session_init(args: &WorkspaceSessionLaunchArgs) -> Result<()> {
+    let mut command = Command::new(&args.session_helper);
+    command
+        .arg("internal")
+        .arg("workspace-session-init")
+        .arg("--rootfs")
         .arg(&args.rootfs)
+        .arg("--workspace-fs")
         .arg(&args.workspace_fs)
-        .arg(&args.mount_target)
-        .arg(&args.mount_ref)
-        .arg(&args.pid_ref)
-        .arg(&args.pid_file)
-        .arg(&args.ready_file)
-        .arg(&args.cpu_limit)
-        .arg(&args.memory_limit_kb)
-        .arg(&args.proc_limit)
-        .arg(&args.nofile_limit)
-        .arg(&args.workspace_hostname)
-        .arg(&args.session_helper)
-        .arg(&args.apparmor_profile)
-        .arg(&args.selinux_label)
-        .arg(&args.workspace_idmap_option)
-        .arg(if args.disk_backed_tmp { "true" } else { "" })
-        .arg(&args.root_overlay_upper)
-        .arg(&args.root_overlay_work)
-        .arg(&args.root_overlay_merged)
+        .arg("--workspace-id")
         .arg(&args.workspace_id)
-        .exec();
-    Err(err).context("failed to exec workspace session bootstrap script")
+        .arg("--mount-target")
+        .arg(&args.mount_target)
+        .arg("--mount-ref")
+        .arg(&args.mount_ref)
+        .arg("--pid-ref")
+        .arg(&args.pid_ref)
+        .arg("--pid-file")
+        .arg(&args.pid_file)
+        .arg("--ready-file")
+        .arg(&args.ready_file)
+        .arg("--workspace-hostname")
+        .arg(&args.workspace_hostname)
+        .arg("--session-helper")
+        .arg(&args.session_helper)
+        .arg("--apparmor-profile")
+        .arg(&args.apparmor_profile)
+        .arg("--selinux-label")
+        .arg(&args.selinux_label)
+        .arg("--workspace-idmap-option")
+        .arg(&args.workspace_idmap_option)
+        .arg("--root-overlay-upper")
+        .arg(&args.root_overlay_upper)
+        .arg("--root-overlay-work")
+        .arg(&args.root_overlay_work)
+        .arg("--root-overlay-merged")
+        .arg(&args.root_overlay_merged);
+    for (flag, value) in [
+        ("--cpu-limit", Some(args.cpu_limit.as_str())),
+        ("--memory-limit-kb", Some(args.memory_limit_kb.as_str())),
+        ("--proc-limit", Some(args.proc_limit.as_str())),
+        ("--nofile-limit", Some(args.nofile_limit.as_str())),
+    ] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            command.arg(flag).arg(value);
+        }
+    }
+    if args.disk_backed_tmp {
+        command.arg("--disk-backed-tmp");
+    }
+
+    let err = command.exec();
+    Err(err).context("failed to exec the workspace session init")
 }
 
 pub(crate) fn run_workspace_session_loop(args: WorkspaceSessionLoopArgs) -> Result<()> {

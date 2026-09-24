@@ -13,14 +13,17 @@ use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::unistd::{fork, ForkResult};
 
 use crate::cli::{
-    WorkspaceSessionBootstrapArgs, WorkspaceSessionLaunchArgs, WorkspaceSessionLoopArgs,
+    WorkspaceSessionBootstrapArgs, WorkspaceSessionInitArgs, WorkspaceSessionLaunchArgs,
+    WorkspaceSessionLoopArgs,
 };
 
+mod init;
 mod launch;
 mod mounts;
 mod rootfs;
 mod tmp;
 
+pub(crate) use init::run_workspace_session_init;
 pub(crate) use launch::{
     run_workspace_session_launch, run_workspace_session_loop, run_workspace_session_loop_inner,
 };

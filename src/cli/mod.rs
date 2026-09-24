@@ -22,7 +22,8 @@ pub use common::{
 pub use daemon::{RunArgs, StartArgs};
 pub use session::{
     WorkspaceCommandInternalArgs, WorkspaceFileReceiveArgs, WorkspaceSessionBootstrapArgs,
-    WorkspaceSessionLaunchArgs, WorkspaceSessionLoopArgs, WorkspaceSessionPersistentHelperArgs,
+    WorkspaceSessionInitArgs, WorkspaceSessionLaunchArgs, WorkspaceSessionLoopArgs,
+    WorkspaceSessionPersistentHelperArgs,
 };
 pub use workspace::{
     WorkspaceCpArgs, WorkspaceCreateArgs, WorkspaceDestroyArgs, WorkspaceEnterArgs,
@@ -137,6 +138,7 @@ pub enum DaemonCommands {
 #[derive(Subcommand, Debug)]
 pub enum InternalCommands {
     WorkspaceSessionLaunch(Box<WorkspaceSessionLaunchArgs>),
+    WorkspaceSessionInit(Box<WorkspaceSessionInitArgs>),
     WorkspaceSessionBootstrap(WorkspaceSessionBootstrapArgs),
     WorkspaceSessionLoop(WorkspaceSessionLoopArgs),
     WorkspaceSessionPersistentHelper(WorkspaceSessionPersistentHelperArgs),

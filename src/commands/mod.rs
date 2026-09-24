@@ -49,6 +49,9 @@ pub fn run() -> Result<()> {
             InternalCommands::WorkspaceSessionLaunch(args) => {
                 internal::run_workspace_session_launch(*args)
             }
+            InternalCommands::WorkspaceSessionInit(args) => {
+                internal::run_workspace_session_init(*args)
+            }
             InternalCommands::WorkspaceSessionBootstrap(args) => {
                 internal::run_workspace_session_bootstrap(args)
             }

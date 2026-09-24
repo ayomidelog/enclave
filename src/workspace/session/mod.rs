@@ -2,7 +2,6 @@ mod idmap;
 mod namespace_cache;
 mod persistent;
 mod process;
-mod script;
 mod security;
 mod userns;
 
@@ -30,7 +29,6 @@ pub use process::{
     count_processes_in_pid_namespace, process_alive, process_matches, process_resource_usage,
     process_starttime_ticks, read_namespace_refs,
 };
-pub(crate) use script::WORKSPACE_SESSION_SCRIPT;
 pub(crate) use security::{
     apply_exec_restrictions, apply_session_restrictions, detach_old_root, mask_runtime_paths,
     tighten_namespace_mounts,

@@ -31,7 +31,8 @@ use crate::cli::{
 };
 
 pub(crate) use session::{
-    run_workspace_session_bootstrap, run_workspace_session_launch, run_workspace_session_loop,
+    run_workspace_session_bootstrap, run_workspace_session_init, run_workspace_session_launch,
+    run_workspace_session_loop,
 };
 
 pub(crate) use command::run_workspace_command;
