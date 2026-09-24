@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
@@ -32,12 +32,7 @@ pub fn remove_bridge_if_idle() -> Result<bool> {
         return Ok(true);
     }
 
-    let output = HostCommand::new("ip")
-        .args(["link", "show", "master", BRIDGE_NAME])
-        .run()
-        .context("failed to list bridge members")?;
-    let stdout = output.stdout_text();
-    if !stdout.trim().is_empty() {
+    if !bridge_members()?.is_empty() {
         return Ok(false);
     }
 
@@ -46,13 +41,41 @@ pub fn remove_bridge_if_idle() -> Result<bool> {
     Ok(true)
 }
 
+/// Whether the Enclave bridge interface exists.
+///
+/// This reads sysfs rather than running ip link show, because the daemon
+/// re-checks the bridge on every workspace start. The two agree by construction
+/// — both answer "is there a network interface with this name" — and the sysfs
+/// lookup costs no process.
 fn bridge_exists() -> Result<bool> {
-    let output = HostCommand::new("ip")
-        .args(["link", "show", BRIDGE_NAME])
-        .discard_output()
-        .run()
-        .context("failed to check bridge existence")?;
-    Ok(output.success())
+    Ok(interface_path(BRIDGE_NAME).exists())
+}
+
+/// Names of the interfaces enslaved to the Enclave bridge.
+///
+/// A bridge exposes one directory per member under its brif sysfs entry, which
+/// is the same list ip link show master prints.
+fn bridge_members() -> Result<Vec<String>> {
+    let directory = interface_path(BRIDGE_NAME).join("brif");
+    let entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to list bridge members in {}", directory.display())
+            })
+        }
+    };
+    let mut members = Vec::new();
+    for entry in entries {
+        members.push(entry?.file_name().to_string_lossy().into_owned());
+    }
+    members.sort();
+    Ok(members)
+}
+
+fn interface_path(interface: &str) -> PathBuf {
+    Path::new("/sys/class/net").join(interface)
 }
 
 pub fn bridge_is_present() -> Result<bool> {

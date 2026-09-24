@@ -1,6 +1,5 @@
 use super::primitives::{
-    comment_args, detect_iptables, ensure_forward_rule_first, ensure_input_rule_first,
-    remove_filter_rule, split_rule_args,
+    comment_args, detect_iptables, insert_filter_rule_first, remove_filter_rule, split_rule_args,
 };
 use super::*;
 
@@ -19,15 +18,17 @@ pub fn ensure_workspace_anti_spoofing(
     let rule_refs: Vec<&str> = rule.iter().map(String::as_str).collect();
 
     if !present.contains(&"INPUT") {
-        ensure_input_rule_first(
+        insert_filter_rule_first(
             &iptables,
+            "INPUT",
             &rule_refs,
             "block spoofed source addresses from workspace interface to host",
         )?;
     }
     if !present.contains(&"FORWARD") {
-        ensure_forward_rule_first(
+        insert_filter_rule_first(
             &iptables,
+            "FORWARD",
             &rule_refs,
             "block spoofed source addresses from workspace interface to forwarded destinations",
         )?;

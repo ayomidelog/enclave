@@ -69,32 +69,30 @@ fn workspace_id_hash(workspace_id: &str) -> u32 {
 }
 
 fn configure_host_veth(host: &str, peer: &str, pid: u32) -> Result<()> {
-    // One `ip` process configures the whole pair instead of one per operation.
-    // On a loaded host each spawn costs ~15 ms, which dominated workspace
-    // startup for a handful of link commands.
-    run_ip_batch(&format!(
+    run_ip_batch(&host_veth_batch(host, peer, pid))
+        .with_context(|| format!("host veth setup for {host} failed"))?;
+    disable_ipv6(host);
+    Ok(())
+}
+
+/// The `ip -batch` script that builds the host end of a workspace veth pair.
+///
+/// One ip process configures the whole pair instead of one per operation. On a
+/// loaded host each spawn costs ~15 ms, which dominated workspace startup for a
+/// handful of link commands.
+///
+/// Port isolation goes through ip's `bridge_slave` type rather than the separate
+/// `bridge` utility, so the host side stays one process. The `bridge`
+/// subcommand cannot be reached from an `ip` batch, and that second spawn cost as
+/// much as everything else on this side put together.
+fn host_veth_batch(host: &str, peer: &str, pid: u32) -> String {
+    format!(
         "link add {host} type veth peer name {peer}\n\
          link set {host} master {BRIDGE_NAME}\n\
+         link set {host} type bridge_slave isolated on\n\
          link set {host} up\n\
          link set {peer} netns {pid}\n"
-    ))
-    .with_context(|| format!("host veth setup for {host} failed"))?;
-    disable_ipv6(host);
-
-    // Bridge port isolation is a `bridge` subcommand, so it needs its own
-    // process; batching keeps it to one for the whole host side.
-    let output = run_bridge_batch(&format!("link set dev {host} isolated on\n"))
-        .with_context(|| format!("failed to isolate bridge port {host}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to isolate bridge port {} ({}): {}",
-            host,
-            output.status,
-            stderr.trim()
-        );
-    }
-    Ok(())
+    )
 }
 
 /// Best-effort IPv6 shutdown for the host end of the pair. The sysctl may be
@@ -157,10 +155,6 @@ fn configure_workspace_netns(
 /// Feed `ip -batch` a command list on stdin and return its output.
 fn run_ip_batch(commands: &str) -> Result<HostOutput> {
     run_batch(HostCommand::new("ip"), commands)
-}
-
-fn run_bridge_batch(commands: &str) -> Result<HostOutput> {
-    run_batch(HostCommand::new("bridge"), commands)
 }
 
 fn run_batch(command: HostCommand, commands: &str) -> Result<HostOutput> {

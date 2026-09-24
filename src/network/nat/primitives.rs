@@ -49,20 +49,29 @@ pub(crate) fn split_rule_args(rule: &str) -> Vec<String> {
     args
 }
 
-pub(in crate::network) fn ensure_input_rule_first(
+/// Insert a filter rule first, without checking whether it is already present.
+///
+/// The caller has to have proven the rule absent already — normally by reading a
+/// full `iptables -S` dump — because the check costs one process and the whole
+/// point of this entry point is to skip it. An insert that turns out to be a
+/// duplicate is caught by the same already-exists handling as `ensure_rule`, so
+/// a wrong guess is a wasted insert rather than a duplicated rule.
+pub(in crate::network) fn insert_filter_rule_first(
     iptables: &str,
+    chain: &str,
     rule_args: &[&str],
     rule_desc: &str,
 ) -> Result<()> {
-    ensure_rule(iptables, "filter", "INPUT", rule_args, true, rule_desc)
-}
-
-pub(in crate::network) fn ensure_forward_rule_first(
-    iptables: &str,
-    rule_args: &[&str],
-    rule_desc: &str,
-) -> Result<()> {
-    ensure_rule(iptables, "filter", "FORWARD", rule_args, true, rule_desc)
+    let mut add_args = vec!["-t", "filter", "-I", chain, "1"];
+    add_args.extend_from_slice(rule_args);
+    let output = HostCommand::new(iptables)
+        .args(&add_args)
+        .run()
+        .with_context(|| format!("failed to add {rule_desc} via {iptables}"))?;
+    if !output.success() && !is_rule_already_exists_error(&output.stderr) {
+        bail!("failed to add {rule_desc}: {}", output.stderr_text());
+    }
+    Ok(())
 }
 
 /// Add a rule unless an identical one is already in the chain.

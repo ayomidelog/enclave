@@ -1,5 +1,28 @@
 use super::*;
 
+/// The bridge check has to answer the same question ip link show answered, so it
+/// is pinned against an interface that always exists and one that never does.
+#[test]
+fn bridge_presence_is_read_from_sysfs() {
+    assert!(interface_path("lo").exists(), "loopback is always present");
+    assert!(
+        !interface_path("enclave-missing-test-interface").exists(),
+        "an absent interface must not be reported present"
+    );
+}
+
+#[test]
+fn bridge_members_is_empty_when_the_bridge_is_absent() {
+    // The member list must not fail when there is no bridge: the caller uses an
+    // empty list to mean the bridge is idle and can be removed.
+    if !interface_path(BRIDGE_NAME).exists() {
+        assert_eq!(
+            bridge_members().expect("list members"),
+            Vec::<String>::new()
+        );
+    }
+}
+
 #[test]
 fn parse_ipv4_addresses_extracts_only_inet_fields() {
     let output = "2: enclave0: <BROADCAST>\n    inet 10.200.0.1/24 scope global enclave0\n    inet6 fe80::1/64 scope link\n";

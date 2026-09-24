@@ -49,16 +49,16 @@ if [ -n "$NOFILE_LIMIT" ]; then
   ulimit -n "$NOFILE_LIMIT" || true
 fi
 
+# Loopback is deliberately not brought up here. The ip batch that renames and
+# addresses the workspace veth also raises lo in this same namespace, and that
+# runs before the workspace is reported started, so bringing it up here as well
+# only cost one process on every start.
 mount --make-rprivate /
 if [ -n "$WORKSPACE_HOSTNAME" ]; then
   hostname "$WORKSPACE_HOSTNAME" >/dev/null 2>&1 || true
 else
   hostname "workspace" >/dev/null 2>&1 || true
 fi
-if command -v ip >/dev/null 2>&1; then
-  ip link set lo up >/dev/null 2>&1 || true
-fi
-
 readlink /proc/self/ns/mnt > "$MNT_REF"
 readlink /proc/self/ns/pid > "$PID_REF"
 HOST_PID=""
