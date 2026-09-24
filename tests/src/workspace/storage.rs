@@ -229,3 +229,12 @@ fn loop_device_parser_extracts_only_loop_backings() {
     let output = "/dev/loop7: []: (/tmp/a/fs.img)\n/dev/loop-control: []: (/tmp/control)\n";
     assert_eq!(parse_loop_devices(output), vec!["/dev/loop7"]);
 }
+
+#[test]
+fn unmount_error_reports_errno_in_errno_field() {
+    let error = std::io::Error::from_raw_os_error(libc::EBUSY);
+    let formatted = unmount_error(Path::new("/tmp/enclave/ws/fs"), &error).to_string();
+    assert!(formatted.contains("target=/tmp/enclave/ws/fs"));
+    assert!(formatted.contains("errno=EBUSY(16)"));
+    assert!(!formatted.contains("errno=/tmp/enclave/ws/fs"));
+}
