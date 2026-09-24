@@ -1,4 +1,22 @@
+//! The command line: parsing, config defaults, and dispatch.
+//!
+//! `run` is the whole entry point. It parses the arguments, applies the config
+//! file to the values the operator did not type, and hands the command to the
+//! module that implements it. Each command module owns one command group and
+//! prints its own result, so this file stays a table of contents.
+//!
+//! The modules are grouped by what a command acts on:
+//!
+//! - `sandbox`, `workspace`, `stats`, `ps`, and `registry` are the lifecycle and
+//!   inspection commands.
+//! - `enclavefile` is the `up`/`down`/`restart` path driven by an Enclavefile.
+//! - `rootfs`, `auth`, `policy`, and `daemon` cover the rest of the CLI surface.
+//! - `internal` is the helper entry points the daemon re-executes itself into.
+//! - `config_defaults`, `send`, and `confirm` are what every command group shares.
+
 mod auth;
+mod config_defaults;
+mod confirm;
 mod daemon;
 mod enclavefile;
 mod internal;
@@ -7,19 +25,18 @@ mod ps;
 mod registry;
 mod rootfs;
 mod sandbox;
+mod send;
 mod stats;
 mod workspace;
 
-use std::io::Write;
-use std::path::Path;
-
 use anyhow::{bail, Result};
-use clap::parser::ValueSource;
-use clap::{ArgMatches, CommandFactory, FromArgMatches};
+use clap::{CommandFactory, FromArgMatches};
 use serde_json::json;
 
-use crate::cli::{Cli, Commands, DaemonCommands, InternalCommands};
-use crate::config::FileConfig;
+use crate::cli::{Cli, Commands, InternalCommands};
+
+pub(crate) use confirm::{confirm_destructive_action, report_retained_resources};
+pub(crate) use send::{print_operation_id, send, send_managed};
 
 pub fn run() -> Result<()> {
     let _cli_total = crate::perf::Timer::new("cli.total");
@@ -42,7 +59,7 @@ pub fn run() -> Result<()> {
     crate::perf::set_verbose(cli.verbose);
     let _config_load = crate::perf::Timer::new("cli.config_load");
     let file_config = crate::config::load_config(cli.config.as_deref())?;
-    apply_config_defaults(&mut cli, &matches, &file_config);
+    config_defaults::apply_config_defaults(&mut cli, &matches, &file_config);
     daemon::configure_automatic_start_defaults(&file_config, cli.start_daemon);
     match cli.command {
         Commands::Internal { command } => match *command {
@@ -116,293 +133,14 @@ pub fn run() -> Result<()> {
     }
 }
 
+/// Refuse to run anything that touches host state as a non-root user.
+///
+/// `--help`, `--version`, and `init` are exempt: they read nothing and change
+/// nothing, and requiring root to see the help text is a poor first impression.
 fn ensure_root_execution() -> Result<()> {
     let euid = unsafe { libc::geteuid() };
     if euid == 0 {
         return Ok(());
     }
     bail!("enclave commands require root privileges. Re-run with sudo.");
-}
-
-fn apply_config_defaults(cli: &mut Cli, matches: &ArgMatches, file_config: &FileConfig) {
-    if arg_uses_default(matches, "socket") {
-        if let Some(socket) = file_config.socket.as_ref() {
-            cli.socket = socket.clone();
-        }
-    }
-
-    match &mut cli.command {
-        Commands::Daemon { command } => match command {
-            DaemonCommands::Run(args) => {
-                let run_matches = nested_subcommand_matches(matches, &["daemon", "run"]);
-                apply_daemon_common_defaults(args, run_matches, file_config);
-            }
-            DaemonCommands::Start(args) => {
-                let start_matches = nested_subcommand_matches(matches, &["daemon", "start"]);
-                apply_daemon_common_defaults(args, start_matches, file_config);
-                if arg_uses_default_opt(start_matches, "wait_secs") {
-                    if let Some(wait_secs) = file_config.wait_secs {
-                        args.wait_secs = wait_secs;
-                    }
-                }
-            }
-            DaemonCommands::Stop | DaemonCommands::Status => {}
-        },
-        Commands::Create(args) => {
-            let create_matches = nested_subcommand_matches(matches, &["create"]);
-            if arg_uses_default_opt(create_matches, "suite") {
-                if let Some(suite) = file_config.suite.as_ref() {
-                    args.suite = suite.clone();
-                }
-            }
-            if arg_uses_default_opt(create_matches, "mirror") {
-                if let Some(mirror) = file_config.mirror.as_ref() {
-                    args.mirror = mirror.clone();
-                }
-            }
-            if arg_uses_default_opt(create_matches, "bootstrap_method") {
-                if let Some(method_str) = file_config.bootstrap_method.as_ref() {
-                    match method_str.parse() {
-                        Ok(method) => args.bootstrap_method = method,
-                        Err(err) => {
-                            tracing::warn!(
-                                "ignoring invalid bootstrap_method '{}' in config: {err}",
-                                method_str
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        Commands::Rootfs { command } => match command {
-            crate::cli::RootfsCommands::Export(args) => {
-                let export_matches = nested_subcommand_matches(matches, &["rootfs", "export"]);
-                apply_state_dir_default(args, export_matches, file_config);
-            }
-            crate::cli::RootfsCommands::Import(args) => {
-                let import_matches = nested_subcommand_matches(matches, &["rootfs", "import"]);
-                apply_state_dir_default(args, import_matches, file_config);
-            }
-            crate::cli::RootfsCommands::Fetch(args) => {
-                let fetch_matches = nested_subcommand_matches(matches, &["rootfs", "fetch"]);
-                apply_state_dir_default(args, fetch_matches, file_config);
-            }
-        },
-        _ => {}
-    }
-}
-
-fn apply_state_dir_default(
-    args: &mut impl StateDirDefault,
-    matches: Option<&ArgMatches>,
-    file_config: &FileConfig,
-) {
-    if arg_uses_default_opt(matches, "state_dir") {
-        if let Some(state_dir) = file_config.state_dir.as_ref() {
-            args.state_dir_mut().clone_from(state_dir);
-        }
-    }
-}
-
-fn apply_daemon_common_defaults(
-    args: &mut impl DaemonDefaults,
-    matches: Option<&ArgMatches>,
-    file_config: &FileConfig,
-) {
-    if arg_uses_default_opt(matches, "state_dir") {
-        if let Some(state_dir) = file_config.state_dir.as_ref() {
-            args.state_dir_mut().clone_from(state_dir);
-        }
-    }
-    if arg_uses_default_opt(matches, "pid_file") {
-        if let Some(pid_file) = file_config.pid_file.as_ref() {
-            args.pid_file_mut().clone_from(pid_file);
-        }
-    }
-    if arg_uses_default_opt(matches, "debootstrap_binary") {
-        if let Some(binary) = file_config.debootstrap_binary.as_ref() {
-            args.debootstrap_binary_mut().clone_from(binary);
-        }
-    }
-    if arg_is_unset_opt(matches, "workspace_apparmor_profile") {
-        if let Some(profile) = file_config.workspace_apparmor_profile.as_ref() {
-            *args.workspace_apparmor_profile_mut() = Some(profile.clone());
-        }
-    }
-    if arg_is_unset_opt(matches, "workspace_selinux_label") {
-        if let Some(label) = file_config.workspace_selinux_label.as_ref() {
-            *args.workspace_selinux_label_mut() = Some(label.clone());
-        }
-    }
-}
-
-trait DaemonDefaults {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf;
-    fn pid_file_mut(&mut self) -> &mut std::path::PathBuf;
-    fn debootstrap_binary_mut(&mut self) -> &mut String;
-    fn workspace_apparmor_profile_mut(&mut self) -> &mut Option<String>;
-    fn workspace_selinux_label_mut(&mut self) -> &mut Option<String>;
-}
-
-trait StateDirDefault {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf;
-}
-
-impl DaemonDefaults for crate::cli::RunArgs {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.state_dir
-    }
-    fn pid_file_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.pid_file
-    }
-    fn debootstrap_binary_mut(&mut self) -> &mut String {
-        &mut self.debootstrap_binary
-    }
-    fn workspace_apparmor_profile_mut(&mut self) -> &mut Option<String> {
-        &mut self.workspace_apparmor_profile
-    }
-    fn workspace_selinux_label_mut(&mut self) -> &mut Option<String> {
-        &mut self.workspace_selinux_label
-    }
-}
-
-impl DaemonDefaults for crate::cli::StartArgs {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.state_dir
-    }
-    fn pid_file_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.pid_file
-    }
-    fn debootstrap_binary_mut(&mut self) -> &mut String {
-        &mut self.debootstrap_binary
-    }
-    fn workspace_apparmor_profile_mut(&mut self) -> &mut Option<String> {
-        &mut self.workspace_apparmor_profile
-    }
-    fn workspace_selinux_label_mut(&mut self) -> &mut Option<String> {
-        &mut self.workspace_selinux_label
-    }
-}
-
-impl StateDirDefault for crate::cli::RootfsExportArgs {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.state_dir
-    }
-}
-
-impl StateDirDefault for crate::cli::RootfsImportArgs {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.state_dir
-    }
-}
-
-impl StateDirDefault for crate::cli::RootfsFetchArgs {
-    fn state_dir_mut(&mut self) -> &mut std::path::PathBuf {
-        &mut self.state_dir
-    }
-}
-
-fn nested_subcommand_matches<'a>(
-    matches: &'a ArgMatches,
-    chain: &[&str],
-) -> Option<&'a ArgMatches> {
-    let mut current = matches;
-    for name in chain {
-        let (sub_name, sub_matches) = current.subcommand()?;
-        if sub_name != *name {
-            return None;
-        }
-        current = sub_matches;
-    }
-    Some(current)
-}
-
-fn arg_uses_default(matches: &ArgMatches, arg_name: &str) -> bool {
-    matches.value_source(arg_name) == Some(ValueSource::DefaultValue)
-}
-
-fn arg_uses_default_opt(matches: Option<&ArgMatches>, arg_name: &str) -> bool {
-    matches
-        .and_then(|m| m.value_source(arg_name))
-        .map(|source| source == ValueSource::DefaultValue)
-        .unwrap_or(false)
-}
-
-fn arg_is_unset_opt(matches: Option<&ArgMatches>, arg_name: &str) -> bool {
-    matches.and_then(|m| m.value_source(arg_name)).is_none()
-}
-
-/// Report the operation id the daemon ran the last request as.
-///
-/// The id is what ties a command to its journal record, its log lines, and its
-/// phase timings, so a mutating command prints it after it succeeds. A command
-/// that issues several requests prints only the last, which is the one that
-/// carried the user's intent.
-pub(crate) fn print_operation_id() {
-    if let Some(id) = crate::client::last_operation_id() {
-        println!("operation {id}");
-    }
-}
-
-pub(crate) fn send(
-    socket: &Path,
-    action: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value> {
-    crate::client::send_request(socket, action, params)
-}
-
-pub(crate) fn send_managed(
-    socket: &Path,
-    action: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value> {
-    daemon::ensure_daemon_running_for_action(socket, action)?;
-    send(socket, action, params)
-}
-
-pub(crate) fn confirm_destructive_action(summary: &str, final_phrase: &str) -> Result<bool> {
-    eprintln!("{summary}");
-    tracing::warn!("{summary}");
-
-    if !prompt_exact("Type 'y' then press Enter to continue: ", "y")? {
-        return Ok(false);
-    }
-
-    let second_prompt = format!("Type '{}' then press Enter to confirm: ", final_phrase);
-    if !prompt_exact(&second_prompt, final_phrase)? {
-        return Ok(false);
-    }
-
-    Ok(true)
-}
-
-/// Report the host resources a force teardown could not release.
-///
-/// A force destroy removes the registry record either way, so these lines are
-/// the only remaining description of what is still running. Normal mode never
-/// reaches this with a non-empty list: the daemon fails the request instead.
-pub(crate) fn report_retained_resources(entries: impl IntoIterator<Item = String>) -> usize {
-    let entries = entries.into_iter().collect::<Vec<_>>();
-    if entries.is_empty() {
-        return 0;
-    }
-    eprintln!("retained host resources; finish with `enclave doctor --repair`:");
-    for entry in &entries {
-        eprintln!("  - {entry}");
-    }
-    entries.len()
-}
-
-fn prompt_exact(prompt: &str, expected: &str) -> Result<bool> {
-    eprint!("{prompt}");
-    std::io::stderr().flush()?;
-
-    let mut input = String::new();
-    let read = std::io::stdin().read_line(&mut input)?;
-    if read == 0 {
-        return Ok(false);
-    }
-
-    Ok(input.trim() == expected)
 }
