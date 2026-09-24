@@ -193,8 +193,12 @@ fn start_helper(
     drop(pidfd);
 
     let started = Instant::now();
+    let readiness_pidfd = open_process_pidfd(child.id());
     while started.elapsed() < HELPER_START_TIMEOUT {
         if socket.exists() {
+            if let Some(fd) = readiness_pidfd {
+                unsafe { libc::close(fd) };
+            }
             return Ok(PersistentHelper {
                 socket,
                 auth_token,
@@ -208,7 +212,11 @@ fn start_helper(
         {
             break;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        let remaining = HELPER_START_TIMEOUT.saturating_sub(started.elapsed());
+        wait_for_helper_progress(readiness_pidfd, remaining);
+    }
+    if let Some(fd) = readiness_pidfd {
+        unsafe { libc::close(fd) };
     }
     let mut child = child;
     let _ = child.kill();
@@ -220,6 +228,30 @@ fn start_helper(
         helper_log.display(),
         log_tail
     )
+}
+
+fn open_process_pidfd(pid: u32) -> Option<i32> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
+    (fd >= 0).then_some(fd)
+}
+
+fn wait_for_helper_progress(pidfd: Option<i32>, remaining: Duration) {
+    let Some(pidfd) = pidfd else {
+        return;
+    };
+    let mut descriptor = libc::pollfd {
+        fd: pidfd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout_ms = remaining.as_millis().clamp(1, 100) as i32;
+    let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+    if result < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+        tracing::debug!(
+            "persistent helper readiness poll failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 fn open_runtime_pidfd(pid: u32) -> Result<std::fs::File> {
