@@ -489,15 +489,28 @@ pub fn start_workspace_with_security(
         workspace_snapshot.assigned_ip = None;
     }
 
-    let started = launch_workspace_runtime(
+    let mut journal = crate::operation::Journal::begin(
+        state_dir,
+        "workspace.start",
+        format!("{}/{}", sandbox_id, workspace_id),
+    )?;
+    journal.phase("launch_runtime")?;
+    let started = match launch_workspace_runtime(
         state_dir,
         &sandbox_snapshot,
         &workspace_snapshot,
         apparmor_profile,
         selinux_label,
         NetworkStartPlan::AllocateFromUsedIps(used_ips),
-    )?;
+    ) {
+        Ok(started) => started,
+        Err(error) => {
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
+    };
 
+    journal.phase("commit_runtime_metadata")?;
     let commit = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
@@ -533,7 +546,10 @@ pub fn start_workspace_with_security(
     });
 
     match commit {
-        Ok(metadata) => Ok(metadata),
+        Ok(metadata) => {
+            journal.succeed()?;
+            Ok(metadata)
+        }
         Err(error) => {
             let _ = session::stop_session(started.pid, Some(started.starttime_ticks));
             let network_report =
@@ -545,17 +561,21 @@ pub fn start_workspace_with_security(
             );
             let storage_cleanup =
                 crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
-            if !network_report.is_complete() || cgroup_cleanup.is_err() || storage_cleanup.is_err()
+            let failure = if !network_report.is_complete()
+                || cgroup_cleanup.is_err()
+                || storage_cleanup.is_err()
             {
-                Err(error.context(format!(
+                error.context(format!(
                     "workspace startup rollback incomplete: network={:?}, cgroup={:?}, storage={:?}",
                     network_report.failures,
                     cgroup_cleanup.err(),
                     storage_cleanup.err()
-                )))
+                ))
             } else {
-                Err(error)
-            }
+                error
+            };
+            let _ = journal.fail(format!("{failure:#}"));
+            Err(failure)
         }
     }
 }
