@@ -5,7 +5,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::hostcmd::HostCommand;
 
-const NET_CLASS_DIR: &str = "/sys/class/net";
+use super::NET_CLASS_DIR;
 
 pub fn remove_veth(veth_host: &str) -> Result<()> {
     const MAX_ATTEMPTS: usize = 3;

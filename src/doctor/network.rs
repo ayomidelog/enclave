@@ -5,11 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::hostcmd::HostCommand;
-use crate::network::{ipam, nat, veth};
+use crate::network::{ipam, nat, veth, NET_CLASS_DIR};
 
 use super::DoctorCheck;
-
-const NET_CLASS_DIR: &str = "/sys/class/net";
 
 /// Inventory the host networking Enclave claims to own.
 ///

@@ -17,6 +17,14 @@ use serde::{Deserialize, Serialize};
 static HOST_NETWORKING_READY: AtomicBool = AtomicBool::new(false);
 static HOST_NETWORKING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// Where the kernel exposes one directory per network interface.
+///
+/// Interface presence is answered from here rather than by running a tool: it is
+/// the same information `ip link` prints, it costs one `stat`, and it cannot be
+/// confused by the wording of a command's output. Both the teardown path and the
+/// doctor read it, so the path is defined once.
+pub(crate) const NET_CLASS_DIR: &str = "/sys/class/net";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkCleanupFailure {
     pub resource: String,
