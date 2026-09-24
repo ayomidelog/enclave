@@ -93,6 +93,9 @@ pub(crate) fn dispatch(
                 .iter()
                 .map(crate::daemon::active_operations::ActiveOperation::describe)
                 .collect::<Vec<_>>(),
+            // The last lifecycle operation the daemon ran, so a status report can
+            // name it without the operator reading the journal directory.
+            "last_operation": crate::operation::latest(&config.state_dir)?,
             "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {

@@ -179,6 +179,51 @@ pub fn load(state_dir: &Path, id: &str) -> Result<OperationRecord> {
         .with_context(|| format!("failed to parse operation journal {}", path.display()))
 }
 
+/// The most recently updated operation record, when any exists.
+///
+/// This is what an operator wants first when a lifecycle command behaved
+/// unexpectedly: the last thing the daemon did, and whether it finished. The
+/// record is chosen by its update time rather than by file name, because the file
+/// name is a UUID and carries no ordering.
+pub fn latest(state_dir: &Path) -> Result<Option<OperationRecord>> {
+    let root = state_dir.join("operations");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read operation journal {}", root.display()))
+        }
+    };
+
+    let mut latest: Option<OperationRecord> = None;
+    for entry in entries.flatten() {
+        if entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            != Some("json")
+        {
+            continue;
+        }
+        // A malformed record is a separate finding that doctor reports; it is not
+        // a reason to fail the whole lookup.
+        let Ok(raw) = fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_slice::<OperationRecord>(&raw) else {
+            continue;
+        };
+        let newer = latest
+            .as_ref()
+            .is_none_or(|current| record.updated_at > current.updated_at);
+        if newer {
+            latest = Some(record);
+        }
+    }
+    Ok(latest)
+}
+
 /// Build the record for a new journal, reusing the request's operation id when
 /// there is one so the CLI, the logs, and the journal all name one operation.
 fn record_for(kind: impl Into<String>, target: impl Into<String>) -> OperationRecord {

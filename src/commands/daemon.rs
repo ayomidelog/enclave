@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::cli::{DaemonCommands, StartArgs};
 use crate::config::FileConfig;
@@ -70,7 +70,7 @@ pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Resu
             Ok(())
         }
         DaemonCommands::Status => {
-            send(socket, "ping", json!({}))
+            let health = send(socket, "daemon.health", json!({}))
                 .with_context(|| format!("daemon is not running on {}", socket.display()))?;
             let sandboxes_value = send(socket, "sandbox.list", json!({}))?;
             let workspaces_value = send(socket, "workspace.list", json!({}))?;
@@ -82,8 +82,51 @@ pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Resu
                 sandboxes.len(),
                 workspaces.len()
             );
+            report_daemon_activity(&health);
             Ok(())
         }
+    }
+}
+
+/// Say what the daemon is doing now and what it last did.
+///
+/// The operation ids are what tie a status report to the journal record, the log
+/// lines, and the phase timings for the same operation, so they are the two
+/// things worth printing beyond the counts.
+fn report_daemon_activity(health: &Value) {
+    if let Some(active) = health.get("active_operations").and_then(Value::as_array) {
+        for operation in active {
+            let field = |name: &str| operation.get(name).and_then(Value::as_str).unwrap_or("-");
+            println!(
+                "running: {} on {} for {}s (operation {})",
+                field("action"),
+                field("target"),
+                operation
+                    .get("elapsed_secs")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                field("operation_id"),
+            );
+        }
+    }
+
+    let Some(last) = health
+        .get("last_operation")
+        .filter(|value| !value.is_null())
+    else {
+        return;
+    };
+    let field = |name: &str| last.get(name).and_then(Value::as_str).unwrap_or("-");
+    println!(
+        "last: {} {} on {} ({}, updated {})",
+        field("kind"),
+        field("status"),
+        field("target"),
+        field("phase"),
+        field("updated_at"),
+    );
+    if let Some(error) = last.get("error").and_then(Value::as_str) {
+        println!("  error: {error}");
     }
 }
 
