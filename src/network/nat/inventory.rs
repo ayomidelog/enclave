@@ -87,3 +87,16 @@ pub(in crate::network) fn owned_rule_owner(rule: &str) -> Option<String> {
     }
     Some(owner.to_string())
 }
+
+/// Delete a rule that Enclave owns, identified by the dump it came from.
+///
+/// The rule text is the body of one `iptables -S` line, so the arguments are
+/// rebuilt from it rather than reconstructed from the shape this release
+/// installs. `iptables -D` only removes a rule that matches every argument, so a
+/// misread line cannot delete an unrelated rule.
+pub(crate) fn remove_owned_rule(rule: &OwnedRule) -> Result<()> {
+    let iptables = primitives::detect_iptables()?;
+    let args = primitives::split_rule_args(&rule.rule);
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    primitives::delete_rule(&iptables, &rule.table, &rule.chain, &args)
+}

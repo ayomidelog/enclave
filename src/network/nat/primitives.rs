@@ -16,7 +16,7 @@ pub(in crate::network) fn comment_args(owner: &str) -> Vec<String> {
 /// is the one value Enclave reads back, so a double-quote-aware split is enough
 /// to rebuild the argument list. A mistyped argument list cannot delete the
 /// wrong rule: `iptables -D` only removes a rule that matches every argument.
-pub(in crate::network) fn split_rule_args(rule: &str) -> Vec<String> {
+pub(crate) fn split_rule_args(rule: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut quoted = false;

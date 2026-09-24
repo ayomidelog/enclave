@@ -31,7 +31,8 @@ mod primitives;
 
 pub(crate) use anti_spoof::{ensure_workspace_anti_spoofing, remove_workspace_anti_spoofing};
 pub use forwarding::{ensure_nat, remove_nat};
-pub(crate) use inventory::{list_owned_rules, OwnedRule};
+pub(crate) use inventory::{list_owned_rules, remove_owned_rule, OwnedRule};
+pub(crate) use primitives::split_rule_args;
 
 // The nat tests exercise the rule builders, the parser, and iptables discovery
 // directly, so they reach the submodule internals through the module root.
@@ -42,7 +43,7 @@ pub(in crate::network) use forwarding::{bridge_rules, stale_bridge_rules};
 #[cfg(test)]
 pub(in crate::network) use inventory::parse_owned_rules;
 #[cfg(test)]
-pub(in crate::network) use primitives::{detect_iptables, split_rule_args};
+pub(in crate::network) use primitives::detect_iptables;
 
 #[cfg(test)]
 #[path = "../../../tests/src/network/nat.rs"]

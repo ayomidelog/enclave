@@ -209,6 +209,60 @@ fn check_sandbox_rootfs_reports_an_active_sandbox_without_a_rootfs_mount() {
     let _ = std::fs::remove_dir_all(&state);
 }
 
+/// Report Enclave-owned rules whose interface no longer exists.
+///
+/// A rule is scoped to an interface, so once that interface is gone the rule can
+/// never match again. The ownership comment is what proves Enclave installed it,
+/// so a rule in this list is safe to remove without touching anything the host or
+/// another tool installed.
+///
+/// The shared bridge rules are excluded: they are scoped to the bridge and to the
+/// subnet rather than to one workspace interface, and `ensure_nat` already retires
+/// the shapes it does not install.
+#[test]
+fn stale_firewall_rules_are_scoped_to_removed_interfaces() {
+    let owned = |table: &str, owner: &str, rule: &str| crate::network::nat::OwnedRule {
+        table: table.to_string(),
+        chain: "INPUT".to_string(),
+        owner: owner.to_string(),
+        rule: rule.to_string(),
+    };
+
+    // A live interface: /sys/class/net/lo always exists on Linux.
+    let live = owned("filter", "session-a", "! -s 10.200.0.4/32 -i lo -j DROP");
+    let gone = owned(
+        "filter",
+        "session-b",
+        "! -s 10.200.0.5/32 -i veth-99-abcdef -j DROP",
+    );
+    // The shared bridge rules name the bridge, not a workspace interface.
+    let shared = owned("filter", "bridge", "-i enclave0 -o enclave0 -j DROP");
+
+    let rules = vec![live.clone(), gone.clone(), shared.clone()];
+    let stale = stale_anti_spoof_rules(&rules);
+    assert_eq!(stale.len(), 1, "only the removed interface is stale");
+    assert_eq!(stale[0].owner, "session-b");
+
+    // A rule with no interface, or with more than one, is left alone: this repair
+    // only acts when the rule names exactly one interface it can resolve.
+    let no_interface = owned("filter", "session-c", "-s 10.200.0.6/32 -j DROP");
+    let two_interfaces = owned(
+        "filter",
+        "session-d",
+        "-i veth-99-abcdef -i veth-98-abcdef -j DROP",
+    );
+    assert!(stale_anti_spoof_rules(&[no_interface, two_interfaces]).is_empty());
+
+    // The check itself must survive a host without iptables or without the
+    // privilege to read the rules: it reports rather than panics.
+    let check = check_stale_firewall_rules();
+    assert!(
+        check.status == "ok" || check.status == "warn",
+        "unexpected status: {}",
+        check.status
+    );
+}
+
 #[test]
 fn repair_removes_orphaned_sandbox_directories_and_validates_daemon_state() {
     let temp_dir = std::env::temp_dir().join(format!(

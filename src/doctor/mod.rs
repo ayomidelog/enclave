@@ -8,6 +8,7 @@ use crate::registry::{ensure_registry, repair_registry, with_registry};
 
 mod capabilities;
 mod cgroups;
+mod firewall;
 mod journal;
 mod mounts;
 mod network;
@@ -34,6 +35,8 @@ pub struct DoctorRepairReport {
     pub reconciled_workspace_mounts: usize,
     #[serde(default)]
     pub removed_stale_workspace_cgroups: usize,
+    #[serde(default)]
+    pub removed_stale_firewall_rules: usize,
     pub daemon_state_consistent: bool,
 }
 
@@ -63,6 +66,7 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
         network::check_workspace_network(state_dir),
         network::check_host_subnet(),
         network::check_workspace_loop_devices(state_dir),
+        firewall::check_stale_firewall_rules(),
         runtime::check_stale_runtime_state(state_dir),
         runtime::check_workspace_tmp_integrity(state_dir),
         runtime::check_workspace_storage(state_dir),
@@ -118,6 +122,19 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
     let ownership = cgroups::cgroup_ownership(state_dir)?;
     let removed_stale_workspace_cgroups =
         cgroups::remove_empty_workspace_cgroups(Path::new(cgroups::CGROUP_ROOT), &ownership)?;
+    // A rule scoped to an interface that no longer exists can never match again,
+    // and the ownership comment is what proves Enclave installed it. Removing it
+    // here is what lets an operator retire the leaks an older release left behind.
+    // Repair is also reachable without the privilege to read the firewall, and
+    // failing the whole run over that would hide the repairs that did work. The
+    // count reports what was actually removed.
+    let removed_stale_firewall_rules = match firewall::remove_stale_firewall_rules() {
+        Ok(removed) => removed,
+        Err(error) => {
+            tracing::warn!("stale firewall rule repair skipped: {error:#}");
+            0
+        }
+    };
     let registry = repair_registry(state_dir, false)?;
 
     let daemon_state_consistent = crate::daemon::state_lock::read_state_lock_record(state_dir)?
@@ -140,6 +157,7 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         unmounted_stale_mounts,
         reconciled_workspace_mounts,
         removed_stale_workspace_cgroups,
+        removed_stale_firewall_rules,
         daemon_state_consistent,
     })
 }
@@ -153,6 +171,10 @@ mod tests;
 pub(crate) use capabilities::check_cgroup_v2_availability;
 #[cfg(test)]
 pub(crate) use cgroups::check_stale_workspace_cgroups as check_stale_cgroups;
+#[cfg(test)]
+pub(crate) use firewall::check_stale_firewall_rules;
+#[cfg(test)]
+pub(crate) use firewall::stale_anti_spoof_rules;
 #[cfg(test)]
 pub(crate) use journal::check_operation_journal;
 #[cfg(test)]
