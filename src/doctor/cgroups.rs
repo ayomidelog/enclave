@@ -17,7 +17,7 @@ pub(super) struct CgroupOwnership {
     workspace_paths: HashMap<PathBuf, String>,
 }
 
-pub(super) fn check_stale_workspace_cgroups(state_dir: &Path) -> DoctorCheck {
+pub(crate) fn check_stale_workspace_cgroups(state_dir: &Path) -> DoctorCheck {
     const NAME: &str = "stale_cgroups";
 
     if !cgroup::is_cgroup_v2_available() {
@@ -61,7 +61,7 @@ pub(super) fn check_stale_workspace_cgroups(state_dir: &Path) -> DoctorCheck {
     }
 }
 
-pub(super) fn cgroup_ownership(state_dir: &Path) -> anyhow::Result<CgroupOwnership> {
+pub(crate) fn cgroup_ownership(state_dir: &Path) -> anyhow::Result<CgroupOwnership> {
     crate::registry::with_registry(state_dir, |registry| {
         let mut ownership = CgroupOwnership::default();
         for (registry_id, sandbox) in &registry.sandboxes {
@@ -95,7 +95,7 @@ pub(super) fn cgroup_ownership(state_dir: &Path) -> anyhow::Result<CgroupOwnersh
     })
 }
 
-pub(super) fn remove_empty_workspace_cgroups(
+pub(crate) fn remove_empty_workspace_cgroups(
     root: &Path,
     ownership: &CgroupOwnership,
 ) -> io::Result<usize> {
