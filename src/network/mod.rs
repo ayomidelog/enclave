@@ -98,17 +98,24 @@ fn attach_workspace_network(
     let (veth_host, veth_peer) = veth::veth_names(host_octet, workspace_id);
 
     let result: Result<()> = (|| {
+        let veth = crate::perf::Timer::new("network.veth");
         veth::setup_workspace_networking(pid, ip, &veth_host, &veth_peer)
             .with_context(|| format!("failed to set up networking for workspace (ip={ip})"))?;
+        drop(veth);
+
+        let rules = crate::perf::Timer::new("network.rules");
         nat::ensure_workspace_anti_spoofing(&veth_host, ip, workspace_id)
             .with_context(|| format!("failed to install anti-spoofing rules for {}", veth_host))?;
+        drop(rules);
 
+        let dns = crate::perf::Timer::new("network.dns");
         dns::provision_resolv_conf(workspace_rootfs)
             .with_context(|| "failed to provision DNS for workspace")?;
         dns::provision_etc_hosts(workspace_rootfs)
             .with_context(|| "failed to provision /etc/hosts for workspace")?;
         dns::provision_apt_sandbox_override(workspace_rootfs)
             .with_context(|| "failed to provision apt sandbox override for workspace")?;
+        drop(dns);
         Ok(())
     })();
     if let Err(err) = result {

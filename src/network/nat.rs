@@ -243,19 +243,26 @@ pub fn ensure_workspace_anti_spoofing(
     workspace_id: &str,
 ) -> Result<()> {
     let iptables = detect_iptables()?;
+    // One `iptables -S` tells us which chains already drop spoofed sources for
+    // this interface, so a restart does not pay a probe per chain.
+    let present = anti_spoof_chains_present(&iptables, veth_host, assigned_ip)?;
     let rule = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
     let rule_refs: Vec<&str> = rule.iter().map(String::as_str).collect();
 
-    ensure_input_rule_first(
-        &iptables,
-        &rule_refs,
-        "block spoofed source addresses from workspace interface to host",
-    )?;
-    ensure_forward_rule_first(
-        &iptables,
-        &rule_refs,
-        "block spoofed source addresses from workspace interface to forwarded destinations",
-    )?;
+    if !present.contains(&"INPUT") {
+        ensure_input_rule_first(
+            &iptables,
+            &rule_refs,
+            "block spoofed source addresses from workspace interface to host",
+        )?;
+    }
+    if !present.contains(&"FORWARD") {
+        ensure_forward_rule_first(
+            &iptables,
+            &rule_refs,
+            "block spoofed source addresses from workspace interface to forwarded destinations",
+        )?;
+    }
     Ok(())
 }
 
@@ -265,49 +272,83 @@ pub fn remove_workspace_anti_spoofing(
     workspace_id: &str,
 ) -> Result<()> {
     let iptables = detect_iptables()?;
-    let tagged = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
-    let legacy = anti_spoof_rule_args(veth_host, assigned_ip, None);
-    let tagged_refs: Vec<&str> = tagged.iter().map(String::as_str).collect();
-    let legacy_refs: Vec<&str> = legacy.iter().map(String::as_str).collect();
-    // Older releases installed untagged rules. Remove both shapes so an
-    // upgrade cannot leave a stale rule behind.
-    remove_input_rule(&iptables, &tagged_refs)?;
-    remove_forward_rule(&iptables, &tagged_refs)?;
-    if tagged_refs != legacy_refs {
-        remove_input_rule(&iptables, &legacy_refs)?;
-        remove_forward_rule(&iptables, &legacy_refs)?;
+    // One `iptables -S` lists the whole filter table, which is enough to learn
+    // which chains still carry this interface's rule. Checking per rule shape
+    // cost one process per candidate and dominated workspace stop time.
+    let present = anti_spoof_chains_present(&iptables, veth_host, assigned_ip)?;
+    for chain in present {
+        // Prefer the tagged shape this version installs, then fall back to the
+        // untagged shape older releases used.
+        let tagged = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
+        let tagged_refs: Vec<&str> = tagged.iter().map(String::as_str).collect();
+        let legacy = anti_spoof_rule_args(veth_host, assigned_ip, None);
+        let legacy_refs: Vec<&str> = legacy.iter().map(String::as_str).collect();
+        remove_filter_rule(&iptables, chain, &tagged_refs)
+            .or_else(|_| remove_filter_rule(&iptables, chain, &legacy_refs))?;
     }
     verify_anti_spoofing_absent(&iptables, veth_host, assigned_ip)
+}
+
+/// Chains in the filter table that still carry an anti-spoofing rule for this
+/// interface and address, whatever comment shape installed it.
+fn anti_spoof_chains_present(
+    iptables: &str,
+    veth_host: &str,
+    assigned_ip: &str,
+) -> Result<Vec<&'static str>> {
+    let dump = run_iptables_dump(iptables)?;
+    Ok(chains_with_anti_spoof_rule(&dump, veth_host, assigned_ip))
+}
+
+fn chains_with_anti_spoof_rule(
+    dump: &str,
+    veth_host: &str,
+    assigned_ip: &str,
+) -> Vec<&'static str> {
+    let signature = anti_spoof_signature(veth_host, assigned_ip);
+    ["INPUT", "FORWARD"]
+        .into_iter()
+        .filter(|chain| {
+            dump.lines()
+                .any(|line| line.starts_with(&format!("-A {chain} ")) && line.contains(&signature))
+        })
+        .collect()
+}
+
+/// The interface and source pattern that identifies an Enclave anti-spoofing
+/// rule regardless of which comment or version installed it.
+fn anti_spoof_signature(veth_host: &str, assigned_ip: &str) -> String {
+    format!("-i {veth_host} ! -s {assigned_ip}/32")
+}
+
+fn run_iptables_dump(iptables: &str) -> Result<String> {
+    let output = Command::new(iptables)
+        .arg("-S")
+        .output()
+        .with_context(|| format!("failed to list firewall rules via {iptables}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "listing firewall rules via {} failed ({}): {}",
+            iptables,
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Re-check the firewall after deletion. `iptables -D` reports success even
 /// when another copy of the rule survives, so success must be proven by
 /// absence rather than by exit status.
 fn verify_anti_spoofing_absent(iptables: &str, veth_host: &str, assigned_ip: &str) -> Result<()> {
-    // `-C` matches a rule exactly, so both the tagged rule this version
-    // installs and the untagged shape older releases used must be checked.
-    for chain in ["INPUT", "FORWARD"] {
-        for shape in [Some("tagged"), None] {
-            let rule = anti_spoof_rule_args(veth_host, assigned_ip, shape);
-            let mut args = vec!["-C", chain];
-            args.extend(rule.iter().map(String::as_str));
-            let present = Command::new(iptables)
-                .args(&args)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .with_context(|| {
-                    format!("failed to verify {chain} anti-spoofing rule via {iptables}")
-                })?
-                .success();
-            if present {
-                bail!(
-                    "anti-spoofing rule for {} in the {} chain still exists after removal",
-                    veth_host,
-                    chain
-                );
-            }
-        }
+    let remaining = anti_spoof_chains_present(iptables, veth_host, assigned_ip)?;
+    if !remaining.is_empty() {
+        bail!(
+            "anti-spoofing rule for {} still exists after removal in chain(s): {}",
+            veth_host,
+            remaining.join(", ")
+        );
     }
     Ok(())
 }
@@ -479,6 +520,18 @@ fn is_rule_missing_error(stderr: &[u8]) -> bool {
 }
 
 fn detect_iptables() -> Result<String> {
+    static DETECTED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(binary) = DETECTED.get() {
+        return Ok(binary.clone());
+    }
+    let binary = probe_iptables()?;
+    // Only a successful probe is cached. A missing binary is re-probed so an
+    // operator who installs iptables does not have to restart the daemon.
+    let _ = DETECTED.set(binary.clone());
+    Ok(binary)
+}
+
+fn probe_iptables() -> Result<String> {
     for candidate in &["iptables-nft", "iptables-legacy", "iptables"] {
         let status = Command::new(candidate)
             .arg("--version")

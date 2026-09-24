@@ -62,3 +62,30 @@ fn owned_rules_are_parsed_from_iptables_save_output() {
 fn metadata_block_cidr_is_link_local_metadata_endpoint() {
     assert_eq!(METADATA_IPV4_CIDR, "169.254.169.254/32");
 }
+
+#[test]
+fn anti_spoof_chains_are_detected_for_both_rule_shapes() {
+    let tagged = "-P INPUT ACCEPT\n\
+-A INPUT -i veth-4-0a1b2c ! -s 10.200.0.4/32 -m comment --comment \"enclave:session-a\" -j DROP\n\
+-A FORWARD -i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP\n";
+    assert_eq!(
+        chains_with_anti_spoof_rule(tagged, "veth-4-0a1b2c", "10.200.0.4"),
+        vec!["INPUT", "FORWARD"]
+    );
+}
+
+/// Another workspace's interface must never be reported as this workspace's
+/// leftover rule, and an unrelated rule on the same interface must not be
+/// mistaken for the anti-spoofing rule either.
+#[test]
+fn anti_spoof_detection_is_scoped_to_the_interface_and_address() {
+    let other = "-A INPUT -i veth-5-0a1b2c ! -s 10.200.0.5/32 -j DROP\n\
+-A INPUT -i veth-4-0a1b2c -j ACCEPT\n";
+    assert!(chains_with_anti_spoof_rule(other, "veth-4-0a1b2c", "10.200.0.4").is_empty());
+}
+
+#[test]
+fn anti_spoof_detection_ignores_other_chains() {
+    let other_chain = "-A DOCKER-USER -i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP\n";
+    assert!(chains_with_anti_spoof_rule(other_chain, "veth-4-0a1b2c", "10.200.0.4").is_empty());
+}

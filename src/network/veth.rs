@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
@@ -69,41 +70,43 @@ fn workspace_id_hash(workspace_id: &str) -> u32 {
 }
 
 fn configure_host_veth(host: &str, peer: &str, pid: u32) -> Result<()> {
-    let pid_str = pid.to_string();
-    let script = r#"host="$1"
-peer="$2"
-bridge_name="$3"
-target_pid="$4"
+    // One `ip` process configures the whole pair instead of one per operation.
+    // On a loaded host each spawn costs ~15 ms, which dominated workspace
+    // startup for a handful of link commands.
+    run_ip_batch(&format!(
+        "link add {host} type veth peer name {peer}\n\
+         link set {host} master {BRIDGE_NAME}\n\
+         link set {host} up\n\
+         link set {peer} netns {pid}\n"
+    ))
+    .with_context(|| format!("host veth setup for {host} failed"))?;
+    disable_ipv6(host);
 
-ip link add "$host" type veth peer name "$peer"
-ip link set "$host" master "$bridge_name"
-bridge link set dev "$host" isolated on
-path="/proc/sys/net/ipv6/conf/${host}/disable_ipv6"
-if [ -f "$path" ]; then
-  printf '1' > "$path"
-fi
-ip link set "$host" up
-ip link set "$peer" netns "$target_pid""#;
-    let output = Command::new("sh")
-        .arg("-ceu")
-        .arg(script)
-        .arg("sh")
-        .arg(host)
-        .arg(peer)
-        .arg(BRIDGE_NAME)
-        .arg(&pid_str)
-        .output()
-        .with_context(|| format!("failed to configure host veth setup for {host}"))?;
+    // Bridge port isolation is a `bridge` subcommand, so it needs its own
+    // process; batching keeps it to one for the whole host side.
+    let output = run_bridge_batch(&format!("link set dev {host} isolated on\n"))
+        .with_context(|| format!("failed to isolate bridge port {host}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "host veth setup for {} failed ({}): {}",
+            "failed to isolate bridge port {} ({}): {}",
             host,
             output.status,
             stderr.trim()
         );
     }
     Ok(())
+}
+
+/// Best-effort IPv6 shutdown for the host end of the pair. The sysctl may be
+/// absent on kernels built without IPv6, so a missing file is not an error.
+fn disable_ipv6(interface: &str) {
+    let path = format!("/proc/sys/net/ipv6/conf/{interface}/disable_ipv6");
+    if std::path::Path::new(&path).exists() {
+        if let Err(error) = std::fs::write(&path, "1") {
+            tracing::debug!("failed to disable IPv6 on {interface}: {error}");
+        }
+    }
 }
 
 fn configure_workspace_netns(
@@ -114,42 +117,24 @@ fn configure_workspace_netns(
 ) -> Result<()> {
     let pid_str = pid.to_string();
     let addr_cidr = format!("{workspace_ip}/24");
-    let script = r#"old_name="$1"
-new_name="$2"
-addr_cidr="$3"
-gateway_ip="$4"
-
-ip link set "$old_name" name "$new_name"
-for name in all default lo "$new_name"; do
-  path="/proc/sys/net/ipv6/conf/${name}/disable_ipv6"
-  if [ -f "$path" ]; then
-    printf '1' > "$path"
-  fi
-done
-ip link set lo up
-ip addr add "$addr_cidr" dev "$new_name"
-ip link set "$new_name" up
-ip route replace default via "$gateway_ip" dev "$new_name"
-if ip route show default | grep -F "default via ${gateway_ip} dev ${new_name}" >/dev/null 2>&1; then
-  exit 0
-fi
-exit 1"#;
-    let output = Command::new("nsenter")
-        .arg("--net")
-        .arg("--target")
-        .arg(&pid_str)
-        .arg("--")
-        .arg("sh")
-        .arg("-ceu")
-        .arg(script)
-        .arg("sh")
-        .arg(old_name)
-        .arg(new_name)
-        .arg(&addr_cidr)
-        .arg(ipam::GATEWAY_IP)
-        .output()
+    // The final `route show default` both verifies the result and returns it in
+    // the same process, so a healthy workspace pays one spawn for the whole
+    // namespace configuration.
+    let batch = format!(
+        "link set {old_name} name {new_name}\n\
+         link set lo up\n\
+         addr add {addr_cidr} dev {new_name}\n\
+         link set {new_name} up\n\
+         route replace default via {} dev {new_name}\n\
+         route show default\n",
+        ipam::GATEWAY_IP
+    );
+    let output = run_nsenter_ip_batch(&pid_str, &batch)
         .with_context(|| format!("failed to configure network namespace of pid {pid}"))?;
-    if output.status.success() {
+    let route_table = String::from_utf8_lossy(&output.stdout);
+    if output.status.success()
+        && default_route_output_has_route(&route_table, new_name, ipam::GATEWAY_IP)
+    {
         return Ok(());
     }
 
@@ -170,10 +155,48 @@ exit 1"#;
     )
 }
 
+/// Feed `ip -batch` a command list on stdin and return its output.
+fn run_ip_batch(commands: &str) -> Result<std::process::Output> {
+    run_batch(&mut Command::new("ip"), commands)
+}
+
+fn run_bridge_batch(commands: &str) -> Result<std::process::Output> {
+    run_batch(&mut Command::new("bridge"), commands)
+}
+
+fn run_batch(command: &mut Command, commands: &str) -> Result<std::process::Output> {
+    let mut child = command
+        .arg("-batch")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn network batch command")?;
+    child
+        .stdin
+        .take()
+        .context("network batch command has no stdin")?
+        .write_all(commands.as_bytes())
+        .context("failed to write network batch commands")?;
+    child
+        .wait_with_output()
+        .context("failed to collect network batch output")
+}
+
+fn run_nsenter_ip_batch(pid: &str, commands: &str) -> Result<std::process::Output> {
+    let mut command = Command::new("nsenter");
+    command
+        .arg("--net")
+        .arg("--target")
+        .arg(pid)
+        .arg("--")
+        .arg("ip");
+    run_batch(&mut command, commands)
+}
+
 fn run_ip(args: &[&str]) -> Result<()> {
-    let output = Command::new("ip")
-        .args(args)
-        .output()
+    let output = run_ip_batch(&format!("{}\n", args.join(" ")))
         .with_context(|| format!("failed to run: ip {}", args.join(" ")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -211,7 +234,6 @@ fn dump_nsenter_output(pid: &str, args: &[&str]) -> Result<String> {
     ))
 }
 
-#[cfg(test)]
 fn default_route_output_has_route(stdout: &str, iface: &str, gateway_ip: &str) -> bool {
     stdout
         .lines()
