@@ -1,3 +1,4 @@
+mod active_operations;
 mod dispatch;
 mod leases;
 mod rate_limiter;
@@ -56,6 +57,7 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         )),
         port_publisher: Arc::new(crate::network::publish::PortPublisher::new()),
         leases: Arc::new(leases::LifecycleLeases::default()),
+        active_operations: Arc::new(active_operations::ActiveOperations::default()),
     };
     reconcile_published_ports(&config.state_dir, &services.port_publisher)?;
 
@@ -69,6 +71,30 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let serve_result = serve(listener, &config, &shutdown, &services);
+    let workers = match serve_result {
+        Ok(workers) => Some(workers),
+        Err(err) => {
+            tracing::error!("daemon accept loop failed: {err:#}");
+            None
+        }
+    };
+
+    // Shutdown stops accepting new requests, waits a bounded time for the
+    // operations already running, and then names whatever is left. Their
+    // journals survive, so the next daemon start finishes or rolls back the
+    // interrupted work; this report is what makes that visible now.
+    let grace = shutdown_grace();
+    let remaining = services.active_operations.wait_for_drain(grace);
+    report_incomplete_operations(&remaining, grace);
+    if let Some(workers) = workers {
+        let unfinished = workers.finish_within(Duration::from_secs(1));
+        if unfinished > 0 {
+            tracing::error!(
+                "daemon shutdown left {} request worker(s) still running",
+                unfinished
+            );
+        }
+    }
 
     drop(services);
     crate::network::cleanup_host_networking();
@@ -76,7 +102,7 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     if let Err(err) = cleanup_files(&config.socket_path, &config.pid_file) {
         tracing::warn!("daemon cleanup failed: {err:#}");
     }
-    serve_result
+    Ok(())
 }
 
 fn prepare_runtime_paths(socket_path: &Path, pid_file: &Path) -> Result<()> {
@@ -150,7 +176,7 @@ fn serve(
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
     services: &services::DaemonServices,
-) -> Result<()> {
+) -> Result<workers::RequestWorkerPool> {
     listener
         .set_nonblocking(true)
         .context("failed to make daemon listener nonblocking")?;
@@ -179,9 +205,7 @@ fn serve(
         workers.submit(stream)?;
     }
 
-    workers.finish();
-
-    Ok(())
+    Ok(workers)
 }
 
 fn wait_for_listener(listener: &UnixListener) -> Result<()> {
@@ -264,6 +288,18 @@ fn handle_client(
     // operator ties a command to the journal record and the phase timings for the
     // same operation. A read-only request stays quiet, so the log is not doubled
     // for status polling.
+    // A lifecycle operation is registered so shutdown can name what it
+    // interrupted, and so a report of "nothing was running" is evidence rather
+    // than silence. Read-only requests are not registered: they are short, and
+    // registering them would make shutdown wait on status polling.
+    let _active = dispatch::action_is_lifecycle(&request.action).then(|| {
+        services.active_operations.begin(
+            &operation_id,
+            &request.action,
+            &operation_target(&request.params),
+        )
+    });
+
     if dispatch::action_is_lifecycle(&request.action) {
         tracing::info!(
             operation_id = %operation_id,
@@ -307,6 +343,27 @@ fn handle_client(
 
     write_response(&mut stream, &response)?;
     Ok(())
+}
+
+/// A short human label for what a request acts on, for shutdown reporting.
+///
+/// The sandbox and workspace names are the two things an operator needs to find
+/// the affected state, and both are optional, so whatever the request carries is
+/// used and the rest is left out rather than invented.
+fn operation_target(params: &serde_json::Value) -> String {
+    let field = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|name| params.get(*name).and_then(serde_json::Value::as_str))
+    };
+    let sandbox = field(&["sandbox", "sandbox_id", "name"]);
+    let workspace = field(&["workspace", "workspace_id"]);
+    match (sandbox, workspace) {
+        (Some(sandbox), Some(workspace)) => format!("{sandbox}/{workspace}"),
+        (Some(sandbox), None) => sandbox.to_string(),
+        (None, Some(workspace)) => workspace.to_string(),
+        (None, None) => "-".to_string(),
+    }
 }
 
 /// Clear the thread-local operation id when the request that set it finishes.
@@ -357,6 +414,44 @@ fn read_request_line(stream: &UnixStream) -> Result<Option<String>> {
 
 fn shutdown_requested(shutdown: &Arc<AtomicBool>) -> bool {
     shutdown.load(Ordering::SeqCst) || SIGNAL_SHUTDOWN.load(Ordering::SeqCst)
+}
+
+/// How long shutdown waits for running operations before leaving them behind.
+///
+/// Long enough for a stop, a destroy, or a resize to finish; short enough that
+/// a stuck or very long operation cannot hold the daemon open. The journals
+/// make the abandoned work recoverable, so waiting forever buys nothing.
+fn shutdown_grace() -> Duration {
+    const DEFAULT_SECS: u64 = 30;
+    const MAX_SECS: u64 = 600;
+    std::env::var("ENCLAVE_SHUTDOWN_GRACE_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1..=MAX_SECS).contains(value))
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(DEFAULT_SECS))
+}
+
+/// Name every operation shutdown had to abandon, with how to recover it.
+fn report_incomplete_operations(remaining: &[active_operations::ActiveOperation], grace: Duration) {
+    if remaining.is_empty() {
+        tracing::info!("daemon shutdown: no lifecycle operation was left running");
+        return;
+    }
+    for operation in remaining {
+        tracing::error!(
+            operation_id = %operation.id,
+            action = %operation.action,
+            target = %operation.target,
+            elapsed_secs = operation.elapsed().as_secs(),
+            "daemon shutdown left an operation running after {}s; its journal is retained",
+            grace.as_secs()
+        );
+    }
+    tracing::error!(
+        "daemon shutdown report: {} operation(s) incomplete; the next daemon start finishes or rolls them back",
+        remaining.len()
+    );
 }
 
 fn reconcile_published_ports(

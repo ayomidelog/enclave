@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -77,7 +78,13 @@ impl RequestWorkerPool {
         })
     }
 
-    pub(super) fn finish(self) {
+    /// Stop taking work and join the workers, giving up after the grace period.
+    ///
+    /// A worker in the middle of a request cannot be interrupted safely, so the
+    /// only bound available is how long shutdown waits before leaving the
+    /// remaining workers behind. Returns the number of workers still running,
+    /// which is the number of operations the caller has to report as incomplete.
+    pub(super) fn finish_within(self, grace: Duration) -> usize {
         let Self {
             control_sender,
             transfer_sender,
@@ -85,9 +92,29 @@ impl RequestWorkerPool {
         } = self;
         drop(control_sender);
         drop(transfer_sender);
-        for worker in workers {
-            let _ = worker.join();
+
+        let deadline = std::time::Instant::now() + grace;
+        loop {
+            if workers.iter().all(|worker| worker.is_finished()) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
         }
+
+        let mut unfinished = 0;
+        for worker in workers {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                // The process is about to exit, so the handle is dropped rather
+                // than waited on. Its operation is named in the shutdown report.
+                unfinished += 1;
+            }
+        }
+        unfinished
     }
 }
 

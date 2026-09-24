@@ -85,6 +85,14 @@ pub(crate) fn dispatch(
             "pid": std::process::id(),
             "state_dir": config.state_dir.to_string_lossy(),
             "socket_path": config.socket_path.to_string_lossy(),
+            // Lifecycle operations running right now, so a slow daemon can be
+            // explained without reading the log.
+            "active_operations": services
+                .active_operations
+                .in_flight()
+                .iter()
+                .map(crate::daemon::active_operations::ActiveOperation::describe)
+                .collect::<Vec<_>>(),
             "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {
