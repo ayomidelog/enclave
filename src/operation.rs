@@ -8,6 +8,8 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::fsutil::Durability;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationStatus {
@@ -121,13 +123,13 @@ impl Journal {
         let root = state_dir.join("operations");
         fs::create_dir_all(&root)
             .with_context(|| format!("failed to create operation journal {}", root.display()))?;
-        let mut journal = Self {
-            root,
-            record: record_for(kind, target),
-        };
-        journal.persist()?;
-        journal.record.begin("starting");
-        journal.persist()?;
+        // One durable write, not two: the record and its starting phase are the
+        // same statement, and writing them separately cost an extra fsync of the
+        // file and the directory on every operation.
+        let mut record = record_for(kind, target);
+        record.begin("starting");
+        let journal = Self { root, record };
+        journal.persist(Durability::Required)?;
         Ok(journal)
     }
 
@@ -141,25 +143,30 @@ impl Journal {
 
     pub fn phase(&mut self, phase: impl Into<String>) -> Result<()> {
         self.record.phase(phase);
-        self.persist()
+        // A phase is a progress note, not a recovery input: what recovery needs
+        // is the record's existence and its terminal status, and the registry
+        // holds the transitional state that drives rollback. Writing it without
+        // fsync keeps the newest note best effort, so a power loss can only lose
+        // the detail of how far the operation had got, never a durable claim.
+        self.persist(Durability::BestEffort)
     }
 
     pub fn succeed(mut self) -> Result<OperationRecord> {
         self.record.succeed();
-        self.persist()?;
+        self.persist(Durability::Required)?;
         Ok(self.record)
     }
 
     pub fn fail(mut self, error: impl Into<String>) -> Result<OperationRecord> {
         self.record.fail(error);
-        self.persist()?;
+        self.persist(Durability::Required)?;
         Ok(self.record)
     }
 
-    fn persist(&self) -> Result<()> {
+    fn persist(&self, durability: Durability) -> Result<()> {
         let path = self.root.join(format!("{}.json", self.record.id));
         let data = serde_json::to_vec_pretty(&self.record)?;
-        crate::fsutil::write_file_atomic(&path, &data, 0o600)
+        crate::fsutil::write_file_atomic_with(&path, &data, 0o600, durability)
             .with_context(|| format!("failed to persist operation journal {}", path.display()))
     }
 }

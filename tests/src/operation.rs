@@ -1,5 +1,41 @@
 use super::*;
 
+/// A journal is usable the moment it begins.
+///
+/// The record and its starting phase are written together, so a crash after
+/// begin returns cannot leave a journal that exists but says nothing.
+#[test]
+fn begin_records_the_starting_phase_in_one_step() {
+    let state =
+        std::env::temp_dir().join(format!("enclave-operation-begin-{}", uuid::Uuid::new_v4()));
+    let journal = Journal::begin(&state, "workspace.start", "sb/ws").expect("begin journal");
+    let id = journal.id().to_string();
+
+    let on_disk = load(&state, &id).expect("journal is readable immediately after begin");
+    assert_eq!(on_disk.status, OperationStatus::Running);
+    assert_eq!(on_disk.phase, "starting");
+
+    fs::remove_dir_all(state).expect("remove journal fixture");
+}
+
+/// A phase update is a complete record on disk even though it is written
+/// without fsync, so a reader never sees a half-written journal.
+#[test]
+fn phase_updates_are_atomic_and_readable() {
+    let state =
+        std::env::temp_dir().join(format!("enclave-operation-phase-{}", uuid::Uuid::new_v4()));
+    let mut journal = Journal::begin(&state, "workspace.stop", "sb/ws").expect("begin journal");
+    let id = journal.id().to_string();
+
+    for phase in ["stop_runtime", "cleanup_resources", "verify_cleanup"] {
+        journal.phase(phase).expect("record phase");
+        let on_disk = load(&state, &id).expect("journal is readable after each phase");
+        assert_eq!(on_disk.phase, phase);
+    }
+
+    fs::remove_dir_all(state).expect("remove journal fixture");
+}
+
 #[test]
 fn journal_records_phase_and_terminal_success() {
     let state = std::env::temp_dir().join(format!("enclave-operation-{}", uuid::Uuid::new_v4()));

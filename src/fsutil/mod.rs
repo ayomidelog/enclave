@@ -85,7 +85,31 @@ where
     }
 }
 
+/// Whether an atomic write has to survive a power loss before it returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Durability {
+    /// fsync the file and its directory before returning.
+    Required,
+    /// Replace the file without fsync.
+    ///
+    /// The write is still atomic, so a reader never sees a partial file, but the
+    /// rename may be lost in a power failure and the previous contents survive
+    /// instead. That is the right trade for a progress note: the previous version
+    /// is a truthful, earlier statement of the same thing, so losing the newest
+    /// one costs a little detail rather than correctness.
+    BestEffort,
+}
+
 pub fn write_file_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    write_file_atomic_with(path, content, mode, Durability::Required)
+}
+
+pub fn write_file_atomic_with(
+    path: &Path,
+    content: &[u8],
+    mode: u32,
+    durability: Durability,
+) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("path {} has no parent directory", path.display()))?;
@@ -101,8 +125,10 @@ pub fn write_file_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
         .with_context(|| format!("failed to create temp file {}", temp_path.display()))?;
     temp.write_all(content)
         .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
-    temp.sync_all()
-        .with_context(|| format!("failed to fsync temp file {}", temp_path.display()))?;
+    if durability == Durability::Required {
+        temp.sync_all()
+            .with_context(|| format!("failed to fsync temp file {}", temp_path.display()))?;
+    }
     drop(temp);
 
     fs::set_permissions(&temp_path, fs::Permissions::from_mode(mode))
@@ -129,13 +155,15 @@ pub fn write_file_atomic(path: &Path, content: &[u8], mode: u32) -> Result<()> {
         });
     }
 
-    let parent_file = OpenOptions::new()
-        .read(true)
-        .open(parent)
-        .with_context(|| format!("failed to open directory {}", parent.display()))?;
-    parent_file
-        .sync_all()
-        .with_context(|| format!("failed to fsync directory {}", parent.display()))?;
+    if durability == Durability::Required {
+        let parent_file = OpenOptions::new()
+            .read(true)
+            .open(parent)
+            .with_context(|| format!("failed to open directory {}", parent.display()))?;
+        parent_file
+            .sync_all()
+            .with_context(|| format!("failed to fsync directory {}", parent.display()))?;
+    }
     Ok(())
 }
 
