@@ -8,6 +8,11 @@ use super::ipam;
 
 const METADATA_IPV4_CIDR: &str = "169.254.169.254/32";
 const SYSCTL_IP_FORWARD: &str = "/proc/sys/net/ipv4/ip_forward";
+const COMMENT_MODULE: &str = "comment";
+
+/// Every workspace-scoped rule carries this prefix so repair and diagnostics
+/// can tell Enclave-owned rules apart from unrelated host firewall state.
+pub(crate) const RULE_COMMENT_PREFIX: &str = "enclave:";
 
 pub fn ensure_nat() -> Result<()> {
     ensure_ipv4_forwarding()?;
@@ -232,9 +237,13 @@ fn remove_filter_rule(iptables: &str, chain: &str, rule_args: &[&str]) -> Result
     Ok(())
 }
 
-pub fn ensure_workspace_anti_spoofing(veth_host: &str, assigned_ip: &str) -> Result<()> {
+pub fn ensure_workspace_anti_spoofing(
+    veth_host: &str,
+    assigned_ip: &str,
+    workspace_id: &str,
+) -> Result<()> {
     let iptables = detect_iptables()?;
-    let rule = anti_spoof_rule_args(veth_host, assigned_ip);
+    let rule = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
     let rule_refs: Vec<&str> = rule.iter().map(String::as_str).collect();
 
     ensure_input_rule_first(
@@ -250,25 +259,110 @@ pub fn ensure_workspace_anti_spoofing(veth_host: &str, assigned_ip: &str) -> Res
     Ok(())
 }
 
-pub fn remove_workspace_anti_spoofing(veth_host: &str, assigned_ip: &str) -> Result<()> {
+pub fn remove_workspace_anti_spoofing(
+    veth_host: &str,
+    assigned_ip: &str,
+    workspace_id: &str,
+) -> Result<()> {
     let iptables = detect_iptables()?;
-    let rule = anti_spoof_rule_args(veth_host, assigned_ip);
-    let rule_refs: Vec<&str> = rule.iter().map(String::as_str).collect();
-    remove_input_rule(&iptables, &rule_refs)?;
-    remove_forward_rule(&iptables, &rule_refs)?;
+    let tagged = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
+    let legacy = anti_spoof_rule_args(veth_host, assigned_ip, None);
+    let tagged_refs: Vec<&str> = tagged.iter().map(String::as_str).collect();
+    let legacy_refs: Vec<&str> = legacy.iter().map(String::as_str).collect();
+    // Older releases installed untagged rules. Remove both shapes so an
+    // upgrade cannot leave a stale rule behind.
+    remove_input_rule(&iptables, &tagged_refs)?;
+    remove_forward_rule(&iptables, &tagged_refs)?;
+    if tagged_refs != legacy_refs {
+        remove_input_rule(&iptables, &legacy_refs)?;
+        remove_forward_rule(&iptables, &legacy_refs)?;
+    }
     Ok(())
 }
 
-fn anti_spoof_rule_args(veth_host: &str, assigned_ip: &str) -> Vec<String> {
-    vec![
+fn anti_spoof_rule_args(veth_host: &str, assigned_ip: &str, owner: Option<&str>) -> Vec<String> {
+    let mut rule = vec![
         "-i".to_string(),
         veth_host.to_string(),
         "!".to_string(),
         "-s".to_string(),
         format!("{assigned_ip}/32"),
-        "-j".to_string(),
-        "DROP".to_string(),
+    ];
+    if let Some(owner) = owner {
+        rule.extend(comment_args(owner));
+    }
+    rule.push("-j".to_string());
+    rule.push("DROP".to_string());
+    rule
+}
+
+fn comment_args(owner: &str) -> Vec<String> {
+    vec![
+        "-m".to_string(),
+        COMMENT_MODULE.to_string(),
+        "--comment".to_string(),
+        format!("{RULE_COMMENT_PREFIX}{owner}"),
     ]
+}
+
+/// A firewall rule whose comment proves Enclave installed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnedRule {
+    pub(crate) chain: String,
+    pub(crate) owner: String,
+    pub(crate) rule: String,
+}
+
+/// Enumerate firewall rules that Enclave tagged as its own.
+pub(crate) fn list_owned_rules() -> Result<Vec<OwnedRule>> {
+    let iptables = detect_iptables()?;
+    let output = Command::new(&iptables)
+        .arg("-S")
+        .output()
+        .with_context(|| format!("failed to list firewall rules via {iptables}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "listing firewall rules via {} failed ({}): {}",
+            iptables,
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(parse_owned_rules(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_owned_rules(output: &str) -> Vec<OwnedRule> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("-A ")?;
+            let (chain, rule) = rest.split_once(' ')?;
+            let owner = owned_rule_owner(rule)?;
+            Some(OwnedRule {
+                chain: chain.to_string(),
+                owner,
+                rule: rule.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn owned_rule_owner(rule: &str) -> Option<String> {
+    let (_, comment) = rule.split_once("--comment")?;
+    let comment = comment.trim_start();
+    let comment = comment.strip_prefix('"').unwrap_or(comment);
+    let comment = comment
+        .split_once('"')
+        .map(|(value, _)| value)
+        .unwrap_or(comment);
+    let comment = comment.split_whitespace().next().unwrap_or_default();
+    let owner = comment.strip_prefix(RULE_COMMENT_PREFIX)?;
+    if owner.is_empty() {
+        return None;
+    }
+    Some(owner.to_string())
 }
 
 fn ensure_ipv4_forwarding() -> Result<()> {

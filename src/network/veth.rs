@@ -44,6 +44,24 @@ pub fn veth_names(host_octet: u8, workspace_id: &str) -> (String, String) {
     )
 }
 
+/// Recognize host veth names that Enclave's naming scheme produces.
+///
+/// Diagnostics use this to find interfaces that belong to Enclave without
+/// depending on the registry, which may be missing or stale.
+pub(crate) fn is_enclave_veth_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("veth-") else {
+        return false;
+    };
+    let Some((octet, hash)) = rest.split_once('-') else {
+        return false;
+    };
+    !octet.is_empty()
+        && octet.len() <= 3
+        && octet.bytes().all(|byte| byte.is_ascii_digit())
+        && hash.len() == 6
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn workspace_id_hash(workspace_id: &str) -> u32 {
     workspace_id.bytes().fold(0x811c9dc5u32, |hash, byte| {
         hash.wrapping_mul(0x01000193) ^ u32::from(byte)

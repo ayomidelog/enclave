@@ -10,6 +10,7 @@ use crate::sandbox::cgroup;
 use crate::workspace::WorkspaceStatus;
 
 mod cgroups;
+mod network;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DoctorReport {
@@ -57,6 +58,8 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
         check_registry_consistency(state_dir),
         check_orphaned_mounts(state_dir),
         check_stale_cgroups(state_dir),
+        network::check_workspace_network(state_dir),
+        network::check_workspace_loop_devices(state_dir),
         check_stale_runtime_state(state_dir),
         check_operation_journal(state_dir),
         check_cgroup_v2_availability(),

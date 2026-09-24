@@ -100,7 +100,7 @@ fn attach_workspace_network(
     let result: Result<()> = (|| {
         veth::setup_workspace_networking(pid, ip, &veth_host, &veth_peer)
             .with_context(|| format!("failed to set up networking for workspace (ip={ip})"))?;
-        nat::ensure_workspace_anti_spoofing(&veth_host, ip)
+        nat::ensure_workspace_anti_spoofing(&veth_host, ip, workspace_id)
             .with_context(|| format!("failed to install anti-spoofing rules for {}", veth_host))?;
 
         dns::provision_resolv_conf(workspace_rootfs)
@@ -143,7 +143,7 @@ pub fn teardown_workspace_network(assigned_ip: &str, workspace_id: &str) -> Netw
     let (veth_host, _) = veth::veth_names(host_octet, workspace_id);
     report.veth_host = Some(veth_host.clone());
 
-    match nat::remove_workspace_anti_spoofing(&veth_host, assigned_ip) {
+    match nat::remove_workspace_anti_spoofing(&veth_host, assigned_ip, workspace_id) {
         Ok(()) => report.anti_spoof_rules_absent = true,
         Err(error) => report.failures.push(NetworkCleanupFailure {
             resource: "anti-spoofing-rules".to_string(),
