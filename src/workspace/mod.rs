@@ -20,7 +20,9 @@ pub const DEFAULT_WORKSPACE_PATH: &str =
     "/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 pub use crate::network::publish::PortPublisher;
-pub(crate) use certificate::{verify_workspace_cleanup, WorkspaceCleanupCertificate};
+pub(crate) use certificate::{
+    verify_workspace_cleanup, verify_workspace_destroyed, WorkspaceCleanupCertificate,
+};
 pub use cleanup::{CleanupMode, RetainedResource};
 pub use control::resize_workspace_disk;
 pub(crate) use control::start_workspace_with_security;

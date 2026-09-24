@@ -254,10 +254,28 @@ pub(super) fn dispatch_workspace_target(
                 mode,
             )?;
             port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
+            // The port publisher lives in the daemon, so its release is verified
+            // here and folded into the destroy certificate, exactly as the stop
+            // path does.
+            let released = !port_publisher
+                .has_active_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
+            let certificate = report.certificate.with_ports_released(released);
+            // The registry record is already removed by this point, so a listener
+            // that would not close cannot be turned back into a failure without
+            // misreporting what happened. It is reported instead: the certificate
+            // names it and the CLI points the operator at doctor repair.
+            if !certificate.is_complete() {
+                tracing::warn!(
+                    "workspace '{}' destroy left resources behind: {}",
+                    report.workspace_id,
+                    certificate.failure_summary()
+                );
+            }
             Ok(json!({
                 "workspace_id": report.workspace_id,
                 "mode": report.mode,
                 "retained": report.retained,
+                "certificate": certificate,
                 "sandbox": sandbox,
             }))
         }

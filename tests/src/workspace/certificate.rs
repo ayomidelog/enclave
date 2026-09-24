@@ -138,6 +138,55 @@ fn certificate_serializes_for_operation_reports() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// A destroy must prove the workspace directory is gone. A stop keeps it, so this
+/// check exists only on the destroy path and it fails closed.
+#[test]
+fn destroy_verification_reports_a_surviving_workspace_directory() {
+    let (workspace, root) = fixture("destroy-files", WorkspaceStatus::Stopped, None);
+
+    let certificate = verify_workspace_destroyed(&workspace, true);
+
+    assert!(!certificate.is_complete());
+    assert_eq!(certificate.files_removed, Some(false));
+    assert!(certificate
+        .failures
+        .iter()
+        .any(|failure| failure.resource == "files"));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+/// The positive case: nothing the record described is found afterwards, so the
+/// destroy certificate is complete.
+#[test]
+fn destroy_verification_is_complete_once_everything_is_gone() {
+    let (workspace, root) = fixture("destroy-clean", WorkspaceStatus::Stopped, None);
+    fs::remove_dir_all(&workspace.workspace_path).unwrap();
+
+    let certificate = verify_workspace_destroyed(&workspace, true);
+
+    assert!(certificate.is_complete(), "{:?}", certificate.failures);
+    assert_eq!(certificate.files_removed, Some(true));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+/// A network teardown the caller could not complete has to fail the destroy
+/// certificate, so a destroy cannot report the host clean while a veth or rule
+/// survives.
+#[test]
+fn destroy_verification_fails_when_the_network_was_not_released() {
+    let (workspace, root) = fixture("destroy-network", WorkspaceStatus::Stopped, None);
+    fs::remove_dir_all(&workspace.workspace_path).unwrap();
+
+    let certificate = verify_workspace_destroyed(&workspace, false);
+
+    assert!(!certificate.is_complete());
+    assert_eq!(certificate.network_complete, Some(false));
+
+    let _ = fs::remove_dir_all(root);
+}
+
 #[allow(dead_code)]
 fn unused_sandbox_fixture(sandbox_dir: &std::path::Path) -> SandboxMetadata {
     SandboxMetadata {

@@ -32,6 +32,7 @@ mod forwarding;
 mod inventory;
 mod primitives;
 
+pub(crate) use anti_spoof::anti_spoof_chains_for;
 pub(crate) use anti_spoof::{ensure_workspace_anti_spoofing, remove_workspace_anti_spoofing};
 pub use forwarding::{ensure_nat, remove_nat};
 pub(crate) use inventory::{list_owned_rules, remove_owned_rule, OwnedRule};

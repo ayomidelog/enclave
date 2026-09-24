@@ -272,6 +272,15 @@ pub(super) fn run_workspace_destroy(
             .iter()
             .map(|item| format!("{}: {}", item.resource, item.detail)),
     );
+    // The destroy certificate is the evidence that the host is clean, not just
+    // that the files and the registry record are gone.
+    if !report.certificate.is_complete() {
+        eprintln!(
+            "warning: workspace {} may have left resources behind: {}",
+            report.workspace_id,
+            report.certificate.failure_summary()
+        );
+    }
     Ok(())
 }
 

@@ -61,7 +61,11 @@ fn verify_veth_absent(veth_host: &str) -> Result<()> {
     )
 }
 
-fn veth_is_present(veth_host: &str) -> bool {
+/// Whether an interface with this name exists on the host.
+///
+/// Destroy verification uses this to prove an interface is gone after its
+/// removal, rather than trusting that the removal call returned success.
+pub fn veth_is_present(veth_host: &str) -> bool {
     std::path::Path::new(NET_CLASS_DIR).join(veth_host).exists()
 }
 

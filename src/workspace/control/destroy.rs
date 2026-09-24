@@ -8,6 +8,14 @@ pub struct WorkspaceDestroyReport {
     /// Resources that are still held, reported in force mode.
     #[serde(default)]
     pub retained: Vec<cleanup::RetainedResource>,
+    /// What the host looked like after the destroy finished.
+    ///
+    /// A removed directory and a removed registry record are not evidence that
+    /// the workspace's veth, rules, mounts, or loop device are gone. The
+    /// certificate is that evidence, and it is checked against the record as it
+    /// was immediately before deletion.
+    #[serde(default)]
+    pub certificate: crate::workspace::WorkspaceCleanupCertificate,
 }
 
 impl WorkspaceDestroyReport {
@@ -97,6 +105,29 @@ pub fn destroy_workspace_with_mode(
             outcome.retained_summary()
         );
     }
+
+    // Verify the host after deletion rather than inferring it from the removal
+    // calls: a directory removal succeeding is not evidence that the loop device
+    // was detached or that the mounts are gone. In normal mode the artifact
+    // cleanup already refused to delete anything it could not release, so this
+    // catches what only becomes visible once the files are gone. It runs before
+    // the registry record is removed, so a failure keeps the evidence.
+    let network_complete = !outcome
+        .retained
+        .iter()
+        .any(|retained| retained.resource == "network");
+    let certificate = crate::workspace::verify_workspace_destroyed(&workspace, network_complete);
+    if !mode.is_force() && !certificate.is_complete() {
+        let _ = journal.fail(format!(
+            "destroy verification failed: {}",
+            certificate.failure_summary()
+        ));
+        bail!(
+            "workspace '{}' destroy left resources behind, retaining its registry record: {}",
+            workspace_id,
+            certificate.failure_summary()
+        );
+    }
     journal.phase("remove_registry_record")?;
 
     if let Err(error) = with_registry_mut(state_dir, |registry| {
@@ -116,6 +147,7 @@ pub fn destroy_workspace_with_mode(
         workspace_id,
         mode,
         retained: outcome.retained,
+        certificate,
     })
 }
 

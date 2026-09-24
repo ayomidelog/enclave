@@ -36,6 +36,18 @@ pub fn ensure_workspace_anti_spoofing(
     Ok(())
 }
 
+/// Whether the anti-spoofing rule for this interface is still installed.
+///
+/// Used by destroy verification, which has to prove the rule is gone rather than
+/// trust that the removal ran.
+pub(crate) fn anti_spoof_chains_for(
+    veth_host: &str,
+    assigned_ip: &str,
+) -> Result<Vec<&'static str>> {
+    let iptables = detect_iptables()?;
+    anti_spoof_chains_present(&iptables, veth_host, assigned_ip)
+}
+
 pub fn remove_workspace_anti_spoofing(
     veth_host: &str,
     assigned_ip: &str,

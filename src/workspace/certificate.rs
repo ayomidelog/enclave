@@ -20,7 +20,10 @@ pub struct CleanupFailure {
 /// independent operations. The certificate records what was actually verified,
 /// so callers can tell "metadata deleted" apart from "host fully clean" and so a
 /// stop that leaves something behind fails instead of reporting success.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The default certificate verifies nothing, so it is incomplete and fails
+/// closed. It exists as the deserialization fallback for a response that predates
+/// the field, where "no evidence" must not read as "verified clean".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCleanupCertificate {
     pub workspace_id: String,
     pub runtime_exited: bool,
@@ -35,6 +38,12 @@ pub struct WorkspaceCleanupCertificate {
     pub network_complete: Option<bool>,
     #[serde(default)]
     pub ports_released: Option<bool>,
+    /// Whether the workspace directory itself is gone.
+    ///
+    /// A stop keeps the directory, so this is left unset there; a destroy has to
+    /// prove it is gone.
+    #[serde(default)]
+    pub files_removed: Option<bool>,
     #[serde(default)]
     pub failures: Vec<CleanupFailure>,
 }
@@ -62,6 +71,7 @@ impl WorkspaceCleanupCertificate {
             && self.runtime_files_removed
             && self.network_complete.unwrap_or(true)
             && self.ports_released.unwrap_or(true)
+            && self.files_removed.unwrap_or(true)
     }
 
     /// Render the failures as one line suitable for an error message.
@@ -83,6 +93,68 @@ impl WorkspaceCleanupCertificate {
     }
 }
 
+/// Verify the host resources Enclave owns for a destroyed workspace.
+///
+/// The passed record is the workspace as it was immediately before deletion,
+/// which is the only remaining description of what it owned. A destroy adds two
+/// things a stop does not need to prove: the workspace directory is gone, and the
+/// network teardown succeeded. Everything else is the same verified statement the
+/// stop certificate makes, which is what lets a destroy claim the host is clean
+/// rather than only that the files were removed.
+pub(crate) fn verify_workspace_destroyed(
+    workspace: &WorkspaceMetadata,
+    network_complete: bool,
+) -> WorkspaceCleanupCertificate {
+    let mut certificate = verify_workspace_cleanup(workspace, None);
+    certificate.network_complete = Some(network_complete);
+
+    let workspace_dir = Path::new(&workspace.workspace_path);
+    let files_removed = !workspace_dir.exists();
+    certificate.files_removed = Some(files_removed);
+    certificate.record(
+        "files",
+        files_removed,
+        format!(
+            "workspace directory {} still exists",
+            workspace_dir.display()
+        ),
+    );
+
+    // Prove the network state is gone by looking, rather than trusting the
+    // teardown report the caller passed in. A veth can outlive a delete that
+    // reported success when a namespace still holds it, and a firewall rule can
+    // survive a delete that matched nothing.
+    if let Some(ip) = workspace.assigned_ip.as_deref() {
+        if let Some(octet) = crate::network::ipam::parse_host_octet(ip) {
+            let (veth_host, _) = crate::network::veth::veth_names(octet, &workspace.id);
+            let veth_absent = !crate::network::teardown::veth_is_present(&veth_host);
+            certificate.record(
+                "veth",
+                veth_absent,
+                format!("interface {veth_host} is still present"),
+            );
+            match crate::network::nat::anti_spoof_chains_for(&veth_host, ip) {
+                Ok(chains) if chains.is_empty() => {}
+                Ok(chains) => certificate.record(
+                    "firewall",
+                    false,
+                    format!(
+                        "anti-spoofing rule for {veth_host} still present in {}",
+                        chains.join(", ")
+                    ),
+                ),
+                Err(error) => certificate.record(
+                    "firewall",
+                    false,
+                    format!("could not verify rules for {veth_host}: {error:#}"),
+                ),
+            }
+        }
+    }
+
+    certificate
+}
+
 /// Verify the host resources Enclave owns for a stopped workspace.
 ///
 /// `network` is the report from the network teardown step, which the caller runs
@@ -101,6 +173,7 @@ pub(crate) fn verify_workspace_cleanup(
         runtime_files_removed: true,
         network_complete: network.map(|report| report.is_complete()),
         ports_released: None,
+        files_removed: None,
         failures: Vec::new(),
     };
 
