@@ -69,6 +69,40 @@ fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
     }
 }
 
+/// Whether a persistent workspace session helper is still running for `socket`.
+fn persistent_helper_is_running(socket: &str) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .filter(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+        else {
+            continue;
+        };
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        // A zombie has already released its namespaces and cgroup membership.
+        let state = stat
+            .rsplit_once(") ")
+            .and_then(|(_, rest)| rest.chars().next());
+        if matches!(state, Some('Z') | Some('X')) {
+            continue;
+        }
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&cmdline);
+        if cmdline.contains("workspace-session-persistent-helper") && cmdline.contains(socket) {
+            return true;
+        }
+    }
+    false
+}
+
 #[test]
 #[ignore = "requires root privileges and namespace/mount support"]
 fn workspace_root_overlay_enforces_total_disk_quota() {
@@ -272,6 +306,32 @@ fn cgroup_limits_are_applied_to_workspace_runtime() {
         result.stdout.contains(&expected),
         "expected the command to run inside {expected}, got: {}",
         result.stdout
+    );
+
+    // A helper that outlives its runtime would hold the workspace cgroup and
+    // its mount namespace forever, so it has to notice the runtime's death and
+    // exit on its own.
+    let helper_socket = format!(
+        "/run/enclave/session-{}-{}.sock",
+        runtime.runtime_pid, runtime.runtime_starttime_ticks
+    );
+    assert!(
+        persistent_helper_is_running(&helper_socket),
+        "expected a live helper for {helper_socket}"
+    );
+    unsafe { libc::kill(runtime.runtime_pid as i32, libc::SIGKILL) };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let mut exited = false;
+    while std::time::Instant::now() < deadline {
+        if !persistent_helper_is_running(&helper_socket) {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        exited,
+        "the persistent helper must exit once its runtime is gone"
     );
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");

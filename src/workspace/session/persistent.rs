@@ -145,6 +145,9 @@ fn start_helper(
     let fds = duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
     let raw_fds = raw_fds(&fds);
     let pidfd = open_runtime_pidfd(runtime_pid)?;
+    // The helper polls this pidfd to notice that its runtime is gone, so it has
+    // to survive the `exec` that starts the helper.
+    super::make_inheritable(&pidfd)?;
     let current_exe = super::resolve_session_helper_source();
     let helper_log = runtime_dir.join("session-helper.log");
     let helper_stderr = OpenOptions::new()
@@ -247,6 +250,14 @@ fn open_process_pidfd(pid: u32) -> Option<i32> {
     (fd >= 0).then_some(fd)
 }
 
+fn open_runtime_pidfd(pid: u32) -> Result<std::fs::File> {
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to open runtime pidfd");
+    }
+    Ok(unsafe { std::fs::File::from_raw_fd(fd as i32) })
+}
+
 fn wait_for_helper_progress(pidfd: Option<i32>, remaining: Duration) {
     let Some(pidfd) = pidfd else {
         return;
@@ -264,14 +275,6 @@ fn wait_for_helper_progress(pidfd: Option<i32>, remaining: Duration) {
             std::io::Error::last_os_error()
         );
     }
-}
-
-fn open_runtime_pidfd(pid: u32) -> Result<std::fs::File> {
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error()).context("failed to open runtime pidfd");
-    }
-    Ok(unsafe { std::fs::File::from_raw_fd(fd as i32) })
 }
 
 fn send_command(

@@ -22,7 +22,7 @@ use anyhow::{bail, Context, Result};
 use super::types::WorkspaceMetadata;
 
 pub(crate) use idmap::workspace_bind_mount_idmap_option;
-pub(crate) use namespace_cache::{duplicate_for_child, raw_fds};
+pub(crate) use namespace_cache::{duplicate_for_child, make_inheritable, raw_fds};
 pub(crate) use persistent::{
     execute_persistent_command, output_to_string, MAX_HELPER_OUTPUT_BYTES,
 };

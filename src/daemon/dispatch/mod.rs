@@ -345,7 +345,12 @@ pub(crate) fn dispatch(
                 .get("strict")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let report = registry::repair_registry(&config.state_dir, strict)?;
+            let mut report = registry::repair_registry(&config.state_dir, strict)?;
+            // Repair fixes registry/disk consistency; this brings the persisted
+            // lifecycle state back in line with what is actually running, so an
+            // interrupted start or stop is recoverable without a daemon restart.
+            report.reconciled_runtime_records =
+                crate::sandbox::reconcile_runtime_state(&config.state_dir)?;
             Ok(serde_json::to_value(report)?)
         }
         Action::PolicyGet => {

@@ -61,6 +61,10 @@ pub struct RepairReport {
     pub removed_sandboxes: usize,
     pub added_workspaces: usize,
     pub removed_workspaces: usize,
+    /// Sandbox and workspace records whose persisted lifecycle state had to be
+    /// reconciled with what was actually running.
+    #[serde(default)]
+    pub reconciled_runtime_records: usize,
 }
 
 impl Default for Registry {

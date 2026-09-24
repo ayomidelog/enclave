@@ -342,3 +342,73 @@ fn destroy_with_live_workspace_retains_sandbox_and_registry() {
     .unwrap();
     let _ = fs::remove_dir_all(&state_dir);
 }
+
+#[test]
+fn reconcile_runtime_state_reports_every_repaired_record() {
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-runtime-reconcile-count-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&state_dir);
+    crate::registry::ensure_registry(&state_dir).unwrap();
+
+    let sandbox = transitional_sandbox(&state_dir, "sandbox-stopping", SandboxStatus::Stopping);
+    let workspace_path = std::path::PathBuf::from(&sandbox.sandbox_path)
+        .join("workspaces")
+        .join("workspace-id");
+    fs::create_dir_all(&workspace_path).unwrap();
+    let workspace = WorkspaceMetadata {
+        id: "workspace-id".to_string(),
+        sandbox_id: sandbox.id.clone(),
+        name: "workspace".to_string(),
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        workspace_path: workspace_path.to_string_lossy().to_string(),
+        filesystem_path: workspace_path.join("fs").to_string_lossy().to_string(),
+        filesystem_mount_target: "/home".to_string(),
+        home_mount_source_path: None,
+        sandbox_rootfs_path: sandbox.rootfs_path.clone(),
+        overlay_home_base_path: sandbox.home_base_path.clone(),
+        overlay_home_upper_path: String::new(),
+        overlay_home_work_path: String::new(),
+        overlay_home_merged_path: String::new(),
+        auth_providers: Vec::new(),
+        env_tokens: Vec::new(),
+        published_ports: Vec::new(),
+        status: WorkspaceStatus::Stopping,
+        runtime_pid: None,
+        runtime_starttime_ticks: None,
+        namespace_refs: Default::default(),
+        clear_tmp_on_restart: false,
+        limits: WorkspaceLimits::default(),
+        assigned_ip: None,
+    };
+    with_registry_mut(&state_dir, |registry| {
+        registry.sandboxes.insert(
+            sandbox.id.clone(),
+            RegistrySandbox {
+                metadata: sandbox.clone(),
+                workspaces: BTreeMap::from([(workspace.id.clone(), workspace.clone())]),
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(reconcile_runtime_state(&state_dir).unwrap(), 2);
+    with_registry(&state_dir, |registry| {
+        assert_eq!(
+            registry.sandboxes[&sandbox.id].metadata.status,
+            SandboxStatus::Stopped
+        );
+        assert_eq!(
+            registry.sandboxes[&sandbox.id].workspaces[&workspace.id].status,
+            WorkspaceStatus::Stopped
+        );
+        Ok(())
+    })
+    .unwrap();
+    // A repaired record is not reported twice.
+    assert_eq!(reconcile_runtime_state(&state_dir).unwrap(), 0);
+
+    let _ = fs::remove_dir_all(&state_dir);
+}

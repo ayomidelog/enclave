@@ -172,7 +172,7 @@ pub fn start_workspace_with_security(
             let cgroup_cleanup = cleanup::remove_workspace_cgroups(
                 &sandbox_snapshot,
                 &workspace_snapshot.id,
-                started.pid,
+                Some(started.pid),
             );
             let storage_cleanup =
                 crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
@@ -266,7 +266,7 @@ pub(crate) fn launch_workspace_runtime(
         if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
             sandbox_snapshot,
             &workspace_snapshot.id,
-            session_info.pid,
+            Some(session_info.pid),
         ) {
             tracing::warn!("failed to clean cgroup after cgroup setup failure: {cleanup_err:#}");
         }
@@ -286,7 +286,7 @@ pub(crate) fn launch_workspace_runtime(
         if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
             sandbox_snapshot,
             &workspace_snapshot.id,
-            session_info.pid,
+            Some(session_info.pid),
         ) {
             tracing::warn!("failed to clean cgroup after auth sync failure: {cleanup_err:#}");
         }
@@ -319,7 +319,7 @@ pub(crate) fn launch_workspace_runtime(
                     if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
                         sandbox_snapshot,
                         &workspace_snapshot.id,
-                        session_info.pid,
+                        Some(session_info.pid),
                     ) {
                         tracing::warn!(
                             "failed to clean cgroup after network setup failure: {cleanup_err:#}"

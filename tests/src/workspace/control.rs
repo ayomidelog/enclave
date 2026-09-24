@@ -2,7 +2,7 @@ use super::super::cleanup::cleanup_workspace_artifacts;
 use super::*;
 use std::fs;
 
-use crate::sandbox::{SandboxLimits, SandboxStatus};
+use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
 use crate::workspace::types::NamespaceRefs;
 use crate::workspace::WorkspaceLimits;
 
@@ -377,7 +377,10 @@ fn reconcile_clears_dead_runtime_and_namespace_references() {
         assigned_ip: Some("10.88.0.99".to_string()),
     };
 
-    assert!(reconcile_workspace_runtime_state(&mut workspace).unwrap());
+    assert!(
+        reconcile_workspace_runtime_state(&reconcile_sandbox(&sandbox_dir), &mut workspace)
+            .unwrap()
+    );
     assert_eq!(workspace.status, WorkspaceStatus::Stopped);
     assert!(workspace.runtime_pid.is_none());
     assert!(workspace.runtime_starttime_ticks.is_none());
@@ -452,9 +455,32 @@ fn transitional_workspace(
         },
         clear_tmp_on_restart: false,
         limits: WorkspaceLimits::default(),
-        assigned_ip: Some("10.88.0.99".to_string()),
+        assigned_ip: None,
     };
     (workspace, workspace_dir)
+}
+
+fn reconcile_sandbox(sandbox_dir: &std::path::Path) -> SandboxMetadata {
+    SandboxMetadata {
+        id: "sandbox-id".to_string(),
+        name: "sandbox".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "https://deb.debian.org/debian".to_string(),
+        bootstrap_method: BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
+        mounted_rootfs_path: sandbox_dir
+            .join("runtime")
+            .join("rootfs.mnt")
+            .to_string_lossy()
+            .to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status: SandboxStatus::Running,
+    }
 }
 
 #[test]
@@ -468,7 +494,10 @@ fn reconcile_rolls_back_interrupted_start_without_a_live_runtime() {
     let (mut workspace, workspace_dir) =
         transitional_workspace(&sandbox_dir, WorkspaceStatus::Starting, None);
 
-    assert!(reconcile_workspace_runtime_state(&mut workspace).unwrap());
+    assert!(
+        reconcile_workspace_runtime_state(&reconcile_sandbox(&sandbox_dir), &mut workspace)
+            .unwrap()
+    );
     assert_eq!(workspace.status, WorkspaceStatus::Stopped);
     assert!(workspace.runtime_pid.is_none());
     assert!(workspace.runtime_starttime_ticks.is_none());
@@ -477,7 +506,10 @@ fn reconcile_rolls_back_interrupted_start_without_a_live_runtime() {
     assert!(!workspace_dir.join("ns").join("mnt.ref").exists());
     assert!(!workspace_dir.join("ns").join("pid.ref").exists());
     // The rollback is persisted so a second reconcile has nothing left to do.
-    assert!(!reconcile_workspace_runtime_state(&mut workspace).unwrap());
+    assert!(
+        !reconcile_workspace_runtime_state(&reconcile_sandbox(&sandbox_dir), &mut workspace)
+            .unwrap()
+    );
 
     let _ = fs::remove_dir_all(&temp_dir);
 }
@@ -493,7 +525,10 @@ fn reconcile_rolls_back_interrupted_stop_with_a_dead_runtime() {
     let (mut workspace, workspace_dir) =
         transitional_workspace(&sandbox_dir, WorkspaceStatus::Stopping, Some((u32::MAX, 1)));
 
-    assert!(reconcile_workspace_runtime_state(&mut workspace).unwrap());
+    assert!(
+        reconcile_workspace_runtime_state(&reconcile_sandbox(&sandbox_dir), &mut workspace)
+            .unwrap()
+    );
     assert_eq!(workspace.status, WorkspaceStatus::Stopped);
     assert!(workspace.runtime_pid.is_none());
     assert!(workspace.runtime_starttime_ticks.is_none());

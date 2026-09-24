@@ -35,6 +35,22 @@ pub(crate) fn mark_workspace_stopped(
     workspace.runtime_starttime_ticks = None;
     workspace.assigned_ip = None;
     clear_workspace_namespace_refs(workspace);
+    remove_workspace_runtime_markers(workspace);
+    let metadata_path = PathBuf::from(&workspace.workspace_path).join("workspace.json");
+    let metadata_raw = serde_json::to_string_pretty(workspace)?;
+    crate::fsutil::write_file_atomic(&metadata_path, metadata_raw.as_bytes(), 0o600).with_context(
+        || {
+            format!(
+                "failed to persist workspace state to {}",
+                metadata_path.display()
+            )
+        },
+    )?;
+    Ok(())
+}
+
+/// Remove the on-disk runtime markers for a workspace that is no longer running.
+fn remove_workspace_runtime_markers(workspace: &WorkspaceMetadata) {
     let pid_file = session::runtime_pid_file(workspace);
     if let Err(err) = fs::remove_file(&pid_file) {
         if err.kind() != std::io::ErrorKind::NotFound {
@@ -47,18 +63,6 @@ pub(crate) fn mark_workspace_stopped(
             tracing::warn!("failed to remove {}: {err:#}", ready_file.display());
         }
     }
-
-    let metadata_path = PathBuf::from(&workspace.workspace_path).join("workspace.json");
-    let metadata_raw = serde_json::to_string_pretty(workspace)?;
-    crate::fsutil::write_file_atomic(&metadata_path, metadata_raw.as_bytes(), 0o600).with_context(
-        || {
-            format!(
-                "failed to persist workspace state to {}",
-                metadata_path.display()
-            )
-        },
-    )?;
-    Ok(())
 }
 
 pub(crate) fn normalize_namespace_ref_paths(workspace: &mut WorkspaceMetadata) {
@@ -140,7 +144,10 @@ pub(crate) fn resolve_workspace_id(sandbox: &RegistrySandbox, selector: &str) ->
     }
 }
 
-pub(crate) fn reconcile_workspace_runtime_state(workspace: &mut WorkspaceMetadata) -> Result<bool> {
+pub(crate) fn reconcile_workspace_runtime_state(
+    sandbox: &SandboxMetadata,
+    workspace: &mut WorkspaceMetadata,
+) -> Result<bool> {
     // An interrupted transition is resolved deterministically by rolling it
     // back: a launch that never committed is not resumed, and a stop that never
     // committed is completed. Never resume a half-started runtime, because its
@@ -163,6 +170,26 @@ pub(crate) fn reconcile_workspace_runtime_state(workspace: &mut WorkspaceMetadat
                 }
             }
         }
+        // Tear down everything the interrupted operation may have created —
+        // workspace cgroup, network, storage mounts, `/tmp` — so the rollback
+        // leaves nothing behind and the next start begins clean. A failed
+        // teardown keeps the record transitional instead of claiming the
+        // workspace is stopped while resources are still held.
+        if let Err(error) = cleanup::run_workspace_stop_cleanup(
+            WorkspaceStopCleanup {
+                sandbox: sandbox.clone(),
+                workspace: workspace.clone(),
+            },
+            false,
+            false,
+        ) {
+            tracing::warn!(
+                "reconcile: cleanup after interrupted {:?} transition for workspace '{}' is incomplete: {error:#}",
+                interrupted,
+                workspace.id
+            );
+            return Ok(false);
+        }
         tracing::warn!(
             "reconcile: rolled back interrupted {:?} transition for workspace '{}'",
             interrupted,
@@ -173,6 +200,7 @@ pub(crate) fn reconcile_workspace_runtime_state(workspace: &mut WorkspaceMetadat
         workspace.runtime_starttime_ticks = None;
         workspace.assigned_ip = None;
         clear_workspace_namespace_refs(workspace);
+        remove_workspace_runtime_markers(workspace);
         persist_workspace_metadata(workspace)?;
         return Ok(true);
     }

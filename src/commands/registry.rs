@@ -25,11 +25,12 @@ fn run_registry_repair(socket: &Path, args: RegistryRepairArgs) -> Result<()> {
     )?;
     let report: RepairReport = serde_json::from_value(response)?;
     println!(
-        "repair complete (added_sandboxes={}, removed_sandboxes={}, added_workspaces={}, removed_workspaces={})",
+        "repair complete (added_sandboxes={}, removed_sandboxes={}, added_workspaces={}, removed_workspaces={}, reconciled_runtime_records={})",
         report.added_sandboxes,
         report.removed_sandboxes,
         report.added_workspaces,
-        report.removed_workspaces
+        report.removed_workspaces,
+        report.reconciled_runtime_records
     );
     Ok(())
 }

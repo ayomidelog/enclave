@@ -90,9 +90,32 @@ pub(crate) fn run_workspace_session_persistent_helper(
     )?;
     enter_workspace_namespaces(&namespaces)?;
 
-    for incoming in listener.incoming() {
-        let stream = match incoming {
-            Ok(stream) => stream,
+    loop {
+        // Wait for a command, but wake up periodically to notice that the
+        // runtime this helper serves is gone. Without the timeout the helper
+        // would sit in `accept()` forever after a daemon crash, holding its
+        // mount namespace and the workspace cgroup with it.
+        let mut descriptor = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, PERSISTENT_HELPER_IDLE_TIMEOUT_MS) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("persistent helper poll failed");
+        }
+        if ready == 0 {
+            if !runtime_pidfd_alive(args.runtime_pidfd) {
+                return Ok(());
+            }
+            continue;
+        }
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error).context("persistent helper accept failed"),
         };
@@ -100,8 +123,11 @@ pub(crate) fn run_workspace_session_persistent_helper(
             eprintln!("enclave: persistent command rejected: {error:#}");
         }
     }
-    Ok(())
 }
+
+/// How long the persistent helper waits for a command before re-checking that
+/// its runtime is still alive.
+const PERSISTENT_HELPER_IDLE_TIMEOUT_MS: libc::c_int = 5_000;
 
 fn handle_persistent_command(
     args: &WorkspaceSessionPersistentHelperArgs,
@@ -280,14 +306,32 @@ fn set_nonblocking(fd: i32) -> Result<()> {
     Ok(())
 }
 
+/// Whether the runtime this helper serves is still alive.
+///
+/// Liveness is read from the inherited pidfd rather than `/proc`: the helper
+/// lives inside the workspace's PID namespace, where the host PID of its runtime
+/// does not resolve, so a `/proc` lookup there would always report the runtime as
+/// gone. `pidfd_open` sets `FD_CLOEXEC`, so the caller clears it before `exec`;
+/// without that the descriptor number is closed by `exec` and may be reused,
+/// which would make this check report a live runtime forever.
 fn runtime_pidfd_alive(pidfd: i32) -> bool {
+    if pidfd < 0 {
+        return false;
+    }
+    // A pidfd reports readability only for the events the caller asked about,
+    // so `events` must include POLLIN for an exited runtime to be visible here.
     let mut descriptor = libc::pollfd {
         fd: pidfd,
-        events: 0,
+        events: libc::POLLIN,
         revents: 0,
     };
     let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
-    result >= 0 && descriptor.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP) == 0
+    if result < 0 {
+        return false;
+    }
+    // POLLNVAL means the descriptor is not a pidfd here, which must be treated
+    // as "cannot prove the runtime is alive" rather than "alive".
+    descriptor.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) == 0
 }
 
 fn create_pipe() -> Result<(File, File)> {

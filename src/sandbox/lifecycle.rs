@@ -28,9 +28,19 @@ pub fn init_storage(state_dir: &Path) -> Result<()> {
     ensure_registry(state_dir)?;
     repair_registry(state_dir, false)?;
     restore_shared_rootfs_mounts(state_dir)?;
-    reconcile_sandbox_states(state_dir)?;
-    reconcile_workspace_states(state_dir)?;
+    reconcile_runtime_state(state_dir)?;
     Ok(())
+}
+
+/// Reconcile persisted lifecycle state with what is actually running.
+///
+/// Returns the number of records that had to be repaired. Called at daemon
+/// start and from `registry repair`, so an interrupted transition can be
+/// recovered without restarting the daemon.
+pub fn reconcile_runtime_state(state_dir: &Path) -> Result<usize> {
+    let sandboxes = reconcile_sandbox_states(state_dir)?;
+    let workspaces = reconcile_workspace_states(state_dir)?;
+    Ok(sandboxes + workspaces)
 }
 
 /// Remount shared-base rootfs overlays that are missing.
@@ -65,7 +75,7 @@ fn restore_shared_rootfs_mounts(state_dir: &Path) -> Result<()> {
 /// Roll back sandboxes left in a transitional state by an interrupted start or
 /// stop. Both transitions end in `stopped`, and any rootfs bind mount from the
 /// interrupted operation is removed first.
-fn reconcile_sandbox_states(state_dir: &Path) -> Result<()> {
+fn reconcile_sandbox_states(state_dir: &Path) -> Result<usize> {
     let transitional = with_registry(state_dir, |registry| {
         Ok(registry
             .sandboxes
@@ -79,6 +89,7 @@ fn reconcile_sandbox_states(state_dir: &Path) -> Result<()> {
             .collect::<Vec<_>>())
     })?;
 
+    let mut repaired = 0usize;
     for metadata in transitional {
         let interrupted = metadata.status.clone();
         if let Err(err) = mounts::ensure_rootfs_unmounted(&metadata) {
@@ -101,16 +112,21 @@ fn reconcile_sandbox_states(state_dir: &Path) -> Result<()> {
             interrupted,
             metadata.id
         );
+        repaired += 1;
     }
-    Ok(())
+    Ok(repaired)
 }
 
-fn reconcile_workspace_states(state_dir: &Path) -> Result<()> {
+fn reconcile_workspace_states(state_dir: &Path) -> Result<usize> {
     with_registry_mut(state_dir, |registry| {
         let mut reconciled = 0usize;
         for sandbox in registry.sandboxes.values_mut() {
+            let sandbox_metadata = sandbox.metadata.clone();
             for workspace in sandbox.workspaces.values_mut() {
-                if crate::workspace::reconcile_workspace_runtime_state(workspace)? {
+                if crate::workspace::reconcile_workspace_runtime_state(
+                    &sandbox_metadata,
+                    workspace,
+                )? {
                     tracing::warn!(
                         "reconcile: repaired stale runtime state for workspace '{}'",
                         workspace.id
@@ -122,7 +138,7 @@ fn reconcile_workspace_states(state_dir: &Path) -> Result<()> {
         if reconciled > 0 {
             tracing::warn!("reconcile: recovered {} stale workspace(s)", reconciled);
         }
-        Ok(())
+        Ok(reconciled)
     })
 }
 

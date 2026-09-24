@@ -40,7 +40,7 @@ pub(super) fn cleanup_workspace_artifacts(
                 pid
             );
         }
-        if let Err(err) = remove_workspace_cgroups(sandbox, &workspace.id, pid) {
+        if let Err(err) = remove_workspace_cgroups(sandbox, &workspace.id, Some(pid)) {
             errors.push(format!(
                 "remove workspace cgroups for runtime {}: {err:#}",
                 pid
@@ -368,11 +368,11 @@ pub(super) fn run_workspace_stop_cleanup(
     let workspace = cleanup.workspace;
     let sandbox = cleanup.sandbox;
 
-    if let Some(pid) = workspace.runtime_pid {
-        let cgroups = crate::perf::Timer::new("workspace.stop.cgroups");
-        remove_workspace_cgroups(&sandbox, &workspace.id, pid)?;
-        drop(cgroups);
-    }
+    // Remove the workspace cgroup even when no runtime pid was recorded: an
+    // interrupted launch can create the cgroup before it records the pid.
+    let cgroups = crate::perf::Timer::new("workspace.stop.cgroups");
+    remove_workspace_cgroups(&sandbox, &workspace.id, workspace.runtime_pid)?;
+    drop(cgroups);
 
     if !network_already_cleaned {
         if let Some(ip) = workspace.assigned_ip.as_deref() {
@@ -407,24 +407,25 @@ pub(super) fn run_workspace_stop_cleanup(
 pub(super) fn remove_workspace_cgroups(
     sandbox: &SandboxMetadata,
     workspace_id: &str,
-    pid: u32,
+    pid: Option<u32>,
 ) -> Result<()> {
     let workspace_name = workspace_cgroup_name(&sandbox.id, workspace_id);
-    let legacy_name = legacy_workspace_cgroup_name(pid);
     let sandbox_path = std::path::PathBuf::from("/sys/fs/cgroup")
         .join(crate::sandbox::cgroup::sandbox_cgroup_name(&sandbox.id))
         .join(&workspace_name);
     let mut errors = Vec::new();
-    for (label, result) in [
-        (
-            sandbox_path.display().to_string(),
-            crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path),
-        ),
-        (
+    let mut attempts = vec![(
+        sandbox_path.display().to_string(),
+        crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path),
+    )];
+    if let Some(pid) = pid {
+        let legacy_name = legacy_workspace_cgroup_name(pid);
+        attempts.push((
             format!("legacy {legacy_name}"),
             crate::sandbox::cgroup::remove_workspace_cgroup(&legacy_name),
-        ),
-    ] {
+        ));
+    }
+    for (label, result) in attempts {
         if let Err(error) = result {
             errors.push(format!("{label}: {error:#}"));
         }
