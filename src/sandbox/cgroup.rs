@@ -1,5 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -218,18 +220,34 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    match fs::remove_dir(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-            Err(err).with_context(|| {
-                format!(
-                    "cgroup {} is not empty; processes or child cgroups remain",
-                    path.display()
-                )
-            })
+    for attempt in 0..3 {
+        match fs::remove_dir(path) {
+            Ok(()) => {
+                if path.exists() {
+                    bail!("cgroup {} remained after removal", path.display());
+                }
+                return Ok(());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
+                if attempt < 2 {
+                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    continue;
+                }
+                return Err(err).with_context(|| {
+                    format!(
+                        "cgroup {} is not empty; processes or child cgroups remain",
+                        path.display()
+                    )
+                });
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to remove cgroup {}", path.display()));
+            }
         }
-        Err(err) => Err(err).with_context(|| format!("failed to remove cgroup {}", path.display())),
     }
+    unreachable!("cgroup removal loop always returns")
 }
 
 #[derive(Debug, Clone, Default)]
