@@ -1,4 +1,4 @@
-mod runtime_init;
+pub(super) mod runtime_init;
 mod session;
 
 use std::ffi::CString;
