@@ -218,3 +218,20 @@ fn future_registry_schema_is_rejected_before_mutation() {
     assert!(err.to_string().contains("newer than this binary supports"));
     let _ = fs::remove_dir_all(state);
 }
+
+#[test]
+fn repair_migrates_older_registry_schema_to_current_version() {
+    let state = state_dir("enclave-registry-migrate");
+    ensure_registry(&state).expect("registry init");
+    fs::write(
+        state.join("registry.json"),
+        "{\"version\":0,\"generation\":4,\"sandboxes\":{}}",
+    )
+    .expect("write old registry");
+
+    repair_registry(&state, false).expect("repair should migrate old schema");
+    let version =
+        with_registry(&state, |registry| Ok(registry.version)).expect("read migrated registry");
+    assert_eq!(version, 1);
+    let _ = fs::remove_dir_all(state);
+}

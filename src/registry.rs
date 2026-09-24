@@ -112,6 +112,14 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
                 Registry::default()
             }
         };
+        if registry.version < REGISTRY_VERSION {
+            tracing::info!(
+                "migrating registry schema from version {} to {}",
+                registry.version,
+                REGISTRY_VERSION
+            );
+            registry.version = REGISTRY_VERSION;
+        }
         let mut report = RepairReport::default();
 
         let sandboxes_root = state_dir.join("sandboxes");
