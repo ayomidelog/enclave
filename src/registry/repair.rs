@@ -12,33 +12,30 @@ use crate::workspace::WorkspaceMetadata;
 use crate::sandbox::SandboxMetadata;
 
 use super::storage::{
-    load_registry_unlocked, persist_metadata, read_json, registry_lock_path,
+    load_registry_with_migrations, persist_metadata, read_json, registry_lock_path,
     save_registry_unlocked, update_cache,
 };
-use super::{ensure_registry, Registry, RegistrySandbox, RepairReport, REGISTRY_VERSION};
+use super::{ensure_registry, Registry, RegistrySandbox, RepairReport};
 
 pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
     ensure_registry(state_dir)?;
     let lock_path = registry_lock_path(state_dir);
     crate::fsutil::with_file_lock(&lock_path, || {
-        let mut registry = match load_registry_unlocked(state_dir) {
-            Ok(registry) => registry,
+        let (mut registry, migrations) = match load_registry_with_migrations(state_dir) {
+            Ok(loaded) => loaded,
             Err(err) => {
                 tracing::warn!(
                     "registry repair is rebuilding in-memory state after registry load failure: {err:#}"
                 );
-                Registry::default()
+                (Registry::default(), Vec::new())
             }
         };
-        if registry.version < REGISTRY_VERSION {
-            tracing::info!(
-                "migrating registry schema from version {} to {}",
-                registry.version,
-                REGISTRY_VERSION
-            );
-            registry.version = REGISTRY_VERSION;
-        }
-        let mut report = RepairReport::default();
+        let mut report = RepairReport {
+            // The version the record was written with, so an operator can see
+            // that repair understood an older schema rather than overwriting it.
+            migrated_registry_from_version: migrations.first().map(|step| step.from),
+            ..RepairReport::default()
+        };
 
         let sandboxes_root = state_dir.join("sandboxes");
         fs::create_dir_all(&sandboxes_root)

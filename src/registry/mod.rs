@@ -1,5 +1,6 @@
 //! The registry: the durable record of which sandboxes and workspaces exist.
 
+mod migrate;
 mod repair;
 mod storage;
 
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::sandbox::SandboxMetadata;
 use crate::workspace::WorkspaceMetadata;
 
+pub(crate) use migrate::{migrate, MigrationStep};
 pub use repair::repair_registry;
 pub(crate) use storage::{
     load_registry_unlocked, registry_lock_path, save_registry_unlocked, update_cache,
@@ -46,6 +48,10 @@ pub struct RepairReport {
     /// reconciled with what was actually running.
     #[serde(default)]
     pub reconciled_runtime_records: usize,
+    /// The schema version the registry was written with, when it was older than
+    /// the one this binary writes and had to be migrated before use.
+    #[serde(default)]
+    pub migrated_registry_from_version: Option<u32>,
 }
 
 impl Default for Registry {

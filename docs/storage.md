@@ -62,6 +62,22 @@ cannot be created, sandbox creation falls back to copying the cached rootfs.
 - `sandboxes/<sandbox-id>/runtime/session-helper` caches the internal helper binary once per sandbox so workspace starts do not recopy it for every workspace.
 - `registry.json` is written as compact JSON to reduce serialization and atomic-write overhead; use the per-sandbox and per-workspace metadata files for human-readable inspection.
 
+### Registry schema versions
+
+`registry.json` carries a `version` field. A record written by an older release is
+brought up to the schema this binary writes as it is read, one step per version,
+so every path that loads the registry sees the same shape. Migration is in
+memory: a read-only command never rewrites the record, and the migrated version
+is persisted by the next mutation, which already writes the whole file
+atomically. A record whose version is newer than this binary supports is refused
+before anything is read or written, and a mutation refuses to write a version
+this binary does not define, so a state file it could not read is never created.
+
+An older record that has no migration step is an error rather than a pass
+through. That is deliberate: it forces a new schema version to come with the
+code that transforms the previous one, instead of being read as if the shapes
+matched.
+
 ## Workspace writable data
 
 Each workspace starts from the shared sandbox rootfs, but its writable home area is isolated:

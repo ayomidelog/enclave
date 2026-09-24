@@ -19,13 +19,68 @@ fn atomic_registry_write_persists_changes() {
     ensure_registry(&state).expect("registry init");
 
     with_registry_mut(&state, |registry| {
-        registry.version = 42;
+        registry.generation = 42;
         Ok(())
     })
     .expect("registry write should succeed");
 
-    let version = with_registry(&state, |registry| Ok(registry.version)).expect("registry read");
-    assert_eq!(version, 42);
+    // A mutation bumps the generation itself, so the value written by the
+    // closure is one below what the next reader sees.
+    let generation =
+        with_registry(&state, |registry| Ok(registry.generation)).expect("registry read");
+    assert_eq!(generation, 43);
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+fn an_older_registry_schema_is_migrated_before_use() {
+    let state = state_dir("enclave-registry-migrate-on-read");
+    ensure_registry(&state).expect("registry init");
+    fs::write(
+        state.join("registry.json"),
+        "{\"version\":0,\"generation\":4,\"sandboxes\":{}}",
+    )
+    .expect("write old registry");
+
+    // A read is handed the current schema, and the file is left alone: a
+    // read-only command must not rewrite a record it was only asked to inspect.
+    let version = with_registry(&state, |registry| Ok(registry.version)).expect("read");
+    assert_eq!(version, 1);
+    let on_disk = fs::read_to_string(state.join("registry.json")).expect("read raw registry");
+    let on_disk: serde_json::Value = serde_json::from_str(&on_disk).expect("parse raw registry");
+    assert_eq!(on_disk["version"], 0, "a read must not rewrite the record");
+
+    // The next mutation persists the migrated schema, so the record on disk
+    // converges without a separate migration command.
+    with_registry_mut(&state, |_| Ok(())).expect("mutate migrated registry");
+    let on_disk = fs::read_to_string(state.join("registry.json")).expect("read raw registry");
+    let on_disk: serde_json::Value = serde_json::from_str(&on_disk).expect("parse raw registry");
+    assert_eq!(on_disk["version"], 1);
+    assert_eq!(on_disk["generation"], 5);
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+fn a_registry_is_never_written_with_an_unknown_schema_version() {
+    let state = state_dir("enclave-registry-version-guard");
+    ensure_registry(&state).expect("registry init");
+
+    let error = with_registry_mut(&state, |registry| {
+        registry.version = 99;
+        Ok(())
+    })
+    .expect_err("writing an unknown schema version must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("refusing to write registry schema version"),
+        "{error}"
+    );
+
+    // The record on disk is untouched and still readable, which is the point:
+    // a state file this binary cannot read is worse than a failed write.
+    let version = with_registry(&state, |registry| Ok(registry.version)).expect("read");
+    assert_eq!(version, 1);
     let _ = fs::remove_dir_all(state);
 }
 
@@ -176,13 +231,13 @@ fn registry_cache_refreshes_after_external_atomic_replace() {
     ensure_registry(&state).expect("registry init");
 
     with_registry_mut(&state, |registry| {
-        registry.version = 7;
+        registry.generation = 7;
         Ok(())
     })
     .expect("initial registry write");
 
-    let observed = with_registry(&state, |registry| Ok(registry.version)).expect("cached read");
-    assert_eq!(observed, 7);
+    let observed = with_registry(&state, |registry| Ok(registry.generation)).expect("cached read");
+    assert_eq!(observed, 8);
 
     let replacement = serde_json::to_vec(&enclave::registry::Registry {
         version: 1,

@@ -9,9 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{registry_path, Registry};
-
-const REGISTRY_VERSION: u32 = 1;
+use super::{migrate, registry_path, MigrationStep, Registry, REGISTRY_VERSION};
 
 pub(crate) fn validate_registry_version(version: u32) -> Result<()> {
     if version > REGISTRY_VERSION {
@@ -117,16 +115,50 @@ pub(crate) fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> 
 }
 
 pub(crate) fn load_registry_unlocked(state_dir: &Path) -> Result<Registry> {
+    Ok(load_registry_with_migrations(state_dir)?.0)
+}
+
+/// Load the registry and bring it up to the schema this binary writes.
+///
+/// Returns the record and the schema steps that were applied to it. Migrating on
+/// the read path is what keeps a mutation from writing an older version back: the
+/// record is brought forward before any caller can see it. The steps are returned
+/// as well as logged because a repair report is where an operator looks to find
+/// out what changed underneath them.
+pub(crate) fn load_registry_with_migrations(
+    state_dir: &Path,
+) -> Result<(Registry, Vec<MigrationStep>)> {
     let path = registry_path(state_dir);
     let raw = fs::read_to_string(&path)
         .with_context(|| format!("failed to read registry {}", path.display()))?;
-    let registry: Registry = serde_json::from_str(&raw)
+    let mut registry: Registry = serde_json::from_str(&raw)
         .with_context(|| format!("invalid registry {}", path.display()))?;
     validate_registry_version(registry.version)?;
-    Ok(registry)
+    let steps = migrate(&mut registry)
+        .with_context(|| format!("failed to migrate registry {}", path.display()))?;
+    // Logged here rather than by each caller so every read path reports the same
+    // thing, including the ones that discard the returned steps.
+    for step in &steps {
+        tracing::info!(
+            "migrated registry schema from version {} to {}",
+            step.from,
+            step.to
+        );
+    }
+    Ok((registry, steps))
 }
 
 pub(crate) fn save_registry_unlocked(state_dir: &Path, registry: &Registry) -> Result<()> {
+    // A record is only ever written at the version this binary defines. Writing
+    // anything else would leave a state file that this binary then refuses to
+    // read, so the invariant is checked where it would be broken.
+    if registry.version != REGISTRY_VERSION {
+        bail!(
+            "refusing to write registry schema version {}; this binary writes {}",
+            registry.version,
+            REGISTRY_VERSION
+        );
+    }
     let path = registry_path(state_dir);
     let payload = serde_json::to_vec(registry)?;
     crate::fsutil::write_file_atomic(&path, &payload, 0o600)
