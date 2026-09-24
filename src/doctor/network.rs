@@ -89,6 +89,36 @@ pub(super) fn check_workspace_network(state_dir: &Path) -> DoctorCheck {
     DoctorCheck::warn(NAME, &details.join("; "))
 }
 
+/// Report a host interface that already owns part of the Enclave subnet.
+///
+/// Enclave builds its workspace network on a fixed subnet, so a host address
+/// inside it gives the kernel two connected routes for one prefix and makes
+/// workspace routing ambiguous. This check names the conflict before a start
+/// fails on it.
+pub(super) fn check_host_subnet() -> DoctorCheck {
+    const NAME: &str = "host_subnet";
+
+    match crate::network::bridge::subnet_conflicts() {
+        Ok(conflicts) if conflicts.is_empty() => DoctorCheck::ok(
+            NAME,
+            &format!(
+                "{} is assigned to {} alone",
+                ipam::SUBNET_CIDR,
+                crate::network::bridge::BRIDGE_NAME
+            ),
+        ),
+        Ok(conflicts) => DoctorCheck::warn(
+            NAME,
+            &format!(
+                "{} is also assigned to {}; workspace traffic on that prefix is ambiguous",
+                ipam::SUBNET_CIDR,
+                conflicts.join(", ")
+            ),
+        ),
+        Err(err) => DoctorCheck::warn(NAME, &format!("host address inventory unknown: {err:#}")),
+    }
+}
+
 /// Inventory loop devices backing Enclave workspace disk images.
 pub(super) fn check_workspace_loop_devices(state_dir: &Path) -> DoctorCheck {
     const NAME: &str = "workspace_loop_devices";

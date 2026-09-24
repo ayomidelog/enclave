@@ -53,3 +53,11 @@ fn parse_host_octet_invalid() {
 fn gateway_is_in_subnet() {
     assert_eq!(parse_host_octet(GATEWAY_IP), Some(1));
 }
+#[test]
+fn is_in_subnet_matches_the_enclave_prefix_only() {
+    assert!(is_in_subnet("10.200.0.1/24"));
+    assert!(is_in_subnet("10.200.0.254"));
+    assert!(!is_in_subnet("10.200.1.1/24"));
+    assert!(!is_in_subnet("10.20.0.1/24"));
+    assert!(!is_in_subnet("not-an-ip"));
+}

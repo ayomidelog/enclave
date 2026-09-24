@@ -60,6 +60,7 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
         mounts::check_orphaned_mounts(state_dir),
         cgroups::check_stale_workspace_cgroups(state_dir),
         network::check_workspace_network(state_dir),
+        network::check_host_subnet(),
         network::check_workspace_loop_devices(state_dir),
         runtime::check_stale_runtime_state(state_dir),
         runtime::check_workspace_tmp_integrity(state_dir),

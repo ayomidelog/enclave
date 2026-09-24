@@ -67,6 +67,15 @@ pub fn allocate_ip(used: &BTreeSet<u8>) -> Result<String> {
     )
 }
 
+/// True when `address` (optionally carrying a prefix length) is inside the
+/// Enclave subnet.
+pub fn is_in_subnet(address: &str) -> bool {
+    let host = address.split('/').next().unwrap_or(address);
+    host.parse::<Ipv4Addr>()
+        .map(|addr| addr.octets()[..3] == SUBNET_PREFIX)
+        .unwrap_or(false)
+}
+
 pub fn parse_host_octet(ip: &str) -> Option<u8> {
     let addr: Ipv4Addr = ip.parse().ok()?;
     let octets = addr.octets();

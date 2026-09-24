@@ -11,6 +11,7 @@ pub const BRIDGE_NAME: &str = "enclave0";
 const SUBNET_PREFIX_LEN: &str = "24";
 
 pub fn ensure_bridge() -> Result<()> {
+    ensure_subnet_available()?;
     if bridge_exists()? {
         ensure_bridge_address()?;
         ensure_bridge_up()?;
@@ -105,6 +106,77 @@ fn ensure_bridge_address() -> Result<()> {
     }
 
     assign_bridge_address()
+}
+
+/// Interfaces outside Enclave that already hold an address inside the Enclave
+/// subnet.
+///
+/// The bridge address is fixed at 10.200.0.1/24, so a second interface on the
+/// same /24 gives the kernel two connected routes for one prefix. Workspace
+/// traffic can then leave through, or be delivered to, a network Enclave does
+/// not control, while every workspace still reports clean anti-spoofing rules.
+pub fn subnet_conflicts() -> Result<Vec<String>> {
+    let output = Command::new("ip")
+        .args(["-o", "-4", "addr", "show"])
+        .output()
+        .context("failed to list host IPv4 addresses")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "listing host IPv4 addresses failed ({}): {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(parse_subnet_conflicts(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+fn parse_subnet_conflicts(output: &str) -> Vec<String> {
+    parse_ipv4_addresses_by_interface(output)
+        .into_iter()
+        .filter(|(interface, _)| interface != BRIDGE_NAME)
+        .filter(|(_, address)| ipam::is_in_subnet(address))
+        .map(|(interface, address)| format!("{interface} ({address})"))
+        .collect()
+}
+
+/// Read `ip -o -4 addr show` output into `(interface, address/prefix)` pairs.
+fn parse_ipv4_addresses_by_interface(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let index = fields.next()?;
+            if !index.ends_with(':') {
+                return None;
+            }
+            let interface = fields.next()?.to_string();
+            while let Some(field) = fields.next() {
+                if field == "inet" {
+                    return fields
+                        .next()
+                        .map(|address| (interface, address.to_string()));
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// Refuse to build the Enclave subnet on top of a host that already uses it.
+fn ensure_subnet_available() -> Result<()> {
+    let conflicts = subnet_conflicts()?;
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "Enclave subnet {} is already in use by {}; remove that address or move Enclave to a \
+         free subnet before starting workspaces with networking",
+        ipam::SUBNET_CIDR,
+        conflicts.join(", ")
+    )
 }
 
 fn parse_ipv4_addresses(output: &str) -> Vec<String> {
