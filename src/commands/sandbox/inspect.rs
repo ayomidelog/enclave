@@ -18,8 +18,8 @@ use crate::cli::WipeArgs;
 use crate::sandbox::{SandboxListItem, SandboxStatusReport};
 
 use super::super::{
-    confirm_destructive_action, daemon, print_operation_id, report_retained_resources, send,
-    send_managed,
+    confirm_destructive_action, daemon, print_operation_id, print_state_transition,
+    report_retained_resources, send, send_managed,
 };
 
 /// What `sandbox.wipe` removed, failed on, and had to leave behind.
@@ -118,12 +118,13 @@ pub(crate) fn run_status(socket: &Path, sandbox: &str) -> Result<()> {
 
 pub(crate) fn run_remove(socket: &Path, sandbox_id: &str) -> Result<()> {
     tracing::info!("removing sandbox '{}'...", sandbox_id);
-    send_managed(
+    let response = send_managed(
         socket,
         "sandbox.remove",
         json!({ "sandbox_id": sandbox_id }),
     )?;
     println!("removed sandbox '{}'", sandbox_id);
+    print_state_transition(&response);
     print_operation_id();
     Ok(())
 }

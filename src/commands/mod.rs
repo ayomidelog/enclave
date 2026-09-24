@@ -27,6 +27,7 @@ mod rootfs;
 mod sandbox;
 mod send;
 mod stats;
+mod transition;
 mod workspace;
 
 use anyhow::{bail, Result};
@@ -37,6 +38,7 @@ use crate::cli::{Cli, Commands, InternalCommands};
 
 pub(crate) use confirm::{confirm_destructive_action, report_retained_resources};
 pub(crate) use send::{print_operation_id, send, send_managed};
+pub(crate) use transition::print_state_transition;
 
 pub fn run() -> Result<()> {
     let _cli_total = crate::perf::Timer::new("cli.total");

@@ -35,11 +35,12 @@ pub(super) fn run_workspace_create(
             return Err(err);
         }
     };
-    let metadata: WorkspaceMetadata = serde_json::from_value(response)?;
+    let metadata: WorkspaceMetadata = serde_json::from_value(response.clone())?;
     println!(
         "created and started workspace {} in sandbox {}",
         metadata.id, metadata.sandbox_id
     );
+    print_state_transition(&response);
     println!("workspace path {}", metadata.workspace_path);
     Ok(())
 }
@@ -126,7 +127,7 @@ pub(super) fn run_workspace_remove(
         args.workspace_id,
         args.sandbox_id
     );
-    send_managed(
+    let response = send_managed(
         ctx.socket,
         "workspace.remove",
         json!({
@@ -135,6 +136,7 @@ pub(super) fn run_workspace_remove(
         }),
     )?;
     println!("removed workspace");
+    print_state_transition(&response);
     print_operation_id();
     Ok(())
 }
@@ -187,7 +189,7 @@ pub(super) fn run_workspace_start(
         args.workspace,
         args.sandbox
     );
-    send_managed(
+    let response = send_managed(
         ctx.socket,
         "workspace.start",
         json!({
@@ -196,6 +198,7 @@ pub(super) fn run_workspace_start(
         }),
     )?;
     println!("started workspace");
+    print_state_transition(&response);
     print_operation_id();
     Ok(())
 }
@@ -218,6 +221,7 @@ pub(super) fn run_workspace_stop(
         }),
     )?;
     println!("stopped workspace");
+    print_state_transition(&response);
     print_operation_id();
     // The daemon only reports a stop as successful once every mandatory host
     // resource has been verified released, so the certificate is the evidence
@@ -263,8 +267,10 @@ pub(super) fn run_workspace_destroy(
             "force": force,
         }),
     )?;
-    let report: crate::workspace::WorkspaceDestroyReport = serde_json::from_value(response)?;
+    let report: crate::workspace::WorkspaceDestroyReport =
+        serde_json::from_value(response.clone())?;
     println!("destroyed workspace {}", report.workspace_id);
+    print_state_transition(&response);
     print_operation_id();
     report_retained_resources(
         report

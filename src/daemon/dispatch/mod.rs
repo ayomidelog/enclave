@@ -19,6 +19,7 @@ mod params;
 mod ports;
 mod sandbox_handlers;
 mod snapshots;
+mod transition;
 mod workspace_definition;
 mod workspace_handlers;
 
@@ -49,6 +50,7 @@ use snapshots::{
     dispatch_workspace_restore, dispatch_workspace_snapshot, dispatch_workspace_snapshot_export,
     dispatch_workspace_snapshot_gc, dispatch_workspace_snapshot_import,
 };
+use transition::{sandbox_state_before, with_transition, workspace_state_before, ABSENT};
 use workspace_definition::{
     ensure_workspace_ports_started, parse_published_ports,
     update_workspace_definition_with_runtime, workspace_port_statuses,
@@ -133,8 +135,13 @@ pub(crate) fn dispatch(
         }
         Action::SandboxRemove => {
             let selector = require_param_str(&request.params, &["sandbox", "sandbox_id"])?;
+            let previous_state = sandbox_state_before(&config.state_dir, selector);
             let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
-            Ok(json!({ "removed": removed }))
+            Ok(with_transition(
+                json!({ "removed": removed }),
+                previous_state,
+                ABSENT,
+            ))
         }
         Action::SandboxExecSetup => {
             let selector = require_param_str(&request.params, &["sandbox", "sandbox_id"])?;

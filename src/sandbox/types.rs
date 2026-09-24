@@ -55,6 +55,17 @@ pub enum SandboxStatus {
 }
 
 impl SandboxStatus {
+    /// Lowercase label, for command output and lifecycle reports.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+        }
+    }
+
     /// A lifecycle operation is in flight.
     pub fn is_transitional(&self) -> bool {
         matches!(self, Self::Starting | Self::Stopping)

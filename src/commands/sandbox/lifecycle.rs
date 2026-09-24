@@ -3,7 +3,8 @@
 //! Every command here sends one request and prints what the daemon reported. The
 //! work itself lives in the daemon, which owns the registry and the host
 //! resources; the client's job is to name the sandbox, carry the force flag
-//! through, and print the operation id so the run can be traced.
+//! through, and print the operation id and the state change so the run can be
+//! traced.
 //!
 //! Destroy prints the host resources a force teardown could not release. A force
 //! destroy removes the registry record either way, so those lines are the only
@@ -16,38 +17,34 @@ use serde_json::json;
 
 use crate::cli::DestroyArgs;
 
-use super::super::{print_operation_id, report_retained_resources, send_managed};
+use super::super::{
+    print_operation_id, print_state_transition, report_retained_resources, send_managed,
+};
 
-pub(crate) fn run_start(socket: &Path, sandbox: &str) -> Result<()> {
-    tracing::info!("starting sandbox '{}'...", sandbox);
-    send_managed(socket, "sandbox.start", json!({ "sandbox": sandbox }))?;
-    println!("started sandbox '{}'", sandbox);
+/// Run one state-changing request and report the transition it made.
+fn run_sandbox_state_change(socket: &Path, action: &str, sandbox: &str, verb: &str) -> Result<()> {
+    tracing::info!("{verb} sandbox '{sandbox}'...");
+    let response = send_managed(socket, action, json!({ "sandbox": sandbox }))?;
+    println!("{verb} sandbox '{sandbox}'");
+    print_state_transition(&response);
     print_operation_id();
     Ok(())
+}
+
+pub(crate) fn run_start(socket: &Path, sandbox: &str) -> Result<()> {
+    run_sandbox_state_change(socket, "sandbox.start", sandbox, "started")
 }
 
 pub(crate) fn run_stop(socket: &Path, sandbox: &str) -> Result<()> {
-    tracing::info!("stopping sandbox '{}'...", sandbox);
-    send_managed(socket, "sandbox.stop", json!({ "sandbox": sandbox }))?;
-    println!("stopped sandbox '{}'", sandbox);
-    print_operation_id();
-    Ok(())
+    run_sandbox_state_change(socket, "sandbox.stop", sandbox, "stopped")
 }
 
 pub(crate) fn run_pause(socket: &Path, sandbox: &str) -> Result<()> {
-    tracing::info!("pausing sandbox '{}'...", sandbox);
-    send_managed(socket, "sandbox.pause", json!({ "sandbox": sandbox }))?;
-    println!("paused sandbox '{}'", sandbox);
-    print_operation_id();
-    Ok(())
+    run_sandbox_state_change(socket, "sandbox.pause", sandbox, "paused")
 }
 
 pub(crate) fn run_resume(socket: &Path, sandbox: &str) -> Result<()> {
-    tracing::info!("resuming sandbox '{}'...", sandbox);
-    send_managed(socket, "sandbox.resume", json!({ "sandbox": sandbox }))?;
-    println!("resumed sandbox '{}'", sandbox);
-    print_operation_id();
-    Ok(())
+    run_sandbox_state_change(socket, "sandbox.resume", sandbox, "resumed")
 }
 
 pub(crate) fn run_destroy(socket: &Path, args: DestroyArgs) -> Result<()> {
@@ -62,8 +59,9 @@ pub(crate) fn run_destroy(socket: &Path, args: DestroyArgs) -> Result<()> {
         "sandbox.destroy",
         json!({ "sandbox": sandbox, "force": force }),
     )?;
-    let report: crate::sandbox::SandboxDestroyReport = serde_json::from_value(response)?;
+    let report: crate::sandbox::SandboxDestroyReport = serde_json::from_value(response.clone())?;
     println!("destroyed sandbox '{}'", report.sandbox_id);
+    print_state_transition(&response);
     print_operation_id();
     report_retained_resources(
         report

@@ -4,6 +4,7 @@
 //! through its lifecycle, changing its definition, and moving data in and out.
 
 use super::*;
+use crate::workspace::WorkspaceStatus;
 
 mod batch;
 mod create;

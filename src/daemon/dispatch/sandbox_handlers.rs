@@ -27,7 +27,13 @@ pub(super) fn dispatch_sandbox_create(params: &Value, config: &DaemonConfig) -> 
         sandbox::SandboxCreateOptions { limits },
     )?;
     let started = sandbox::start_sandbox(&config.state_dir, &metadata.id)?;
-    Ok(serde_json::to_value(started)?)
+    // Creating a sandbox also starts it, so the response describes the whole
+    // change: there was no sandbox, and there is now a running one.
+    Ok(with_transition(
+        serde_json::to_value(started)?,
+        ABSENT,
+        sandbox::SandboxStatus::Running.as_str(),
+    ))
 }
 
 pub(super) fn dispatch_sandbox_update(params: &Value, config: &DaemonConfig) -> Result<Value> {
@@ -43,13 +49,22 @@ pub(super) fn dispatch_sandbox_update(params: &Value, config: &DaemonConfig) -> 
 
 pub(super) fn dispatch_sandbox_start(params: &Value, config: &DaemonConfig) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let previous_state = sandbox_state_before(&config.state_dir, selector);
     let status = sandbox::sandbox_status(&config.state_dir, selector)?;
     if status.status == sandbox::SandboxStatus::Paused {
         let resumed = sandbox::resume_sandbox(&config.state_dir, selector)?;
-        return Ok(serde_json::to_value(resumed)?);
+        return Ok(with_transition(
+            serde_json::to_value(resumed)?,
+            previous_state,
+            sandbox::SandboxStatus::Running.as_str(),
+        ));
     }
     let metadata = sandbox::start_sandbox(&config.state_dir, selector)?;
-    Ok(serde_json::to_value(metadata)?)
+    Ok(with_transition(
+        serde_json::to_value(metadata)?,
+        previous_state,
+        sandbox::SandboxStatus::Running.as_str(),
+    ))
 }
 
 pub(super) fn dispatch_sandbox_stop(
@@ -58,6 +73,7 @@ pub(super) fn dispatch_sandbox_stop(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let previous_state = sandbox_state_before(&config.state_dir, selector);
     let status = sandbox::sandbox_status(&config.state_dir, selector)?;
     if status.status == sandbox::SandboxStatus::Paused {
         sandbox::resume_sandbox(&config.state_dir, selector)?;
@@ -77,7 +93,11 @@ pub(super) fn dispatch_sandbox_stop(
         }
     }
     let metadata = sandbox::stop_sandbox(&config.state_dir, selector)?;
-    Ok(serde_json::to_value(metadata)?)
+    Ok(with_transition(
+        serde_json::to_value(metadata)?,
+        previous_state,
+        sandbox::SandboxStatus::Stopped.as_str(),
+    ))
 }
 
 pub(super) fn dispatch_sandbox_pause(
@@ -86,6 +106,7 @@ pub(super) fn dispatch_sandbox_pause(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let previous_state = sandbox_state_before(&config.state_dir, selector);
     let metadata = sandbox::pause_sandbox(&config.state_dir, selector)?;
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     for workspace in workspaces {
@@ -93,7 +114,11 @@ pub(super) fn dispatch_sandbox_pause(
             port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
         }
     }
-    Ok(serde_json::to_value(metadata)?)
+    Ok(with_transition(
+        serde_json::to_value(metadata)?,
+        previous_state,
+        sandbox::SandboxStatus::Paused.as_str(),
+    ))
 }
 
 pub(super) fn dispatch_sandbox_resume(
@@ -102,6 +127,7 @@ pub(super) fn dispatch_sandbox_resume(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let previous_state = sandbox_state_before(&config.state_dir, selector);
     let metadata = sandbox::resume_sandbox(&config.state_dir, selector)?;
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     let mut port_failures = Vec::new();
@@ -135,10 +161,14 @@ pub(super) fn dispatch_sandbox_resume(
             }
         }
     }
-    Ok(json!({
-        "sandbox": metadata,
-        "port_failures": port_failures,
-    }))
+    Ok(with_transition(
+        json!({
+            "sandbox": metadata,
+            "port_failures": port_failures,
+        }),
+        previous_state,
+        sandbox::SandboxStatus::Running.as_str(),
+    ))
 }
 
 pub(super) fn dispatch_sandbox_status(params: &Value, config: &DaemonConfig) -> Result<Value> {
@@ -154,6 +184,7 @@ pub(super) fn dispatch_sandbox_destroy(
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let mode = parse_cleanup_mode(params)?;
+    let previous_state = sandbox_state_before(&config.state_dir, selector);
     let status = sandbox::sandbox_status(&config.state_dir, selector)?;
     if status.status == sandbox::SandboxStatus::Paused {
         sandbox::resume_sandbox(&config.state_dir, selector)?;
@@ -170,12 +201,18 @@ pub(super) fn dispatch_sandbox_destroy(
         port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
     }
     let report = sandbox::destroy_sandbox_with_mode(&config.state_dir, selector, mode)?;
-    Ok(json!({
-        "sandbox_id": report.sandbox_id,
-        "mode": report.mode,
-        "retained": report.retained,
-        "workspace_stop_failures": failed,
-    }))
+    // The record is gone by now, so the state before is the only remaining
+    // description of what the destroy removed.
+    Ok(with_transition(
+        json!({
+            "sandbox_id": report.sandbox_id,
+            "mode": report.mode,
+            "retained": report.retained,
+            "workspace_stop_failures": failed,
+        }),
+        previous_state,
+        ABSENT,
+    ))
 }
 
 #[derive(Debug, serde::Serialize)]

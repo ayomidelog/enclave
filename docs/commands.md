@@ -1,5 +1,27 @@
 # Command Reference
 
+## Lifecycle responses
+
+Every command that changes lifecycle state (`create`, `start`, `stop`, `pause`,
+`resume`, `destroy`, `remove`, and the `workspace` equivalents) prints two things
+beyond its own result: the operation id the daemon ran the request as, and the
+state change it made.
+
+```
+$ enclave workspace stop mybox dev
+stopped workspace
+state: running -> stopped
+operation 8bd51a0a-cb7d-4ee2-b006-af17108dc01a
+cleanup verified: runtime exited, cgroup removed, mounts released, loop device detached, runtime files removed, network and ports released
+```
+
+The operation id ties the command to its journal record under
+`<state-dir>/operations/`, to its log lines, and to its phase timings, so a
+single run can be traced end to end. The transition is the daemon's own answer to
+"what did this change": a stop that found the workspace already stopped prints no
+transition line, because it changed nothing.
+
+
 ## Daemon
 
 ```bash

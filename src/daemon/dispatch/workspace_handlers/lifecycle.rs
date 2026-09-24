@@ -17,6 +17,8 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
 
     match operation {
         "start" => {
+            let previous_state =
+                workspace_state_before(&config.state_dir, sandbox, workspace_selector);
             let metadata = workspace::start_workspace_with_security(
                 &config.state_dir,
                 sandbox,
@@ -26,9 +28,15 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
             )?;
             let metadata =
                 ensure_workspace_ports_started(&config.state_dir, &metadata, port_publisher)?;
-            Ok(serde_json::to_value(metadata)?)
+            Ok(with_transition(
+                serde_json::to_value(metadata)?,
+                previous_state,
+                WorkspaceStatus::Running.as_str(),
+            ))
         }
         "stop" => {
+            let previous_state =
+                workspace_state_before(&config.state_dir, sandbox, workspace_selector);
             let (metadata, certificate) = workspace::stop_workspace_with_certificate(
                 &config.state_dir,
                 sandbox,
@@ -47,11 +55,16 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
                     certificate.failure_summary()
                 );
             }
-            Ok(json!({ "workspace": metadata, "certificate": certificate }))
+            Ok(with_transition(
+                json!({ "workspace": metadata, "certificate": certificate }),
+                previous_state,
+                WorkspaceStatus::Stopped.as_str(),
+            ))
         }
         "destroy" => {
             let metadata_before =
                 workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
+            let previous_state = metadata_before.status.as_str();
             let mode = parse_cleanup_mode(params)?;
             let report = workspace::destroy_workspace_with_mode(
                 &config.state_dir,
@@ -77,13 +90,17 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
                     certificate.failure_summary()
                 );
             }
-            Ok(json!({
-                "workspace_id": report.workspace_id,
-                "mode": report.mode,
-                "retained": report.retained,
-                "certificate": certificate,
-                "sandbox": sandbox,
-            }))
+            Ok(with_transition(
+                json!({
+                    "workspace_id": report.workspace_id,
+                    "mode": report.mode,
+                    "retained": report.retained,
+                    "certificate": certificate,
+                    "sandbox": sandbox,
+                }),
+                previous_state,
+                ABSENT,
+            ))
         }
         "status" => {
             let metadata =
@@ -104,12 +121,17 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
         "remove" => {
             let metadata_before =
                 workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
+            let previous_state = metadata_before.status.as_str();
             workspace::remove_workspace(&config.state_dir, sandbox, workspace_selector)?;
             port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
-            Ok(json!({
-                "removed": workspace_selector,
-                "sandbox": sandbox,
-            }))
+            Ok(with_transition(
+                json!({
+                    "removed": workspace_selector,
+                    "sandbox": sandbox,
+                }),
+                previous_state,
+                ABSENT,
+            ))
         }
         "runtime" => {
             let result =

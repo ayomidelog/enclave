@@ -26,7 +26,7 @@ use serde_json::{json, Value};
 use crate::cli::CreateArgs;
 use crate::sandbox::SandboxMetadata;
 
-use super::super::{daemon, print_operation_id, send};
+use super::super::{daemon, print_operation_id, print_state_transition, send};
 
 /// How often the client looks for new bootstrap output while it waits.
 const BOOTSTRAP_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -79,9 +79,10 @@ pub(crate) fn run_create(socket: &Path, args: CreateArgs) -> Result<()> {
     if request_thread.join().is_err() {
         bail!("sandbox create request thread panicked");
     }
-    let metadata: SandboxMetadata = serde_json::from_value(response)?;
+    let metadata: SandboxMetadata = serde_json::from_value(response.clone())?;
 
     println!("created and started sandbox {}", metadata.id);
+    print_state_transition(&response);
     print_operation_id();
     println!("rootfs {}", metadata.rootfs_path);
     Ok(())

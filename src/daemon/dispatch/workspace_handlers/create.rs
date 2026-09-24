@@ -49,5 +49,11 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_create(
         config.workspace_selinux_label.as_deref(),
     )?;
     let started = ensure_workspace_ports_started(&config.state_dir, &started, port_publisher)?;
-    Ok(serde_json::to_value(started)?)
+    // Creating a workspace also starts it, so the response describes the whole
+    // change: there was no workspace, and there is now a running one.
+    Ok(with_transition(
+        serde_json::to_value(started)?,
+        ABSENT,
+        WorkspaceStatus::Running.as_str(),
+    ))
 }
