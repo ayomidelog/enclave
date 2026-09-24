@@ -95,7 +95,9 @@ fn run_workspace_create(
     ) {
         Ok(response) => response,
         Err(err) => {
-            if let Some(hint) = existing_workspace_create_hint(&err, &sandbox_id, &workspace_name) {
+            if let Some(hint) =
+                existing_workspace_create_hint(ctx.socket, &sandbox_id, &workspace_name)?
+            {
                 bail!("{hint}");
             }
             return Err(err);
@@ -156,18 +158,22 @@ fn run_workspace_port_command(
 }
 
 fn existing_workspace_create_hint(
-    err: &anyhow::Error,
+    socket: &Path,
     sandbox_id: &str,
     workspace_name: &str,
-) -> Option<String> {
-    let msg = format!("{err:#}");
-    if !msg.contains("already exists") {
-        return None;
+) -> Result<Option<String>> {
+    let response = send(socket, "workspace.list", json!({"sandbox_id": sandbox_id}))?;
+    let workspaces: Vec<WorkspaceListItem> = serde_json::from_value(response)?;
+    if !workspaces
+        .iter()
+        .any(|item| item.name == workspace_name || item.id == workspace_name)
+    {
+        return Ok(None);
     }
-    Some(format!(
+    Ok(Some(format!(
         "workspace '{}' already exists. try `enclave workspace start {} {}` or `enclave workspace list --sandbox-id {}`.",
         workspace_name, sandbox_id, workspace_name, sandbox_id
-    ))
+    )))
 }
 
 fn run_workspace_list(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceListArgs) -> Result<()> {

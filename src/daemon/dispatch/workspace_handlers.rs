@@ -80,9 +80,15 @@ pub(super) fn dispatch_workspace_start_many_item(
 ) -> Result<Value> {
     let started = match dispatch_workspace_create(spec, config, port_publisher) {
         Ok(result) => result,
-        Err(error) if format!("{error:#}").contains("already exists") => {
+        Err(error) => {
             let sandbox = require_param_str(spec, &["sandbox_id"])?;
             let workspace = require_param_str(spec, &["name"])?;
+            let exists = workspace::list_workspaces(&config.state_dir, Some(sandbox))?
+                .iter()
+                .any(|item| item.name == workspace || item.id == workspace);
+            if !exists {
+                return Err(error);
+            }
             let mut update = spec.clone();
             if let Some(object) = update.as_object_mut() {
                 for key in [
@@ -112,7 +118,6 @@ pub(super) fn dispatch_workspace_start_many_item(
                 port_publisher,
             )?
         }
-        Err(error) => return Err(error),
     };
 
     if let Some(run_command) = spec.get("run").and_then(Value::as_str) {
