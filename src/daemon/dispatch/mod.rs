@@ -1072,119 +1072,8 @@ fn dispatch_policy_rule(params: &Value, config: &DaemonConfig, is_allow: bool) -
     Ok(serde_json::to_value(updated)?)
 }
 
-#[derive(Debug, Clone, Copy)]
-enum Action {
-    Ping,
-    DaemonHealth,
-    DaemonDoctor,
-    DaemonDoctorRepair,
-    Init,
-    SandboxCreate,
-    SandboxUpdate,
-    SandboxStart,
-    SandboxStop,
-    SandboxPause,
-    SandboxResume,
-    SandboxStatus,
-    SandboxDestroy,
-    SandboxList,
-    SandboxRemove,
-    SandboxExecSetup,
-    ProcessList,
-    WorkspaceCreate,
-    WorkspaceStart,
-    WorkspaceStartMany,
-    WorkspaceStop,
-    WorkspaceDestroy,
-    WorkspaceWipe,
-    WorkspaceStatus,
-    WorkspaceStats,
-    WorkspaceStatsList,
-    WorkspaceList,
-    WorkspaceRemove,
-    WorkspaceUpdate,
-    WorkspaceResize,
-    WorkspaceExec,
-    WorkspaceCp,
-    WorkspacePortPublish,
-    WorkspacePortUnpublish,
-    WorkspacePortList,
-    WorkspaceRuntime,
-    WorkspaceLogs,
-    WorkspaceSnapshot,
-    WorkspaceSnapshotList,
-    WorkspaceRestore,
-    WorkspaceSnapshotGc,
-    WorkspaceSnapshotExport,
-    WorkspaceSnapshotImport,
-    RegistryRepair,
-    PolicyGet,
-    PolicySetDefault,
-    PolicyAllow,
-    PolicyDeny,
-    PolicyClear,
-    Shutdown,
-}
-
-impl Action {
-    fn parse(raw: &str) -> Result<Self> {
-        let action = match raw {
-            "ping" => Self::Ping,
-            "daemon.health" => Self::DaemonHealth,
-            "daemon.doctor" => Self::DaemonDoctor,
-            "daemon.doctor.repair" => Self::DaemonDoctorRepair,
-            "init" => Self::Init,
-            "sandbox.create" => Self::SandboxCreate,
-            "sandbox.update" => Self::SandboxUpdate,
-            "sandbox.start" => Self::SandboxStart,
-            "sandbox.stop" => Self::SandboxStop,
-            "sandbox.pause" => Self::SandboxPause,
-            "sandbox.resume" => Self::SandboxResume,
-            "sandbox.status" => Self::SandboxStatus,
-            "sandbox.destroy" => Self::SandboxDestroy,
-            "sandbox.list" => Self::SandboxList,
-            "sandbox.remove" => Self::SandboxRemove,
-            "sandbox.exec_setup" => Self::SandboxExecSetup,
-            "process.list" => Self::ProcessList,
-            "workspace.create" => Self::WorkspaceCreate,
-            "workspace.start" => Self::WorkspaceStart,
-            "workspace.start_many" => Self::WorkspaceStartMany,
-            "workspace.stop" => Self::WorkspaceStop,
-            "workspace.destroy" => Self::WorkspaceDestroy,
-            "workspace.wipe" => Self::WorkspaceWipe,
-            "workspace.status" => Self::WorkspaceStatus,
-            "workspace.stats" => Self::WorkspaceStats,
-            "workspace.stats.list" => Self::WorkspaceStatsList,
-            "workspace.list" => Self::WorkspaceList,
-            "workspace.remove" => Self::WorkspaceRemove,
-            "workspace.update" | "workspace.update_auth" => Self::WorkspaceUpdate,
-            "workspace.resize" => Self::WorkspaceResize,
-            "workspace.exec" => Self::WorkspaceExec,
-            "workspace.cp" => Self::WorkspaceCp,
-            "workspace.port.publish" => Self::WorkspacePortPublish,
-            "workspace.port.unpublish" => Self::WorkspacePortUnpublish,
-            "workspace.port.list" => Self::WorkspacePortList,
-            "workspace.runtime" => Self::WorkspaceRuntime,
-            "workspace.logs" => Self::WorkspaceLogs,
-            "workspace.snapshot" => Self::WorkspaceSnapshot,
-            "workspace.snapshot.list" => Self::WorkspaceSnapshotList,
-            "workspace.restore" => Self::WorkspaceRestore,
-            "workspace.snapshot.gc" => Self::WorkspaceSnapshotGc,
-            "workspace.snapshot.export" => Self::WorkspaceSnapshotExport,
-            "workspace.snapshot.import" => Self::WorkspaceSnapshotImport,
-            "registry.repair" => Self::RegistryRepair,
-            "policy.get" => Self::PolicyGet,
-            "policy.set_default" => Self::PolicySetDefault,
-            "policy.allow" => Self::PolicyAllow,
-            "policy.deny" => Self::PolicyDeny,
-            "policy.clear" => Self::PolicyClear,
-            "shutdown" => Self::Shutdown,
-            _ => bail!("unknown action '{}'", raw),
-        };
-        Ok(action)
-    }
-}
-
+mod action;
+use action::Action;
 fn parse_published_ports(
     params: &Value,
     key: &str,
@@ -1391,5 +1280,5 @@ fn workspace_port_statuses(
 }
 
 #[cfg(test)]
-#[path = "../../tests/src/daemon/dispatch.rs"]
+#[path = "../../../tests/src/daemon/dispatch.rs"]
 mod tests;
