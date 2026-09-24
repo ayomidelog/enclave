@@ -135,9 +135,9 @@ fn configure_workspace_netns(
         return Ok(());
     }
 
-    let route_dump = dump_nsenter_output(&pid_str, &["route", "show"])
+    let route_dump = dump_workspace_netns(&pid_str, &["route", "show"])
         .unwrap_or_else(|err| format!("failed to inspect route table: {err:#}"));
-    let addr_dump = dump_nsenter_output(&pid_str, &["addr", "show", "dev", new_name])
+    let addr_dump = dump_workspace_netns(&pid_str, &["addr", "show", "dev", new_name])
         .unwrap_or_else(|err| format!("failed to inspect interface state for {new_name}: {err:#}"));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -166,10 +166,10 @@ fn run_batch(command: HostCommand, commands: &str) -> Result<HostOutput> {
 }
 
 fn run_nsenter_ip_batch(pid: &str, commands: &str) -> Result<HostOutput> {
-    run_batch(
-        HostCommand::new("nsenter").args(["--net", "--target", pid, "--", "ip"]),
-        commands,
-    )
+    let pid = pid
+        .parse::<u32>()
+        .with_context(|| format!("invalid workspace pid '{pid}' for network setup"))?;
+    run_batch(HostCommand::new("ip").netns(pid), commands)
 }
 
 fn run_ip(args: &[&str]) -> Result<()> {
@@ -186,23 +186,24 @@ fn run_ip(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn run_nsenter_capture(pid: &str, args: &[&str], context: &str) -> Result<HostOutput> {
-    HostCommand::new("nsenter")
-        .args(["--net", "--target", pid, "--", "ip"])
+/// Dump the workspace namespace state for a setup failure.
+///
+/// The caller has already failed; this only runs to explain why, so it reports
+/// its own failure as text rather than replacing the original error.
+fn dump_workspace_netns(pid: &str, args: &[&str]) -> Result<String> {
+    let pid_number = pid
+        .parse::<u32>()
+        .with_context(|| format!("invalid workspace pid '{pid}' for network diagnostics"))?;
+    let output = HostCommand::new("ip")
+        .netns(pid_number)
         .args(args)
         .run()
-        .with_context(|| context.to_string())
-}
-
-fn dump_nsenter_output(pid: &str, args: &[&str]) -> Result<String> {
-    let output = run_nsenter_capture(
-        pid,
-        args,
-        &format!(
-            "failed to run diagnostic nsenter command: ip {}",
-            args.join(" ")
-        ),
-    )?;
+        .with_context(|| {
+            format!(
+                "failed to run diagnostic ip {} in the workspace namespace",
+                args.join(" ")
+            )
+        })?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     Ok(format!(

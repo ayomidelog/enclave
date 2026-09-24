@@ -138,6 +138,13 @@ pub(crate) struct HostCommand {
     timeout: Duration,
     output_cap: usize,
     capture_output: bool,
+    /// Network namespace the child joins before exec, given as a pid.
+    ///
+    /// nsenter exists to do exactly this, and it costs a process on the workspace
+    /// start path. Joining the namespace in the child's own pre-exec hook does the
+    /// same thing with no extra process, and keeps the deadline and output
+    /// handling identical to every other host command.
+    netns_pid: Option<u32>,
 }
 
 impl HostCommand {
@@ -149,7 +156,14 @@ impl HostCommand {
             timeout: configured_timeout(),
             output_cap: DEFAULT_OUTPUT_CAP,
             capture_output: true,
+            netns_pid: None,
         }
+    }
+
+    /// Run the command inside the network namespace of this pid.
+    pub(crate) fn netns(mut self, pid: u32) -> Self {
+        self.netns_pid = Some(pid);
+        self
     }
 
     /// Discard stdout and stderr instead of capturing them.
@@ -236,11 +250,15 @@ impl HostCommand {
         }
         // A timeout has to reach the whole tree. A command that forks would
         // otherwise leave descendants holding the pipes and the workspace.
+        let netns_pid = self.netns_pid;
         unsafe {
             use std::os::unix::process::CommandExt;
-            command.pre_exec(|| {
+            command.pre_exec(move || {
                 if libc::setpgid(0, 0) != 0 {
                     return Err(std::io::Error::last_os_error());
+                }
+                if let Some(pid) = netns_pid {
+                    enter_network_namespace(pid)?;
                 }
                 Ok(())
             });
@@ -367,6 +385,55 @@ impl HostCommand {
 /// The deadline for a host command that does not set its own.
 ///
 /// Operators can raise it for a slow host, but never past MAX_TIMEOUT.
+/// Join the network namespace of another process, from the child before exec.
+///
+/// This runs between fork and exec, so it may only call async-signal-safe
+/// functions: open, setns, and close qualify. Allocation and any Rust-level error
+/// formatting do not, which is why the failure is returned as a raw errno.
+fn enter_network_namespace(pid: u32) -> std::io::Result<()> {
+    let mut path = [0u8; 32];
+    let mut length = 0usize;
+    for byte in b"/proc/" {
+        path[length] = *byte;
+        length += 1;
+    }
+    // Render the pid without formatting machinery.
+    let mut digits = [0u8; 10];
+    let mut digit_count = 0usize;
+    let mut value = pid;
+    if value == 0 {
+        digits[0] = b'0';
+        digit_count = 1;
+    } else {
+        while value > 0 {
+            digits[digit_count] = b'0' + (value % 10) as u8;
+            digit_count += 1;
+            value /= 10;
+        }
+    }
+    for index in (0..digit_count).rev() {
+        path[length] = digits[index];
+        length += 1;
+    }
+    for byte in b"/ns/net" {
+        path[length] = *byte;
+        length += 1;
+    }
+    path[length] = 0;
+
+    let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let result = unsafe { libc::setns(fd, libc::CLONE_NEWNET) };
+    let error = std::io::Error::last_os_error();
+    unsafe { libc::close(fd) };
+    if result != 0 {
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn configured_timeout() -> Duration {
     match std::env::var("ENCLAVE_HOST_COMMAND_TIMEOUT_SECS") {
         Ok(value) => match value.parse::<u64>() {
