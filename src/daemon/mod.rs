@@ -1,5 +1,7 @@
 mod dispatch;
+mod leases;
 mod rate_limiter;
+mod services;
 pub(crate) mod state_lock;
 mod workers;
 
@@ -44,8 +46,16 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     sandbox::init_storage(&config.state_dir)?;
     policy::ensure_policy(&config.state_dir)?;
     prepare_runtime_paths(&config.socket_path, &config.pid_file)?;
-    let port_publisher = Arc::new(crate::network::publish::PortPublisher::new());
-    reconcile_published_ports(&config.state_dir, &port_publisher)?;
+    let services = services::DaemonServices {
+        rate_limiter: Arc::new(RateLimiter::with_global_limit(
+            RATE_LIMIT_WINDOW,
+            RATE_LIMIT_MAX_REQUESTS,
+            RATE_LIMIT_GLOBAL_MAX_REQUESTS,
+        )),
+        port_publisher: Arc::new(crate::network::publish::PortPublisher::new()),
+        leases: Arc::new(leases::LifecycleLeases::default()),
+    };
+    reconcile_published_ports(&config.state_dir, &services.port_publisher)?;
 
     let listener = UnixListener::bind(&config.socket_path)
         .with_context(|| format!("failed to bind socket {}", config.socket_path.display()))?;
@@ -56,14 +66,9 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         .with_context(|| format!("failed to write pid file {}", config.pid_file.display()))?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let rate_limiter = Arc::new(RateLimiter::with_global_limit(
-        RATE_LIMIT_WINDOW,
-        RATE_LIMIT_MAX_REQUESTS,
-        RATE_LIMIT_GLOBAL_MAX_REQUESTS,
-    ));
-    let serve_result = serve(listener, &config, &shutdown, &rate_limiter, &port_publisher);
+    let serve_result = serve(listener, &config, &shutdown, &services);
 
-    drop(port_publisher);
+    drop(services);
     crate::network::cleanup_host_networking();
 
     if let Err(err) = cleanup_files(&config.socket_path, &config.pid_file) {
@@ -142,13 +147,12 @@ fn serve(
     listener: UnixListener,
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
-    rate_limiter: &Arc<RateLimiter>,
-    port_publisher: &Arc<crate::network::publish::PortPublisher>,
+    services: &services::DaemonServices,
 ) -> Result<()> {
     listener
         .set_nonblocking(true)
         .context("failed to make daemon listener nonblocking")?;
-    let workers = workers::RequestWorkerPool::new(config, shutdown, rate_limiter, port_publisher)?;
+    let workers = workers::RequestWorkerPool::new(config, shutdown, services)?;
     loop {
         if shutdown_requested(shutdown) {
             break;
@@ -210,8 +214,7 @@ fn handle_client(
     mut stream: UnixStream,
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
-    rate_limiter: &Arc<RateLimiter>,
-    port_publisher: &Arc<crate::network::publish::PortPublisher>,
+    services: &services::DaemonServices,
 ) -> Result<()> {
     crate::perf::record_request();
     let _request_total = crate::perf::Timer::new("daemon.request");
@@ -234,7 +237,7 @@ fn handle_client(
         }
     };
     let peer_uid = peer_uid(&stream).context("failed to resolve peer uid")?;
-    if !rate_limiter.allow(peer_uid) {
+    if !services.rate_limiter.allow(peer_uid) {
         let response = Response::err(format!(
             "rate limit exceeded for uid {} (max {} requests per {}s)",
             peer_uid,
@@ -251,11 +254,10 @@ fn handle_client(
     }
 
     let _dispatch = crate::perf::Timer::new("daemon.dispatch");
-    let response =
-        match dispatch::dispatch(request, config, shutdown, port_publisher, Some(&stream)) {
-            Ok(result) => Response::ok(result),
-            Err(err) => Response::err(err.to_string()),
-        };
+    let response = match dispatch::dispatch(request, config, shutdown, services, Some(&stream)) {
+        Ok(result) => Response::ok(result),
+        Err(err) => Response::err(err.to_string()),
+    };
     drop(_dispatch);
 
     write_response(&mut stream, &response)?;

@@ -14,6 +14,7 @@ use crate::workspace;
 use super::DaemonConfig;
 
 mod action;
+mod lease_scope;
 mod params;
 mod ports;
 mod sandbox_handlers;
@@ -57,10 +58,18 @@ pub(crate) fn dispatch(
     request: crate::protocol::Request,
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
-    port_publisher: &Arc<PortPublisher>,
+    services: &crate::daemon::services::DaemonServices,
     client_stream: Option<&UnixStream>,
 ) -> Result<Value> {
     let action = Action::parse(&request.action)?;
+    let port_publisher = &services.port_publisher;
+    // Serialize the requests that touch the same resources. Read-only and
+    // per-command requests take no lease, so they keep answering while a
+    // lifecycle operation runs.
+    let _lease = match lease_scope::scope_for(&config.state_dir, action, &request.params)? {
+        Some(scope) => Some(services.leases.acquire(scope)?),
+        None => None,
+    };
     match action {
         Action::Ping => Ok(json!({"status": "pong"})),
         Action::DaemonHealth => Ok(json!({

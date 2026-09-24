@@ -7,7 +7,6 @@ use std::thread;
 
 use anyhow::{Context, Result};
 
-use super::rate_limiter::RateLimiter;
 use super::{handle_client, DaemonConfig};
 
 const CONTROL_WORKER_COUNT: usize = 6;
@@ -30,8 +29,7 @@ impl RequestWorkerPool {
     pub(super) fn new(
         config: &DaemonConfig,
         shutdown: &Arc<AtomicBool>,
-        rate_limiter: &Arc<RateLimiter>,
-        port_publisher: &Arc<crate::network::publish::PortPublisher>,
+        services: &super::services::DaemonServices,
     ) -> Result<Self> {
         let control_count =
             configured_worker_count("ENCLAVE_CONTROL_WORKERS", CONTROL_WORKER_COUNT);
@@ -48,8 +46,7 @@ impl RequestWorkerPool {
             "control",
             config,
             shutdown,
-            rate_limiter,
-            port_publisher,
+            services,
         )?);
         workers.extend(spawn_workers(
             transfer_receiver,
@@ -57,8 +54,7 @@ impl RequestWorkerPool {
             "transfer",
             config,
             shutdown,
-            rate_limiter,
-            port_publisher,
+            services,
         )?);
         Ok(Self {
             control_sender,
@@ -109,16 +105,14 @@ fn spawn_workers(
     class: &'static str,
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
-    rate_limiter: &Arc<RateLimiter>,
-    port_publisher: &Arc<crate::network::publish::PortPublisher>,
+    services: &super::services::DaemonServices,
 ) -> Result<Vec<thread::JoinHandle<()>>> {
     let mut workers = Vec::with_capacity(count);
     for worker_id in 0..count {
         let receiver = Arc::clone(&receiver);
         let config = config.clone();
         let shutdown = Arc::clone(shutdown);
-        let rate_limiter = Arc::clone(rate_limiter);
-        let port_publisher = Arc::clone(port_publisher);
+        let services = services.clone();
         let worker = thread::Builder::new()
             .name(format!("enclave-daemon-{class}-worker-{worker_id}"))
             .spawn(move || loop {
@@ -129,13 +123,7 @@ fn spawn_workers(
                 let Ok(job) = job else {
                     return;
                 };
-                if let Err(error) = handle_client(
-                    job.stream,
-                    &config,
-                    &shutdown,
-                    &rate_limiter,
-                    &port_publisher,
-                ) {
+                if let Err(error) = handle_client(job.stream, &config, &shutdown, &services) {
                     tracing::warn!(worker_id, class, "sandbox daemon request error: {error:#}");
                 }
             })
