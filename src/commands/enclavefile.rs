@@ -1,7 +1,4 @@
-use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::thread;
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -346,76 +343,6 @@ fn bring_up_workspaces(socket: &Path, ef: &Enclavefile, ef_path: &Path) -> Resul
     Ok(())
 }
 
-#[allow(dead_code)]
-fn start_workspace_definitions(
-    socket: &Path,
-    sandbox_name: &str,
-    definitions: &[(
-        usize,
-        &str,
-        &crate::enclavefile::WorkspaceSection,
-        Option<String>,
-    )],
-) -> Result<()> {
-    if definitions.is_empty() {
-        return Ok(());
-    }
-
-    let worker_count = std::env::var("ENCLAVE_UP_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get().saturating_mul(2).max(1))
-                .unwrap_or(4)
-        })
-        .min(definitions.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..definitions.len())));
-    let (result_sender, result_receiver) = std::sync::mpsc::channel();
-
-    thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let queue = Arc::clone(&queue);
-            let result_sender = result_sender.clone();
-            scope.spawn(move || loop {
-                let job_index = match queue.lock() {
-                    Ok(mut queue) => queue.pop_front(),
-                    Err(_) => return,
-                };
-                let Some(job_index) = job_index else {
-                    return;
-                };
-                let (_, key, workspace, workspace_dir) = &definitions[job_index];
-                let result = ensure_workspace_started(
-                    socket,
-                    sandbox_name,
-                    key,
-                    workspace,
-                    workspace_dir.as_deref(),
-                );
-                let _ = result_sender.send((job_index, result));
-            });
-        }
-        drop(result_sender);
-
-        let mut results = (0..definitions.len())
-            .map(|_| None)
-            .collect::<Vec<Option<Result<()>>>>();
-        for (index, result) in result_receiver {
-            results[index] = Some(result);
-        }
-        for (index, result) in results.into_iter().enumerate() {
-            if let Some(Err(error)) = result {
-                return Err(error).with_context(|| {
-                    format!("failed to start workspace '{}'", definitions[index].1)
-                });
-            }
-        }
-        Ok(())
-    })
-}
-
 fn start_workspace_definitions_bulk(
     socket: &Path,
     sandbox_name: &str,
@@ -478,77 +405,6 @@ fn start_workspace_definitions_bulk(
         );
     }
     Ok(())
-}
-
-#[allow(dead_code)]
-fn ensure_workspace_started(
-    socket: &Path,
-    sandbox_name: &str,
-    key: &str,
-    workspace: &crate::enclavefile::WorkspaceSection,
-    workspace_dir: Option<&str>,
-) -> Result<()> {
-    tracing::info!("creating workspace '{}'...", workspace.name);
-    let create_result = send_managed(
-        socket,
-        "workspace.create",
-        json!({
-            "sandbox_id": sandbox_name,
-            "name": workspace.name,
-            "path": workspace_dir,
-            "cpu_seconds": workspace.cpu_seconds,
-            "cpu_percent": workspace.cpu_percent,
-            "memory_mb": workspace.memory_mb,
-            "max_procs": workspace.max_procs,
-            "max_open_files": workspace.max_open_files,
-            "disk_mb": workspace.disk_mb,
-            "clear_tmp_on_restart": workspace.clear_tmp_on_restart,
-            "auth": workspace.auth.clone(),
-            "env_tokens": workspace.env_tokens.clone(),
-            "ports": workspace.ports.clone(),
-        }),
-    );
-    match create_result {
-        Ok(_) => Ok(()),
-        Err(error) if format!("{error:#}").contains("already exists") => {
-            tracing::info!(
-                "  workspace '{}' already exists, starting...",
-                workspace.name
-            );
-            if let Err(update_error) = send_managed(
-                socket,
-                "workspace.update",
-                json!({
-                    "sandbox": sandbox_name,
-                    "workspace": workspace.name,
-                    "cpu_seconds": workspace.cpu_seconds,
-                    "cpu_percent": workspace.cpu_percent,
-                    "memory_mb": workspace.memory_mb,
-                    "max_procs": workspace.max_procs,
-                    "max_open_files": workspace.max_open_files,
-                    "disk_mb": workspace.disk_mb,
-                    "clear_tmp_on_restart": workspace.clear_tmp_on_restart,
-                    "auth": workspace.auth.clone(),
-                    "env_tokens": workspace.env_tokens.clone(),
-                }),
-            ) {
-                tracing::warn!(
-                    "failed to update auth providers for workspace '{}': {update_error:#}",
-                    key
-                );
-            }
-            send_managed(
-                socket,
-                "workspace.start",
-                json!({
-                    "sandbox": sandbox_name,
-                    "workspace": workspace.name,
-                }),
-            )
-            .map(|_| ())
-        }
-        Err(error) => Err(error),
-    }
 }
 
 #[cfg(test)]
