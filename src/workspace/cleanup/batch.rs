@@ -186,34 +186,71 @@ pub(crate) fn run_workspace_stop_cleanup(
     remove_workspace_cgroups(&sandbox, &workspace.id, workspace.runtime_pid)?;
     drop(cgroups);
 
-    let mut network_report = None;
-    if !network_already_cleaned {
-        if let Some(ip) = workspace.assigned_ip.as_deref() {
-            let network = crate::perf::Timer::new("workspace.stop.network");
-            let report = crate::network::teardown_workspace_network(ip, &workspace.id);
-            drop(network);
-            if !report.is_complete() {
-                return Err(anyhow!("{}", format_network_cleanup_error(&report)));
-            }
-            network_report = Some(report);
+    // Network teardown and storage unmount touch independent host resources: the
+    // veth and its rules, and the workspace disk image. Each costs tens of
+    // milliseconds of process spawns, and running them one after the other added
+    // the network time to every stop, so the network runs alongside the storage
+    // work and both outcomes are reported.
+    let (network_report, storage_result) = std::thread::scope(|scope| {
+        let network = if !network_already_cleaned {
+            workspace.assigned_ip.as_deref().map(|ip| {
+                let workspace_id = workspace.id.as_str();
+                scope.spawn(move || {
+                    let timer = crate::perf::Timer::new("workspace.stop.network");
+                    let report = crate::network::teardown_workspace_network(ip, workspace_id);
+                    drop(timer);
+                    report
+                })
+            })
+        } else {
+            None
+        };
+
+        let storage = if storage_already_unmounted {
+            Ok(())
+        } else {
+            release_workspace_storage(&workspace)
+        };
+
+        let network_report = network.map(|handle| {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        });
+        (network_report, storage)
+    });
+
+    if let Some(report) = network_report.as_ref() {
+        if !report.is_complete() {
+            // Report the storage outcome too: an operator fixing the network
+            // should not have to run the stop again to discover the mount state.
+            let network_error = format_network_cleanup_error(report);
+            return match storage_result {
+                Ok(()) => Err(anyhow!("{network_error}")),
+                Err(storage_error) => Err(anyhow!(
+                    "{network_error}; storage cleanup also failed: {storage_error:#}"
+                )),
+            };
         }
     }
+    storage_result?;
+    Ok(network_report)
+}
 
-    if storage_already_unmounted {
-        return Ok(network_report);
-    }
-
-    // `/tmp` is backed by the workspace disk image, so it must be cleared
-    // before that image is unmounted.
+/// Clear the workspace tmp directory if asked, then unmount its storage.
+///
+/// The tmp directory is backed by the workspace disk image, so it must be cleared
+/// before that image is unmounted.
+fn release_workspace_storage(workspace: &crate::workspace::WorkspaceMetadata) -> Result<()> {
     if workspace.clear_tmp_on_restart {
         let reset = crate::perf::Timer::new("workspace.stop.tmp_reset");
-        crate::workspace::reset_workspace_tmp(&workspace)
-            .with_context(|| format!("failed to reset workspace /tmp for {}", workspace.id))?;
+        crate::workspace::reset_workspace_tmp(workspace)
+            .with_context(|| format!("failed to reset workspace tmp for {}", workspace.id))?;
         drop(reset);
     }
     let unmount = crate::perf::Timer::new("workspace.stop.unmount");
-    crate::workspace::ensure_workspace_storage_unmounted(&workspace)
+    crate::workspace::ensure_workspace_storage_unmounted(workspace)
         .context("failed to unmount workspace storage")?;
     drop(unmount);
-    Ok(network_report)
+    Ok(())
 }
