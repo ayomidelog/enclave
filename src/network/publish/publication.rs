@@ -2,8 +2,8 @@ use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct WorkspacePublishKey {
-    sandbox_id: String,
-    workspace_id: String,
+    pub(super) sandbox_id: String,
+    pub(super) workspace_id: String,
 }
 
 pub(super) struct ActivePublication {

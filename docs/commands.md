@@ -20,7 +20,7 @@ enclave doctor [--repair]
 | `daemon stop` | Stop the daemon. |
 | `ping` | Send a ping to the daemon and print the response. |
 | `health` | Print daemon health information (state dir, uptime, etc.). |
-| `doctor` | Run diagnostic checks: registry consistency, orphaned mounts, stale cgroups, and cgroup v2 availability. |
+| `doctor` | Run diagnostic checks: registry consistency, orphaned mounts, stale cgroups, cgroup v2 availability, and published host ports no running workspace is using. |
 | `doctor --repair` | Reconcile registry and filesystem state, remove stale workspace mounts and namespace state, and validate daemon ownership. Requires a running daemon unless global `--start-daemon` is supplied. |
 
 Destructive commands do not start a stopped daemon automatically. Start it with `enclave daemon start`, or opt in for one invocation with the global `--start-daemon` flag:

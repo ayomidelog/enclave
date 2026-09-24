@@ -102,7 +102,9 @@ pub(crate) fn dispatch(
             "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {
-            let report = crate::doctor::run_doctor(&config.state_dir)?;
+            // The daemon owns the port publisher, so this is the one caller that
+            // can report a published listener no running workspace is using.
+            let report = crate::doctor::run_doctor(&config.state_dir, Some(port_publisher))?;
             Ok(serde_json::to_value(report)?)
         }
         Action::DaemonDoctorRepair => {

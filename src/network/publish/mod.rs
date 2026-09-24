@@ -37,6 +37,14 @@ const MAX_CONNECTIONS_PER_PUBLISHER: usize = 128;
 /// connections is bounded no matter how many ports are published.
 const MAX_PUBLISHED_CONNECTIONS: usize = 1024;
 
+/// One workspace the publisher is serving ports for, and the ports it holds.
+#[derive(Debug, Clone)]
+pub struct PublishedPortOwner {
+    pub sandbox_id: String,
+    pub workspace_id: String,
+    pub ports: Vec<PublishedPortStatus>,
+}
+
 pub struct PortPublisher {
     inner: Mutex<PublisherState>,
     connections: Arc<ConnectionLimiter>,
@@ -126,6 +134,26 @@ impl PortPublisher {
             .active
             .get(&key)
             .is_some_and(|publications| !publications.is_empty())
+    }
+
+    /// Every workspace the publisher is currently serving ports for.
+    ///
+    /// The publisher is the only authority on which host ports Enclave holds:
+    /// the listeners are owned by threads rather than by any file on disk, so a
+    /// caller that wants to prove nothing was left behind has to ask here. Doctor
+    /// uses this to name a listener whose workspace is no longer running, which
+    /// is otherwise invisible until a later start fails with the port in use.
+    pub fn active_workspaces(&self) -> Vec<PublishedPortOwner> {
+        let state = self.inner.lock().expect("port publisher mutex poisoned");
+        state
+            .active
+            .iter()
+            .map(|(key, publications)| PublishedPortOwner {
+                sandbox_id: key.sandbox_id.clone(),
+                workspace_id: key.workspace_id.clone(),
+                ports: publications.iter().map(ActivePublication::status).collect(),
+            })
+            .collect()
     }
 
     pub fn workspace_statuses(

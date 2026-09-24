@@ -12,6 +12,7 @@ mod firewall;
 mod journal;
 mod mounts;
 mod network;
+mod ports;
 mod registry;
 mod runtime;
 
@@ -57,8 +58,16 @@ impl DoctorCheck {
         }
     }
 }
-pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
-    let checks = vec![
+/// Run every check, including the ones that need the daemon's own state.
+///
+/// The port publisher is the only resource Enclave owns that no file records, so
+/// the check for it can only run where the publisher lives. A caller without one
+/// gets every other check rather than a report that looks complete and is not.
+pub fn run_doctor(
+    state_dir: &Path,
+    publisher: Option<&crate::network::publish::PortPublisher>,
+) -> Result<DoctorReport> {
+    let mut checks = vec![
         registry::check_registry_consistency(state_dir),
         mounts::check_orphaned_mounts(state_dir),
         mounts::check_sandbox_rootfs_mounts(state_dir),
@@ -73,6 +82,9 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
         journal::check_operation_journal(state_dir),
         capabilities::check_cgroup_v2_availability(),
     ];
+    if let Some(publisher) = publisher {
+        checks.push(ports::check_published_ports(state_dir, publisher));
+    }
 
     let all_ok = checks.iter().all(|c| c.status == "ok");
     let status = if all_ok {
