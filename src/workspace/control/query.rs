@@ -135,7 +135,6 @@ pub(crate) fn collect_all_used_ip_octets(
         .sandboxes
         .values()
         .flat_map(|s| s.workspaces.values())
-        .filter(|workspace| workspace_runtime_is_active(workspace))
         .filter_map(|ws| ws.assigned_ip.as_deref());
     network::collect_used_ips(ips)
 }

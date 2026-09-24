@@ -15,7 +15,7 @@ pub fn start_workspace_with_security(
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
 ) -> Result<WorkspaceMetadata> {
-    let (sandbox_id, workspace_id, sandbox_snapshot, mut workspace_snapshot, used_ips) =
+    let (sandbox_id, workspace_id, sandbox_snapshot, mut workspace_snapshot) =
         with_registry(state_dir, |registry| {
             let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
             let sandbox = registry
@@ -56,7 +56,6 @@ pub fn start_workspace_with_security(
                 workspace_id,
                 sandbox.metadata.clone(),
                 workspace_snapshot,
-                collect_all_used_ip_octets(registry),
             ))
         })?;
 
@@ -112,14 +111,24 @@ pub fn start_workspace_with_security(
     // Record the in-flight transition durably so a crash during launch is
     // visible to the next daemon start instead of looking like a stopped
     // workspace that never started.
-    mark_workspace_starting(state_dir, &sandbox_id, &workspace_id)?;
+    // The address is reserved under the registry lock so two workspaces starting
+    // at the same time cannot both take the first free one. Reserving it here
+    // rather than committing it at the end is what makes the batch start path
+    // safe: those workers read the registry before any of them has committed.
+    let reserved_ip = match mark_workspace_starting(state_dir, &sandbox_id, &workspace_id) {
+        Ok(ip) => ip,
+        Err(error) => {
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
+    };
     let started = match launch_workspace_runtime(
         state_dir,
         &sandbox_snapshot,
         &workspace_snapshot,
         apparmor_profile,
         selinux_label,
-        NetworkStartPlan::AllocateFromUsedIps(used_ips),
+        NetworkStartPlan::UseReserved(reserved_ip),
     ) {
         Ok(started) => started,
         Err(error) => {
@@ -211,15 +220,19 @@ fn mark_workspace_starting(
     state_dir: &std::path::Path,
     sandbox_id: &str,
     workspace_id: &str,
-) -> Result<()> {
+) -> Result<String> {
     with_registry_mut(state_dir, |registry| {
+        let used = collect_all_used_ip_octets(registry);
+        let assigned_ip = network::ipam::allocate_ip(&used)?;
         let workspace = registry
             .sandboxes
             .get_mut(sandbox_id)
             .and_then(|sandbox| sandbox.workspaces.get_mut(workspace_id))
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
         workspace.status = WorkspaceStatus::Starting;
-        persist_workspace_metadata(workspace)
+        workspace.assigned_ip = Some(assigned_ip.clone());
+        persist_workspace_metadata(workspace)?;
+        Ok(assigned_ip)
     })
 }
 
@@ -317,38 +330,45 @@ pub(crate) fn launch_workspace_runtime(
     let network = crate::perf::Timer::new("workspace.start.network");
     let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
     let assigned_ip = match network_plan {
-        NetworkStartPlan::AllocateFromUsedIps(used_ips) => {
-            match network::setup_workspace_network(
-                session_info.pid,
-                &used_ips,
-                &workspace_rootfs,
+        NetworkStartPlan::UseReserved(ip) => network::setup_reserved_workspace_network(
+            session_info.pid,
+            &ip,
+            &workspace_rootfs,
+            &workspace_snapshot.id,
+        ),
+        NetworkStartPlan::AllocateFromUsedIps(used_ips) => network::setup_workspace_network(
+            session_info.pid,
+            &used_ips,
+            &workspace_rootfs,
+            &workspace_snapshot.id,
+        ),
+    };
+    let assigned_ip = match assigned_ip {
+        Ok(ip) => ip,
+        Err(err) => {
+            drop(network);
+            // Nothing owns the workspace yet, so the launch's own resources are
+            // released here rather than left for a later reconcile.
+            if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
+                sandbox_snapshot,
                 &workspace_snapshot.id,
+                Some(session_info.pid),
             ) {
-                Ok(ip) => ip,
-                Err(err) => {
-                    drop(network);
-                    if let Err(cleanup_err) = cleanup::remove_workspace_cgroups(
-                        sandbox_snapshot,
-                        &workspace_snapshot.id,
-                        Some(session_info.pid),
-                    ) {
-                        tracing::warn!(
-                            "failed to clean cgroup after network setup failure: {cleanup_err:#}"
-                        );
-                    }
-                    if let Err(stop_err) =
-                        session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
-                    {
-                        tracing::warn!(
-                            "failed to stop workspace session {} after network setup failure: {stop_err:#}",
-                            session_info.pid
-                        );
-                    }
-                    return Err(err).context(
-                        "failed to attach or validate workspace networking; aborted workspace startup",
-                    );
-                }
+                tracing::warn!(
+                    "failed to clean cgroup after network setup failure: {cleanup_err:#}"
+                );
             }
+            if let Err(stop_err) =
+                session::stop_session(session_info.pid, Some(session_info.starttime_ticks))
+            {
+                tracing::warn!(
+                    "failed to stop workspace session {} after network setup failure: {stop_err:#}",
+                    session_info.pid
+                );
+            }
+            return Err(err).context(
+                "failed to attach or validate workspace networking; aborted workspace startup",
+            );
         }
     };
     drop(network);

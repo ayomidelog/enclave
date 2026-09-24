@@ -70,7 +70,11 @@ pub(crate) struct WorkspaceRuntimeStart {
 
 /// How a starting workspace should obtain its network identity.
 pub(crate) enum NetworkStartPlan {
+    /// Allocate the first free address from a set the caller read while holding
+    /// the registry lock. Only safe when the lock is held across the launch.
     AllocateFromUsedIps(BTreeSet<u8>),
+    /// Use an address the caller already reserved in the registry.
+    UseReserved(String),
 }
 
 #[cfg(test)]

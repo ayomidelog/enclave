@@ -378,6 +378,39 @@ fn destroy_all_workspaces_returns_empty_plan_without_spawning_cleanup_workers() 
     let _ = fs::remove_dir_all(&temp_dir);
 }
 
+/// A workspace that is starting already owns its address.
+///
+/// The address is reserved under the registry lock so two workspaces starting at
+/// the same time cannot both take the first free one. Counting only running
+/// workspaces would let the second one take the address the first just reserved,
+/// which is how the batch start path ended up with several workspaces sharing one
+/// address.
+#[test]
+fn used_addresses_include_a_workspace_that_is_only_starting() {
+    let mut registry = crate::registry::Registry::default();
+    let mut sandbox = crate::registry::RegistrySandbox {
+        metadata: sandbox_metadata(std::path::Path::new("/tmp/enclave-ipam-test")),
+        workspaces: BTreeMap::new(),
+    };
+    let mut workspace = workspace_metadata(
+        &sandbox.metadata,
+        std::path::Path::new("/tmp/enclave-ipam-test/sandboxes/sandbox/workspaces/ws"),
+        None,
+    );
+    workspace.status = WorkspaceStatus::Starting;
+    workspace.assigned_ip = Some("10.200.0.10".to_string());
+    sandbox.workspaces.insert(workspace.id.clone(), workspace);
+    registry
+        .sandboxes
+        .insert(sandbox.metadata.id.clone(), sandbox);
+
+    let used = collect_all_used_ip_octets(&registry);
+    assert!(
+        used.contains(&10),
+        "a starting workspace's reserved address must not be handed out again"
+    );
+}
+
 /// A workspace whose runtime died must not keep the interface, rules, or mounts
 /// the runtime owned.
 ///

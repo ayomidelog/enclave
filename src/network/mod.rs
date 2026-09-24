@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 static HOST_NETWORKING_READY: AtomicBool = AtomicBool::new(false);
@@ -86,6 +86,30 @@ pub fn setup_workspace_network(
     attach_workspace_network(pid, &ip, workspace_rootfs, workspace_id)?;
 
     Ok(ip)
+}
+
+/// Attach a workspace network at an address the caller already reserved.
+///
+/// A reservation is what makes concurrent starts safe: the address is chosen
+/// while the registry lock is held, so two workspaces starting at the same time
+/// cannot both take the first free one. The address is validated against the
+/// Enclave subnet here because it comes from persisted state rather than from
+/// this call.
+pub fn setup_reserved_workspace_network(
+    pid: u32,
+    reserved_ip: &str,
+    workspace_rootfs: &Path,
+    workspace_id: &str,
+) -> Result<String> {
+    ensure_host_networking()?;
+    if ipam::parse_host_octet(reserved_ip).is_none() {
+        bail!(
+            "reserved workspace address {reserved_ip} is not inside the Enclave subnet {}",
+            ipam::SUBNET_CIDR
+        );
+    }
+    attach_workspace_network(pid, reserved_ip, workspace_rootfs, workspace_id)?;
+    Ok(reserved_ip.to_string())
 }
 
 fn attach_workspace_network(
