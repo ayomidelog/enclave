@@ -1,5 +1,9 @@
 use super::*;
 
+use crate::hostcmd::HostCommand;
+
+use std::time::Duration;
+
 /// Append the ownership comment that marks a rule as Enclave's.
 pub(in crate::network) fn comment_args(owner: &str) -> Vec<String> {
     vec![
@@ -73,11 +77,12 @@ pub(in crate::network) fn ensure_rule(
     let mut check_args = vec!["-t", table, "-C", chain];
     check_args.extend_from_slice(rule_args);
 
-    let check = Command::new(iptables)
+    // A check only reports through its exit status, so its output is discarded
+    // and the call stays one spawn on the workspace start path.
+    let check = HostCommand::new(iptables)
         .args(&check_args)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .discard_output()
+        .run()
         .with_context(|| format!("failed to check {rule_desc} via {iptables}"))?;
     if check.success() {
         return Ok(());
@@ -89,17 +94,12 @@ pub(in crate::network) fn ensure_rule(
         vec!["-t", table, "-A", chain]
     };
     add_args.extend_from_slice(rule_args);
-    let output = Command::new(iptables)
+    let output = HostCommand::new(iptables)
         .args(&add_args)
-        .output()
+        .run()
         .with_context(|| format!("failed to add {rule_desc} via {iptables}"))?;
-    if !output.status.success() && !is_rule_already_exists_error(&output.stderr) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to add {rule_desc} ({}): {}",
-            output.status,
-            stderr.trim()
-        );
+    if !output.success() && !is_rule_already_exists_error(&output.stderr) {
+        bail!("failed to add {rule_desc}: {}", output.stderr_text());
     }
     Ok(())
 }
@@ -113,16 +113,14 @@ pub(in crate::network) fn delete_rule(
 ) -> Result<()> {
     let mut delete_args = vec!["-t", table, "-D", chain];
     delete_args.extend_from_slice(rule_args);
-    let output = Command::new(iptables)
+    let output = HostCommand::new(iptables)
         .args(&delete_args)
-        .output()
+        .run()
         .with_context(|| format!("failed to remove {chain} rule via {iptables}"))?;
-    if !output.status.success() && !is_rule_missing_error(&output.stderr) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.success() && !is_rule_missing_error(&output.stderr) {
         bail!(
-            "failed to remove {chain} rule in table {table} ({}): {}",
-            output.status,
-            stderr.trim()
+            "failed to remove {chain} rule in table {table}: {}",
+            output.stderr_text()
         );
     }
     Ok(())
@@ -163,15 +161,13 @@ pub(in crate::network) fn detect_iptables() -> Result<String> {
 
 pub(in crate::network) fn probe_iptables() -> Result<String> {
     for candidate in &["iptables-nft", "iptables-legacy", "iptables"] {
-        let status = Command::new(candidate)
+        let probe = HostCommand::new(candidate)
             .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if let Ok(s) = status {
-            if s.success() {
-                return Ok((*candidate).to_string());
-            }
+            .discard_output()
+            .timeout(Duration::from_secs(5))
+            .run();
+        if probe.is_ok_and(|output| output.success()) {
+            return Ok((*candidate).to_string());
         }
     }
     bail!(

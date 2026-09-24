@@ -1,6 +1,8 @@
 use super::primitives::detect_iptables;
 use super::*;
 
+use crate::hostcmd::HostCommand;
+
 /// A firewall rule whose comment proves Enclave installed it.
 ///
 /// The table is filled in by the caller that read the dump; the rule text is the
@@ -32,20 +34,12 @@ pub(in crate::network) fn list_owned_rules_in_table(
     iptables: &str,
     table: &str,
 ) -> Result<Vec<OwnedRule>> {
-    let output = Command::new(iptables)
+    let output = HostCommand::new(iptables)
         .args(["-t", table, "-S"])
-        .output()
+        .output_cap(RULE_DUMP_CAP)
+        .run_checked()
         .with_context(|| format!("failed to list {table} rules via {iptables}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "listing {table} rules via {} failed ({}): {}",
-            iptables,
-            output.status,
-            stderr.trim()
-        );
-    }
-    Ok(parse_owned_rules(&String::from_utf8_lossy(&output.stdout))
+    Ok(parse_owned_rules(&output.stdout_text())
         .into_iter()
         .map(|rule| OwnedRule {
             table: table.to_string(),

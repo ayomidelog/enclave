@@ -1,12 +1,17 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 
 use crate::cli::{RootfsCommands, RootfsExportArgs, RootfsFetchArgs, RootfsImportArgs};
+use crate::hostcmd::HostCommand;
+
+// A rootfs archive is much larger than a workspace snapshot, and a fetch can
+// legitimately take minutes on a slow link. Both stay bounded.
+const ROOTFS_ARCHIVE_TIMEOUT: Duration = Duration::from_secs(900);
+const ROOTFS_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(1800);
 
 pub(crate) fn run_rootfs_command(command: RootfsCommands) -> Result<()> {
     match command {
@@ -120,26 +125,18 @@ fn export_rootfs_archive(source: &Path, archive_entry: &str, output: &Path) -> R
     let parent = source
         .parent()
         .ok_or_else(|| anyhow::anyhow!("rootfs cache path {} has no parent", source.display()))?;
-    let mut cmd = Command::new("tar");
-    cmd.arg("-C").arg(parent);
+    let mut command = HostCommand::new("tar").arg("-C").arg(parent);
     if output_uses_gzip(output) {
-        cmd.arg("-czf");
+        command = command.arg("-czf");
     } else {
-        cmd.arg("-cf");
+        command = command.arg("-cf");
     }
-    cmd.arg(output).arg(archive_entry);
-    let output = cmd
-        .output()
+    command
+        .arg(output)
+        .arg(archive_entry)
+        .timeout(ROOTFS_ARCHIVE_TIMEOUT)
+        .run_checked()
         .with_context(|| format!("failed to run tar for {}", source.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to export rootfs archive from {} ({}): {}",
-            source.display(),
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 
@@ -185,22 +182,14 @@ fn import_rootfs_archive(archive: &Path, destination: &Path, replace: bool) -> R
 }
 
 fn extract_archive(archive: &Path, target_dir: &Path) -> Result<()> {
-    let output = Command::new("tar")
+    HostCommand::new("tar")
         .arg("-xf")
         .arg(archive)
         .arg("-C")
         .arg(target_dir)
-        .output()
+        .timeout(ROOTFS_ARCHIVE_TIMEOUT)
+        .run_checked()
         .with_context(|| format!("failed to run tar -xf {}", archive.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to extract archive {} ({}): {}",
-            archive.display(),
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 
@@ -236,9 +225,10 @@ fn copy_extracted_rootfs(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)
         .with_context(|| format!("failed to create {}", destination.display()))?;
     let src_arg = format!("{}/.", source.display());
-    let output = Command::new("cp")
+    HostCommand::new("cp")
         .args(["-a", &src_arg, destination.to_string_lossy().as_ref()])
-        .output()
+        .timeout(ROOTFS_ARCHIVE_TIMEOUT)
+        .run_checked()
         .with_context(|| {
             format!(
                 "failed to run cp -a {} {}",
@@ -246,36 +236,18 @@ fn copy_extracted_rootfs(source: &Path, destination: &Path) -> Result<()> {
                 destination.display()
             )
         })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to copy extracted rootfs {} -> {} ({}): {}",
-            source.display(),
-            destination.display(),
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 
 fn download_archive(url: &str, destination: &Path) -> Result<()> {
-    let output = Command::new("curl")
+    HostCommand::new("curl")
         .arg("-fL")
         .arg(url)
         .arg("-o")
         .arg(destination)
-        .output()
+        .timeout(ROOTFS_DOWNLOAD_TIMEOUT)
+        .run_checked()
         .with_context(|| format!("failed to run curl for {}", url))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to download {} ({}): {}",
-            url,
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 

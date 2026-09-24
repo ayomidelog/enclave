@@ -2,12 +2,13 @@ use std::ffi::CString;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+
+use crate::hostcmd::HostCommand;
 
 use super::types::WorkspaceMetadata;
 
@@ -192,28 +193,22 @@ pub fn increase_workspace_disk_allocation(
     // about to be resized to. Every failure after this point restores the
     // previous size, because an image larger than its filesystem leaves the
     // workspace failing its readiness checks on every retry.
-    let truncate = Command::new("truncate")
+    let tool_timeout = Duration::from_secs(120);
+    HostCommand::new("truncate")
         .args(["-s", &new_disk_bytes.to_string()])
         .arg(&image)
-        .output()
+        .timeout(tool_timeout)
+        .run_checked()
         .with_context(|| format!("failed to grow workspace disk image {}", image.display()))?;
-    if !truncate.status.success() {
-        let stderr = String::from_utf8_lossy(&truncate.stderr);
-        bail!(
-            "failed to grow workspace disk image {} ({}): {}",
-            image.display(),
-            truncate.status,
-            stderr.trim()
-        );
-    }
 
     // `resize2fs` refuses to run on a filesystem that was not cleanly
     // unmounted, and a preen-only pass can report success without clearing that
     // state, so force a full check.
-    let check = Command::new("e2fsck")
+    let check = HostCommand::new("e2fsck")
         .args(["-f", "-p"])
         .arg(&image)
-        .output()
+        .timeout(tool_timeout)
+        .run()
         .with_context(|| {
             format!(
                 "failed to check workspace ext4 filesystem {}",
@@ -221,33 +216,32 @@ pub fn increase_workspace_disk_allocation(
             )
         })?;
     if !matches!(check.status.code(), Some(0 | 1)) {
-        let stderr = String::from_utf8_lossy(&check.stderr);
+        let stderr = check.stderr_text();
         return Err(rollback_disk_growth(
             &image,
             current_disk_bytes,
             anyhow::anyhow!(
-                "failed to check workspace ext4 filesystem {} ({}): {}",
+                "failed to check workspace ext4 filesystem {} ({}): {stderr}",
                 image.display(),
                 check.status,
-                stderr.trim()
             ),
         ));
     }
 
-    let resize = Command::new("resize2fs")
+    let resize = HostCommand::new("resize2fs")
         .arg(&image)
-        .output()
+        .timeout(tool_timeout)
+        .run()
         .with_context(|| format!("failed to grow ext4 filesystem {}", image.display()))?;
-    if !resize.status.success() {
-        let stderr = String::from_utf8_lossy(&resize.stderr);
+    if !resize.success() {
+        let stderr = resize.stderr_text();
         return Err(rollback_disk_growth(
             &image,
             current_disk_bytes,
             anyhow::anyhow!(
-                "grew workspace disk image {} but failed to grow its ext4 filesystem ({}): {}",
+                "grew workspace disk image {} but failed to grow its ext4 filesystem ({}): {stderr}",
                 image.display(),
                 resize.status,
-                stderr.trim()
             ),
         ));
     }
@@ -310,12 +304,12 @@ fn ensure_disk_image_not_in_use(workspace: &WorkspaceMetadata, image: &Path) -> 
 /// the image back keeps the recorded allocation, the image size, and the
 /// filesystem size consistent and lets the user retry.
 fn rollback_disk_growth(image: &Path, previous_bytes: u64, cause: anyhow::Error) -> anyhow::Error {
-    let rollback = Command::new("truncate")
+    let rollback = HostCommand::new("truncate")
         .args(["-s", &previous_bytes.to_string()])
         .arg(image)
-        .output();
+        .run();
     match rollback {
-        Ok(output) if output.status.success() => cause.context(format!(
+        Ok(output) if output.success() => cause.context(format!(
             "restored workspace disk image {} to its previous {} bytes",
             image.display(),
             previous_bytes
@@ -325,7 +319,7 @@ fn rollback_disk_growth(image: &Path, previous_bytes: u64, cause: anyhow::Error)
             image.display(),
             previous_bytes,
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            output.stderr_text()
         )),
         Err(error) => cause.context(format!(
             "workspace disk image {} is still larger than its filesystem because restoring it to {} bytes could not run: {error}",

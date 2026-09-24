@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::hostcmd::HostCommand;
+
 pub(crate) fn mount_workspace_source(
     old_root: &Path,
     workspace_fs: &Path,
@@ -80,13 +82,14 @@ pub(crate) fn mount_workspace_source(
         if !mount_binary.exists() {
             continue;
         }
-        let status = Command::new(mount_binary)
+        let status = HostCommand::new(mount_binary)
             .arg("--bind")
             .arg("-o")
             .arg(format!("X-mount.idmap={workspace_idmap_option}"))
             .arg(&source)
             .arg(mount_target)
-            .status()
+            .discard_output()
+            .run()
             .with_context(|| format!("failed to execute {}", mount_binary.display()))?;
         if status.success() {
             return Ok(());
@@ -94,7 +97,7 @@ pub(crate) fn mount_workspace_source(
         bail!(
             "idmapped workspace bind mount failed via {} with status {}",
             mount_binary.display(),
-            status
+            status.status
         );
     }
 

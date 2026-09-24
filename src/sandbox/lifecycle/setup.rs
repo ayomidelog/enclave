@@ -1,5 +1,12 @@
 use super::*;
 
+use crate::hostcmd::HostCommand;
+
+// A setup command is arbitrary user work: a package install or a build. It gets
+// a generous deadline so ordinary setup is never cut short, but not an unbounded
+// one, so a hung command cannot hold the sandbox forever.
+const SETUP_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+
 pub fn exec_setup_command(
     state_dir: &Path,
     selector: &str,
@@ -32,23 +39,24 @@ pub fn exec_setup_command(
         None
     };
 
-    let output = Command::new("chroot")
+    let output = HostCommand::new("chroot")
         .arg(&rootfs_path)
         .arg("/bin/sh")
         .arg("-c")
         .arg(command)
-        .output()
-        .with_context(|| format!("failed to execute setup command in sandbox: {}", command))?;
+        .timeout(SETUP_COMMAND_TIMEOUT)
+        .run()
+        .map_err(|error| setup_command_error(error, command))?;
 
     let exit_code = output.status.code().unwrap_or(1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = output.stdout_text();
+    let stderr = output.stderr_text();
 
-    if !output.status.success() {
+    if !output.success() {
         bail!(
             "setup command exited with status {}: {}{}",
             exit_code,
-            stderr.trim(),
+            stderr,
             if stderr.is_empty() {
                 stdout.trim().to_string()
             } else {
@@ -66,4 +74,19 @@ pub fn exec_setup_command(
         "stdout": stdout,
         "stderr": stderr,
     }))
+}
+
+/// Explain a setup-command failure, naming a deadline that expired as such.
+///
+/// A timeout is not the same as a command that failed, and an operator needs to
+/// know which one happened and how to change it.
+fn setup_command_error(error: anyhow::Error, command: &str) -> anyhow::Error {
+    if crate::hostcmd::is_timeout(&error) {
+        return error.context(format!(
+            "setup command was stopped after {SETUP_COMMAND_TIMEOUT:?}; raise ENCLAVE_HOST_COMMAND_TIMEOUT_SECS if it needs longer: {command}"
+        ));
+    }
+    error.context(format!(
+        "failed to execute setup command in sandbox: {command}"
+    ))
 }

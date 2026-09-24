@@ -3,6 +3,7 @@ pub mod cli;
 pub mod commands;
 pub mod enclavefile;
 pub mod fsutil;
+mod hostcmd;
 pub mod logging;
 pub mod policy;
 pub mod registry;

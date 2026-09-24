@@ -160,21 +160,12 @@ pub(crate) fn verify_disk_image_loop_detached(workspace: &WorkspaceMetadata) -> 
 }
 
 pub(crate) fn loop_devices_for_image(image: &Path) -> Result<Vec<String>> {
-    let output = Command::new("losetup")
+    let output = HostCommand::new("losetup")
         .args(["-j"])
         .arg(image)
-        .output()
+        .run_checked()
         .with_context(|| format!("failed to inspect loop devices for {}", image.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "losetup could not inspect workspace image {} ({}): {}",
-            image.display(),
-            output.status,
-            stderr.trim()
-        );
-    }
-    Ok(parse_loop_devices(&String::from_utf8_lossy(&output.stdout)))
+    Ok(parse_loop_devices(&output.stdout_text()))
 }
 
 /// Find mount namespaces that still mount one of the given devices. This turns

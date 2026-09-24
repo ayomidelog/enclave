@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Result;
 
+use crate::hostcmd::HostCommand;
 use crate::network::{ipam, nat, veth};
 
 use super::DoctorCheck;
@@ -259,18 +259,11 @@ fn expected_disk_images(state_dir: &Path) -> Result<BTreeMap<PathBuf, (String, b
 }
 
 fn list_loop_devices() -> Result<Vec<(String, PathBuf)>> {
-    let output = Command::new("losetup")
+    let output = HostCommand::new("losetup")
         .arg("-a")
-        .output()
-        .map_err(|err| anyhow::anyhow!("failed to run losetup: {err}"))?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "losetup -a failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(parse_loop_devices(&String::from_utf8_lossy(&output.stdout)))
+        .run_checked()
+        .map_err(|err| anyhow::anyhow!("failed to run losetup: {err:#}"))?;
+    Ok(parse_loop_devices(&output.stdout_text()))
 }
 
 fn parse_loop_devices(output: &str) -> Vec<(String, PathBuf)> {

@@ -1,5 +1,4 @@
 use std::fs;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
@@ -23,6 +22,10 @@ pub(crate) const BRIDGE_RULE_OWNER: &str = "bridge";
 
 /// Tables Enclave installs rules in. The shared bridge rules span both.
 pub(crate) const RULE_TABLES: &[&str] = &["filter", "nat"];
+
+/// Cap for one firewall dump. A host with many rules produces a large listing,
+/// and the inventory only needs enough of it to identify Enclave's own rules.
+pub(crate) const RULE_DUMP_CAP: usize = 8 * 1024 * 1024;
 
 mod anti_spoof;
 mod forwarding;

@@ -17,6 +17,9 @@ static PROCESS_SPAWNS: AtomicU64 = AtomicU64::new(0);
 static MOUNT_COUNT: AtomicU64 = AtomicU64::new(0);
 static UNMOUNT_COUNT: AtomicU64 = AtomicU64::new(0);
 static CLEANUP_RETRIES: AtomicU64 = AtomicU64::new(0);
+static HOST_COMMANDS: AtomicU64 = AtomicU64::new(0);
+static HOST_COMMAND_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+static HOST_COMMAND_FAILURES: AtomicU64 = AtomicU64::new(0);
 static REGISTRY_LOCK_WAIT_US: AtomicU64 = AtomicU64::new(0);
 static REQUEST_LATENCY: [AtomicU64; 8] = [
     AtomicU64::new(0),
@@ -121,6 +124,17 @@ pub(crate) fn record_cleanup_retry() {
     CLEANUP_RETRIES.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Record one bounded host command and how it ended.
+pub(crate) fn record_host_command(timed_out: bool, failed: bool) {
+    HOST_COMMANDS.fetch_add(1, Ordering::Relaxed);
+    if timed_out {
+        HOST_COMMAND_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    }
+    if failed {
+        HOST_COMMAND_FAILURES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn record_registry_lock_wait(elapsed_us: u64) {
     REGISTRY_LOCK_WAIT_US.fetch_add(elapsed_us, Ordering::Relaxed);
 }
@@ -139,6 +153,9 @@ pub(crate) fn metrics() -> serde_json::Value {
         "mounts": MOUNT_COUNT.load(Ordering::Relaxed),
         "unmounts": UNMOUNT_COUNT.load(Ordering::Relaxed),
         "cleanup_retries": CLEANUP_RETRIES.load(Ordering::Relaxed),
+        "host_commands": HOST_COMMANDS.load(Ordering::Relaxed),
+        "host_command_timeouts": HOST_COMMAND_TIMEOUTS.load(Ordering::Relaxed),
+        "host_command_failures": HOST_COMMAND_FAILURES.load(Ordering::Relaxed),
         "registry_lock_wait_us": REGISTRY_LOCK_WAIT_US.load(Ordering::Relaxed),
         "request_latency_us": histogram_values(&REQUEST_LATENCY),
         "phase_latency_us": histogram_values(&PHASE_LATENCY),

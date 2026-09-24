@@ -1,5 +1,13 @@
 use super::*;
 
+use crate::hostcmd::HostCommand;
+
+use std::time::Duration;
+
+// A snapshot archive can be large, so its transfer gets a longer deadline than
+// the default while still being bounded.
+const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(600);
+
 pub fn export_workspace_snapshot_archive(
     state_dir: &Path,
     sandbox_selector: &str,
@@ -122,26 +130,18 @@ pub(crate) fn export_snapshot_archive(
             snapshot_dir.display()
         )
     })?;
-    let mut cmd = Command::new("tar");
-    cmd.arg("-C").arg(parent);
+    let mut command = HostCommand::new("tar").arg("-C").arg(parent);
     if output_uses_gzip(output) {
-        cmd.arg("-czf");
+        command = command.arg("-czf");
     } else {
-        cmd.arg("-cf");
+        command = command.arg("-cf");
     }
-    cmd.arg(output).arg(snapshot_name);
-    let output = cmd
-        .output()
+    command
+        .arg(output)
+        .arg(snapshot_name)
+        .timeout(ARCHIVE_TIMEOUT)
+        .run_checked()
         .with_context(|| format!("failed to run tar for {}", snapshot_dir.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to export snapshot archive from {} ({}): {}",
-            snapshot_dir.display(),
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 
@@ -152,22 +152,14 @@ pub(crate) fn extract_archive(archive: &Path, target_dir: &Path) -> Result<()> {
             archive.display()
         );
     }
-    let output = Command::new("tar")
+    HostCommand::new("tar")
         .arg("-xf")
         .arg(archive)
         .arg("-C")
         .arg(target_dir)
-        .output()
+        .timeout(ARCHIVE_TIMEOUT)
+        .run_checked()
         .with_context(|| format!("failed to run tar -xf {}", archive.display()))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "failed to extract archive {} ({}): {}",
-            archive.display(),
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 

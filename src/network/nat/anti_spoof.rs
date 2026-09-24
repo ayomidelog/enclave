@@ -4,6 +4,8 @@ use super::primitives::{
 };
 use super::*;
 
+use crate::hostcmd::HostCommand;
+
 pub fn ensure_workspace_anti_spoofing(
     veth_host: &str,
     assigned_ip: &str,
@@ -115,20 +117,12 @@ pub(in crate::network) fn is_anti_spoof_rule(
 }
 
 pub(in crate::network) fn run_iptables_dump(iptables: &str) -> Result<String> {
-    let output = Command::new(iptables)
+    let output = HostCommand::new(iptables)
         .arg("-S")
-        .output()
+        .output_cap(RULE_DUMP_CAP)
+        .run_checked()
         .with_context(|| format!("failed to list firewall rules via {iptables}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "listing firewall rules via {} failed ({}): {}",
-            iptables,
-            output.status,
-            stderr.trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output.stdout_text())
 }
 
 /// Re-check the firewall after deletion. `iptables -D` reports success even

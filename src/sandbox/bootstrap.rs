@@ -6,6 +6,13 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 use super::cache;
+use crate::hostcmd::HostCommand;
+
+use std::time::Duration;
+
+// Copying a rootfs tree is metadata bound and can take minutes on a large
+// image, so it gets a longer deadline than the default while staying bounded.
+const ROOTFS_COPY_TIMEOUT: Duration = Duration::from_secs(900);
 use super::features;
 use super::types::BootstrapMethod;
 use super::util::{command_failure_detail, run_command_with_live_log, validate_debootstrap_binary};
@@ -222,25 +229,16 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     validate_copy_source(src)?;
 
     let src_arg = format!("{}/.", src.display());
-    let output = Command::new("cp")
+    HostCommand::new("cp")
         .args([
             "-a",
             "--reflink=auto",
             &src_arg,
             dst.to_string_lossy().as_ref(),
         ])
-        .output()
+        .timeout(ROOTFS_COPY_TIMEOUT)
+        .run_checked()
         .with_context(|| format!("failed to run cp -a {} {}", src.display(), dst.display()))?;
-    if !output.status.success() {
-        let detail = command_failure_detail(&output);
-        bail!(
-            "cp -a {} {} failed ({}): {}",
-            src.display(),
-            dst.display(),
-            output.status,
-            detail
-        );
-    }
     Ok(())
 }
 

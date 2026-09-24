@@ -1,7 +1,6 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
-
 use anyhow::{bail, Context, Result};
+
+use crate::hostcmd::{HostCommand, HostOutput};
 
 use super::bridge::BRIDGE_NAME;
 use super::ipam;
@@ -156,65 +155,49 @@ fn configure_workspace_netns(
 }
 
 /// Feed `ip -batch` a command list on stdin and return its output.
-fn run_ip_batch(commands: &str) -> Result<std::process::Output> {
-    run_batch(&mut Command::new("ip"), commands)
+fn run_ip_batch(commands: &str) -> Result<HostOutput> {
+    run_batch(HostCommand::new("ip"), commands)
 }
 
-fn run_bridge_batch(commands: &str) -> Result<std::process::Output> {
-    run_batch(&mut Command::new("bridge"), commands)
+fn run_bridge_batch(commands: &str) -> Result<HostOutput> {
+    run_batch(HostCommand::new("bridge"), commands)
 }
 
-fn run_batch(command: &mut Command, commands: &str) -> Result<std::process::Output> {
-    let mut child = command
-        .arg("-batch")
-        .arg("-")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to spawn network batch command")?;
-    child
-        .stdin
-        .take()
-        .context("network batch command has no stdin")?
-        .write_all(commands.as_bytes())
-        .context("failed to write network batch commands")?;
-    child
-        .wait_with_output()
-        .context("failed to collect network batch output")
-}
-
-fn run_nsenter_ip_batch(pid: &str, commands: &str) -> Result<std::process::Output> {
-    let mut command = Command::new("nsenter");
+fn run_batch(command: HostCommand, commands: &str) -> Result<HostOutput> {
     command
-        .arg("--net")
-        .arg("--target")
-        .arg(pid)
-        .arg("--")
-        .arg("ip");
-    run_batch(&mut command, commands)
+        .args(["-batch", "-"])
+        .stdin(commands.as_bytes().to_vec())
+        .run()
+        .context("failed to run network batch command")
+}
+
+fn run_nsenter_ip_batch(pid: &str, commands: &str) -> Result<HostOutput> {
+    run_batch(
+        HostCommand::new("nsenter").args(["--net", "--target", pid, "--", "ip"]),
+        commands,
+    )
 }
 
 fn run_ip(args: &[&str]) -> Result<()> {
     let output = run_ip_batch(&format!("{}\n", args.join(" ")))
         .with_context(|| format!("failed to run: ip {}", args.join(" ")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.success() {
         bail!(
             "ip {} failed ({}): {}",
             args.join(" "),
             output.status,
-            stderr.trim()
+            output.stderr_text()
         );
     }
     Ok(())
 }
 
-fn run_nsenter_capture(pid: &str, args: &[&str], context: &str) -> Result<std::process::Output> {
-    let mut cmd = Command::new("nsenter");
-    cmd.arg("--net").arg("--target").arg(pid).arg("--");
-    cmd.arg("ip").args(args);
-    cmd.output().with_context(|| context.to_string())
+fn run_nsenter_capture(pid: &str, args: &[&str], context: &str) -> Result<HostOutput> {
+    HostCommand::new("nsenter")
+        .args(["--net", "--target", pid, "--", "ip"])
+        .args(args)
+        .run()
+        .with_context(|| context.to_string())
 }
 
 fn dump_nsenter_output(pid: &str, args: &[&str]) -> Result<String> {

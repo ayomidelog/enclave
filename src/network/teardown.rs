@@ -1,24 +1,25 @@
-use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+
+use crate::hostcmd::HostCommand;
 
 const NET_CLASS_DIR: &str = "/sys/class/net";
 
 pub fn remove_veth(veth_host: &str) -> Result<()> {
     const MAX_ATTEMPTS: usize = 3;
     for attempt in 0..MAX_ATTEMPTS {
-        let output = Command::new("ip")
+        let output = HostCommand::new("ip")
             .args(["link", "delete", veth_host])
-            .output()
+            .run()
             .with_context(|| format!("failed to delete veth {veth_host}"))?;
-        if output.status.success() || link_is_already_absent(&output.stderr) {
+        if output.success() || link_is_already_absent(&output.stderr) {
             return verify_veth_absent(veth_host);
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = output.stderr_text();
         if !is_retryable_delete_error(&stderr) || attempt + 1 == MAX_ATTEMPTS {
-            bail!("ip link delete {veth_host} failed: {}", stderr.trim());
+            bail!("ip link delete {veth_host} failed: {stderr}");
         }
         tracing::debug!(
             "retrying veth deletion for {} after transient error (attempt {}/{})",

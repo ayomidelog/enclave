@@ -1,8 +1,9 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+
+use crate::hostcmd::HostCommand;
 
 use super::ipam;
 
@@ -31,11 +32,11 @@ pub fn remove_bridge_if_idle() -> Result<bool> {
         return Ok(true);
     }
 
-    let output = Command::new("ip")
+    let output = HostCommand::new("ip")
         .args(["link", "show", "master", BRIDGE_NAME])
-        .output()
+        .run()
         .context("failed to list bridge members")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = output.stdout_text();
     if !stdout.trim().is_empty() {
         return Ok(false);
     }
@@ -46,13 +47,12 @@ pub fn remove_bridge_if_idle() -> Result<bool> {
 }
 
 fn bridge_exists() -> Result<bool> {
-    let status = Command::new("ip")
+    let output = HostCommand::new("ip")
         .args(["link", "show", BRIDGE_NAME])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .discard_output()
+        .run()
         .context("failed to check bridge existence")?;
-    Ok(status.success())
+    Ok(output.success())
 }
 
 pub fn bridge_is_present() -> Result<bool> {
@@ -76,11 +76,11 @@ fn ensure_bridge_up() -> Result<()> {
 }
 
 fn ensure_bridge_address() -> Result<()> {
-    let output = Command::new("ip")
+    let output = HostCommand::new("ip")
         .args(["addr", "show", "dev", BRIDGE_NAME])
-        .output()
+        .run()
         .context("failed to inspect bridge address")?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = output.stdout_text();
     let expected = format!("{}/{}", ipam::GATEWAY_IP, SUBNET_PREFIX_LEN);
     let addresses = parse_ipv4_addresses(&stdout);
     if addresses.iter().any(|address| address == &expected) {
@@ -116,21 +116,11 @@ fn ensure_bridge_address() -> Result<()> {
 /// traffic can then leave through, or be delivered to, a network Enclave does
 /// not control, while every workspace still reports clean anti-spoofing rules.
 pub fn subnet_conflicts() -> Result<Vec<String>> {
-    let output = Command::new("ip")
+    let output = HostCommand::new("ip")
         .args(["-o", "-4", "addr", "show"])
-        .output()
+        .run_checked()
         .context("failed to list host IPv4 addresses")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "listing host IPv4 addresses failed ({}): {}",
-            output.status,
-            stderr.trim()
-        );
-    }
-    Ok(parse_subnet_conflicts(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(parse_subnet_conflicts(&output.stdout_text()))
 }
 
 fn parse_subnet_conflicts(output: &str) -> Vec<String> {
@@ -195,19 +185,10 @@ fn parse_ipv4_addresses(output: &str) -> Vec<String> {
 }
 
 fn run_ip(args: &[&str]) -> Result<()> {
-    let output = Command::new("ip")
+    HostCommand::new("ip")
         .args(args)
-        .output()
+        .run_checked()
         .with_context(|| format!("failed to run: ip {}", args.join(" ")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "ip {} failed ({}): {}",
-            args.join(" "),
-            output.status,
-            stderr.trim()
-        );
-    }
     Ok(())
 }
 
