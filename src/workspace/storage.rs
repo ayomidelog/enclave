@@ -87,6 +87,45 @@ pub(crate) use unmount::{
     parse_loop_devices, parse_mountinfo_mountpoints, unmount_error, workspace_owner_is_dead,
 };
 
+/// Verify that the workspace source the session will bind into `/home` is usable.
+///
+/// The session resolves this path inside its own mount namespace and pivot root,
+/// where a failure can only be reported as an opaque path error. Checking it
+/// before the launch names the workspace and the host path that has to be
+/// repaired instead.
+pub fn verify_workspace_source(workspace: &WorkspaceMetadata) -> Result<()> {
+    let source = workspace
+        .home_mount_source_path
+        .as_deref()
+        .unwrap_or(&workspace.filesystem_path);
+    let path = Path::new(source);
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => bail!(
+            "workspace '{}' source path {} is not a directory; recreate the workspace or point it at a directory",
+            workspace.id,
+            source
+        ),
+        Err(error) => bail!(
+            "workspace '{}' source path {} is unavailable ({error}); run 'enclave workspace stop {} {}' and start it again, or 'enclave doctor --repair'",
+            workspace.id,
+            source,
+            workspace.sandbox_id,
+            workspace.id
+        ),
+    }
+    if workspace_uses_disk_image(workspace) && !crate::fsutil::is_mountpoint(path)? {
+        bail!(
+            "workspace '{}' quota-backed storage {} is not mounted; run 'enclave workspace stop {} {}' and start it again, or 'enclave doctor --repair'",
+            workspace.id,
+            source,
+            workspace.sandbox_id,
+            workspace.id
+        );
+    }
+    Ok(())
+}
+
 pub fn increase_workspace_disk_allocation(
     workspace: &WorkspaceMetadata,
     new_disk_bytes: u64,

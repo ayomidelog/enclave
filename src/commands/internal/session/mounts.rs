@@ -34,11 +34,21 @@ pub(crate) fn mount_workspace_source(
         );
     }
     let source = old_root.join(source_relative);
-    if !source.exists() {
-        bail!(
-            "workspace source path does not exist inside old root: {}",
-            source.display()
-        );
+    // `Path::exists` reports false for every lookup failure, which hides whether
+    // the path is missing or merely unreachable, and the old-root path alone does
+    // not tell the operator which host path to inspect.
+    match fs::symlink_metadata(&source) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => bail!(
+            "workspace source path is not a directory inside the workspace session: {} (host path {})",
+            source.display(),
+            workspace_fs.display()
+        ),
+        Err(error) => bail!(
+            "workspace source path is unavailable inside the workspace session: {} (host path {}, error: {error})",
+            source.display(),
+            workspace_fs.display()
+        ),
     }
 
     fs::create_dir_all(mount_target)

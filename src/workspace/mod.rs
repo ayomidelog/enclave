@@ -71,6 +71,6 @@ pub(crate) use storage::{
     create_workspace_storage, ensure_workspace_storage_ready, ensure_workspace_storage_unmounted,
     ensure_workspace_storage_unmounted_many, reset_workspace_tmp,
     unmount_mounts_at_or_below_excluding, validate_workspace_storage_limits,
-    with_workspace_storage_mounted, workspace_disk_image_path, workspace_tmp_path,
-    workspace_uses_disk_image, WORKSPACE_TMP_DIR,
+    verify_workspace_source, with_workspace_storage_mounted, workspace_disk_image_path,
+    workspace_tmp_path, workspace_uses_disk_image, WORKSPACE_TMP_DIR,
 };

@@ -61,6 +61,7 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
         network::check_workspace_loop_devices(state_dir),
         check_stale_runtime_state(state_dir),
         check_workspace_tmp_integrity(state_dir),
+        check_workspace_storage(state_dir),
         check_operation_journal(state_dir),
         check_cgroup_v2_availability(),
     ];
@@ -426,6 +427,58 @@ fn check_workspace_tmp_integrity(state_dir: &Path) -> DoctorCheck {
             name,
             &format!("{checked} running workspace(s) have a usable /tmp"),
         );
+    }
+    DoctorCheck::warn(name, &broken.join("; "))
+}
+
+/// Check that every workspace's storage source is actually usable.
+///
+/// A workspace whose quota-backed image is not mounted, or whose host source
+/// directory disappeared, cannot start: the session resolves the source inside
+/// its own mount namespace and fails with a path error that does not name the
+/// host path. Reporting it here turns that into an actionable finding.
+fn check_workspace_storage(state_dir: &Path) -> DoctorCheck {
+    let name = "workspace_storage";
+    let workspaces = match crate::workspace::list_workspaces(state_dir, None) {
+        Ok(workspaces) => workspaces,
+        Err(err) => return DoctorCheck::warn(name, &format!("failed to check: {err:#}")),
+    };
+
+    let mut broken = Vec::new();
+    for workspace in workspaces {
+        // A stopped workspace is expected to have its storage unmounted; only an
+        // active one has to be ready to serve commands.
+        if !crate::workspace::workspace_runtime_is_active(&workspace) {
+            continue;
+        }
+        let source = workspace
+            .home_mount_source_path
+            .as_deref()
+            .unwrap_or(&workspace.filesystem_path);
+        if crate::workspace::workspace_uses_disk_image(&workspace) {
+            if !crate::fsutil::is_mountpoint(Path::new(source)).unwrap_or(false) {
+                broken.push(format!(
+                    "{}: quota-backed storage {} is not mounted",
+                    workspace.id, source
+                ));
+            }
+            continue;
+        }
+        match fs::symlink_metadata(source) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => broken.push(format!(
+                "{}: source path {} is not a directory",
+                workspace.id, source
+            )),
+            Err(error) => broken.push(format!(
+                "{}: source path {} is unavailable ({error})",
+                workspace.id, source
+            )),
+        }
+    }
+
+    if broken.is_empty() {
+        return DoctorCheck::ok(name, "all workspace storage sources are usable");
     }
     DoctorCheck::warn(name, &broken.join("; "))
 }

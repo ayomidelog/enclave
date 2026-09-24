@@ -242,6 +242,7 @@ pub(crate) fn launch_workspace_runtime(
     // namespace launch, cgroups, auth, or networking instead of "startup".
     let storage = crate::perf::Timer::new("workspace.start.storage");
     crate::workspace::ensure_workspace_storage_ready(workspace_snapshot)?;
+    crate::workspace::verify_workspace_source(workspace_snapshot)?;
     drop(storage);
 
     let launch = crate::perf::Timer::new("workspace.start.session");
