@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
@@ -13,6 +13,8 @@ use super::types::WorkspaceMetadata;
 
 const DISK_IMAGE_NAME: &str = "fs.img";
 const MIN_DISK_BYTES: u64 = 32 * 1024 * 1024;
+const LOOP_DETACH_TIMEOUT: Duration = Duration::from_secs(2);
+const LOOP_DETACH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 static DISK_BACKEND_CHECK: OnceLock<Result<(), String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,8 +95,37 @@ pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Resu
     for path in mountpoints {
         unmount_workspace_path(&path, owner_is_dead)?;
     }
+    verify_no_mounts_below(workspace_root)?;
     verify_disk_image_loop_detached(workspace)?;
     Ok(())
+}
+
+/// Re-read mountinfo after unmounting instead of trusting `umount2` alone.
+/// A mount that is still busy in another namespace leaves a live entry, and
+/// deleting the workspace afterwards would leak it permanently.
+fn verify_no_mounts_below(root: &Path) -> Result<()> {
+    let remaining = crate::fsutil::MountInfoSnapshot::load()?.at_or_below(root);
+    if remaining.is_empty() {
+        return Ok(());
+    }
+    let holders = remaining
+        .iter()
+        .map(|path| {
+            let holders = mount_holders(path);
+            if holders.is_empty() {
+                path.display().to_string()
+            } else {
+                format!("{} (holders: {})", path.display(), holders.join(","))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    bail!(
+        "{} workspace mount(s) still present below {} after unmount: {}",
+        remaining.len(),
+        root.display(),
+        holders
+    )
 }
 
 /// Unmount all workspace storage using one mountinfo snapshot. This avoids a
@@ -121,6 +152,23 @@ pub(crate) fn ensure_workspace_storage_unmounted_many(
     mountpoints.dedup_by(|left, right| left.0 == right.0);
     for (path, owner_is_dead) in mountpoints {
         unmount_workspace_path(&path, owner_is_dead)?;
+    }
+    let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
+    for workspace in workspaces {
+        let remaining = snapshot.at_or_below(Path::new(&workspace.workspace_path));
+        if !remaining.is_empty() {
+            bail!(
+                "workspace '{}' still has {} mount(s) below {} after unmount: {}",
+                workspace.id,
+                remaining.len(),
+                workspace.workspace_path,
+                remaining
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
     }
     for workspace in workspaces {
         verify_disk_image_loop_detached(workspace)?;
@@ -231,36 +279,90 @@ fn verify_disk_image_loop_detached(workspace: &WorkspaceMetadata) -> Result<()> 
         return Ok(());
     }
     let image = workspace_disk_image_path(workspace);
-    for attempt in 0..3 {
-        let output = Command::new("losetup")
-            .args(["-j"])
-            .arg(&image)
-            .output()
-            .with_context(|| format!("failed to inspect loop devices for {}", image.display()))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!(
-                "losetup could not inspect workspace image {} ({}): {}",
-                image.display(),
-                output.status,
-                stderr.trim()
-            );
-        }
-        let devices = parse_loop_devices(&String::from_utf8_lossy(&output.stdout));
-        if devices.is_empty() {
-            return Ok(());
-        }
-        if attempt < 2 {
-            thread::sleep(Duration::from_millis(25 * (attempt as u64 + 1)));
-        } else {
-            bail!(
-                "workspace image {} remains attached to loop device(s): {}",
-                image.display(),
-                devices.join(", ")
-            );
+    // The kernel releases an autoclear loop device asynchronously once the last
+    // mount reference is gone, so poll briefly instead of failing a stop that is
+    // still tearing down.
+    let deadline = Instant::now() + LOOP_DETACH_TIMEOUT;
+    let mut devices = loop_devices_for_image(&image)?;
+    while !devices.is_empty() && Instant::now() < deadline {
+        thread::sleep(LOOP_DETACH_POLL_INTERVAL);
+        devices = loop_devices_for_image(&image)?;
+    }
+    if devices.is_empty() {
+        return Ok(());
+    }
+
+    // A loop device can outlive the unmount when something outside Enclave's
+    // mount ownership still holds a file open on it, for example a client
+    // process with a descriptor into the workspace filesystem. That device is
+    // released when the last holder closes, so only a surviving mount is a
+    // cleanup failure Enclave can act on.
+    let holders = namespaces_mounting_devices(&devices);
+    if holders.is_empty() {
+        tracing::warn!(
+            "workspace image {} is still attached to {} but no mount references it; \
+             the kernel will release the device when the last open file closes",
+            image.display(),
+            devices.join(", ")
+        );
+        return Ok(());
+    }
+    bail!(
+        "workspace image {} remains attached to loop device(s) {} and is still mounted in {}",
+        image.display(),
+        devices.join(", "),
+        holders.join(", ")
+    )
+}
+
+fn loop_devices_for_image(image: &Path) -> Result<Vec<String>> {
+    let output = Command::new("losetup")
+        .args(["-j"])
+        .arg(image)
+        .output()
+        .with_context(|| format!("failed to inspect loop devices for {}", image.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "losetup could not inspect workspace image {} ({}): {}",
+            image.display(),
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(parse_loop_devices(&String::from_utf8_lossy(&output.stdout)))
+}
+
+/// Find mount namespaces that still mount one of the given devices. This turns
+/// an opaque busy loop device into an actionable holder.
+fn namespaces_mounting_devices(devices: &[String]) -> Vec<String> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut holders = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name
+            .to_str()
+            .filter(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+        else {
+            continue;
+        };
+        let mountinfo = format!("/proc/{pid}/mountinfo");
+        let Ok(raw) = fs::read_to_string(&mountinfo) else {
+            continue;
+        };
+        let mounted = raw.lines().any(|line| {
+            line.split(" - ")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().nth(1))
+                .is_some_and(|source| devices.iter().any(|device| device == source))
+        });
+        if mounted {
+            holders.push(format!("pid {pid}"));
         }
     }
-    unreachable!("loop verification always returns or errors")
+    holders
 }
 
 fn parse_loop_devices(output: &str) -> Vec<String> {

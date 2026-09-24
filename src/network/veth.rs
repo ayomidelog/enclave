@@ -118,8 +118,6 @@ fn configure_workspace_netns(
 new_name="$2"
 addr_cidr="$3"
 gateway_ip="$4"
-timeout_ms="$5"
-poll_ms="$6"
 
 ip link set "$old_name" name "$new_name"
 for name in all default lo "$new_name"; do

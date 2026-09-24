@@ -9,14 +9,12 @@ pub fn process_alive(pid: u32) -> bool {
 }
 
 pub fn process_matches(pid: u32, expected_starttime_ticks: Option<u64>) -> bool {
-    if !process_alive(pid) {
-        return false;
-    }
-    match expected_starttime_ticks {
-        Some(expected) => process_starttime_ticks(pid)
-            .map(|actual| actual == expected)
-            .unwrap_or(false),
-        None => true,
+    match read_stat(pid) {
+        Ok(stat) => {
+            !stat.has_exited()
+                && expected_starttime_ticks.is_none_or(|expected| expected == stat.starttime_ticks)
+        }
+        Err(_) => false,
     }
 }
 
@@ -108,7 +106,21 @@ pub fn process_resource_usage(pid: u32) -> Result<String> {
     ))
 }
 
-pub fn process_starttime_ticks(pid: u32) -> Result<u64> {
+struct ProcessStat {
+    state: char,
+    starttime_ticks: u64,
+}
+
+impl ProcessStat {
+    /// A process that already exited keeps a `/proc` entry until its parent
+    /// reaps it. It owns no runtime resources, so it must never be treated as
+    /// a live workspace runtime.
+    fn has_exited(&self) -> bool {
+        matches!(self.state, 'Z' | 'X' | 'x')
+    }
+}
+
+fn read_stat(pid: u32) -> Result<ProcessStat> {
     let stat_path = format!("/proc/{pid}/stat");
     let raw =
         fs::read_to_string(&stat_path).with_context(|| format!("failed to read {}", stat_path))?;
@@ -123,9 +135,21 @@ pub fn process_starttime_ticks(pid: u32) -> Result<u64> {
         bail!("unexpected stat field count in {}", stat_path);
     }
 
-    fields[19]
+    let state = fields[0]
+        .chars()
+        .next()
+        .ok_or_else(|| anyhow!("missing state field in {}", stat_path))?;
+    let starttime_ticks = fields[19]
         .parse::<u64>()
-        .with_context(|| format!("failed to parse starttime field in {}", stat_path))
+        .with_context(|| format!("failed to parse starttime field in {}", stat_path))?;
+    Ok(ProcessStat {
+        state,
+        starttime_ticks,
+    })
+}
+
+pub fn process_starttime_ticks(pid: u32) -> Result<u64> {
+    Ok(read_stat(pid)?.starttime_ticks)
 }
 
 pub(super) fn send_signal(pid: u32, signal: i32) -> Result<()> {
