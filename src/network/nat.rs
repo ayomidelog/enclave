@@ -277,6 +277,38 @@ pub fn remove_workspace_anti_spoofing(
         remove_input_rule(&iptables, &legacy_refs)?;
         remove_forward_rule(&iptables, &legacy_refs)?;
     }
+    verify_anti_spoofing_absent(&iptables, veth_host, assigned_ip)
+}
+
+/// Re-check the firewall after deletion. `iptables -D` reports success even
+/// when another copy of the rule survives, so success must be proven by
+/// absence rather than by exit status.
+fn verify_anti_spoofing_absent(iptables: &str, veth_host: &str, assigned_ip: &str) -> Result<()> {
+    // `-C` matches a rule exactly, so both the tagged rule this version
+    // installs and the untagged shape older releases used must be checked.
+    for chain in ["INPUT", "FORWARD"] {
+        for shape in [Some("tagged"), None] {
+            let rule = anti_spoof_rule_args(veth_host, assigned_ip, shape);
+            let mut args = vec!["-C", chain];
+            args.extend(rule.iter().map(String::as_str));
+            let present = Command::new(iptables)
+                .args(&args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .with_context(|| {
+                    format!("failed to verify {chain} anti-spoofing rule via {iptables}")
+                })?
+                .success();
+            if present {
+                bail!(
+                    "anti-spoofing rule for {} in the {} chain still exists after removal",
+                    veth_host,
+                    chain
+                );
+            }
+        }
+    }
     Ok(())
 }
 

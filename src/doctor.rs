@@ -231,7 +231,10 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
             if orphaned.is_empty() {
                 DoctorCheck::ok(name, "no enclave-related mounts found")
             } else {
-                let running_mounted: Vec<String> = with_registry(state_dir, |reg| {
+                // A running sandbox or workspace keeps several mounts below its
+                // own directory: the sandbox rootfs, the workspace disk image,
+                // and the home and root overlays. All of those are expected.
+                let active_roots: Vec<PathBuf> = with_registry(state_dir, |reg| {
                     let mut paths = Vec::new();
                     for sandbox in reg.sandboxes.values() {
                         if matches!(
@@ -239,7 +242,12 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
                             crate::sandbox::SandboxStatus::Running
                                 | crate::sandbox::SandboxStatus::Paused
                         ) {
-                            paths.push(sandbox.metadata.mounted_rootfs_path.clone());
+                            paths.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
+                        }
+                        for workspace in sandbox.workspaces.values() {
+                            if crate::workspace::workspace_runtime_is_active(workspace) {
+                                paths.push(PathBuf::from(&workspace.workspace_path));
+                            }
                         }
                     }
                     Ok(paths)
@@ -248,7 +256,12 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
 
                 let truly_orphaned: Vec<&&str> = orphaned
                     .iter()
-                    .filter(|mp| !running_mounted.contains(&mp.to_string()))
+                    .filter(|mount_point| {
+                        let mount_point = Path::new(mount_point);
+                        !active_roots
+                            .iter()
+                            .any(|root| mount_point.starts_with(root))
+                    })
                     .collect();
 
                 if truly_orphaned.is_empty() {
