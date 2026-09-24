@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -380,6 +381,12 @@ fn run_accept_loop(
     connections: Arc<ConnectionLimiter>,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
+        // Wait for a connection instead of polling. Sleeping on `WouldBlock`
+        // added the poll interval as a latency floor to the first connection
+        // after an idle period, and burned a wakeup per interval per port.
+        if !wait_for_accept(&listener, shutdown.as_ref()) {
+            return;
+        }
         match listener.accept() {
             Ok((stream, _)) => {
                 let Some(permit) = connections.try_acquire() else {
@@ -402,7 +409,8 @@ fn run_accept_loop(
                 }
             }
             Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(ACCEPT_POLL_INTERVAL);
+                // A spurious wakeup between poll and accept is harmless.
+                continue;
             }
             Err(err) => {
                 if !shutdown.load(Ordering::SeqCst) {
@@ -415,6 +423,34 @@ fn run_accept_loop(
                 }
                 thread::sleep(ACCEPT_POLL_INTERVAL);
             }
+        }
+    }
+}
+
+/// Block until the listener has a pending connection or the timeout expires.
+/// Returns `false` when the publisher has been asked to shut down.
+fn wait_for_accept(listener: &TcpListener, shutdown: &AtomicBool) -> bool {
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            return false;
+        }
+        let mut descriptor = libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result =
+            unsafe { libc::poll(&mut descriptor, 1, ACCEPT_POLL_INTERVAL.as_millis() as i32) };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            tracing::warn!("published port accept poll failed: {error}");
+            return false;
+        }
+        if result > 0 {
+            return true;
         }
     }
 }

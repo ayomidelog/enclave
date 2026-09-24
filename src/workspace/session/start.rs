@@ -5,9 +5,13 @@ pub fn start_session(
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
 ) -> Result<SessionInfo> {
+    // This phase is on the user-visible startup critical path, so break it into
+    // staging, launch, and readiness instead of reporting one number.
+    let staging = crate::perf::Timer::new("session.staging");
     ensure_runtime_layout(workspace)?;
     let userns = detect_user_namespace_mode()?;
     let current_exe = prepare_session_helper(workspace)?;
+    drop(staging);
     let workspace_source = workspace
         .home_mount_source_path
         .as_deref()
@@ -130,18 +134,22 @@ pub fn start_session(
             .arg("--root-overlay-merged")
             .arg(merged);
     }
+    let launch = crate::perf::Timer::new("session.launch");
     let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .status()
         .context("failed to launch workspace session via setsid/unshare")?;
+    drop(launch);
 
     if !status.success() {
         bail!("failed to launch workspace session (status {status})");
     }
 
+    let ready = crate::perf::Timer::new("session.ready");
     wait_for_session_ready(&ready_file, &pid_file, &log_file, START_TIMEOUT)?;
+    drop(ready);
     let pid = process::read_pid_file(&pid_file)?;
     if !process_alive(pid) {
         let tail = process::read_log_tail(&log_file, 20).unwrap_or_default();
