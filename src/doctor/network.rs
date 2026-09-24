@@ -60,8 +60,13 @@ pub(super) fn check_workspace_network(state_dir: &Path) -> DoctorCheck {
 
     let mut details = Vec::new();
     if !diff.leaked_veths.is_empty() {
+        // Enclave can be run with more than one state directory on a host, and
+        // this check only sees the registry it was given. Report these as
+        // unaccounted for rather than as leaks so the message is not a claim
+        // the doctor cannot support.
         details.push(format!(
-            "{} leaked veth(s): {}",
+            "{} veth(s) not owned by this state directory (another Enclave state \
+             directory, or a leak): {}",
             diff.leaked_veths.len(),
             diff.leaked_veths.join(", ")
         ));
@@ -75,7 +80,8 @@ pub(super) fn check_workspace_network(state_dir: &Path) -> DoctorCheck {
     }
     if !leaked_owners.is_empty() {
         details.push(format!(
-            "{} firewall rule(s) reference unknown workspace(s): {}",
+            "{} firewall rule(s) reference workspace(s) unknown to this state \
+             directory: {}",
             leaked_owners.len(),
             leaked_owners.join(", ")
         ));
