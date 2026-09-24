@@ -4,6 +4,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -91,6 +93,7 @@ pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Resu
     for path in mountpoints {
         unmount_workspace_path(&path, owner_is_dead)?;
     }
+    verify_disk_image_loop_detached(workspace)?;
     Ok(())
 }
 
@@ -118,6 +121,9 @@ pub(crate) fn ensure_workspace_storage_unmounted_many(
     mountpoints.dedup_by(|left, right| left.0 == right.0);
     for (path, owner_is_dead) in mountpoints {
         unmount_workspace_path(&path, owner_is_dead)?;
+    }
+    for workspace in workspaces {
+        verify_disk_image_loop_detached(workspace)?;
     }
     Ok(())
 }
@@ -218,6 +224,58 @@ fn workspace_owner_is_dead(workspace: &WorkspaceMetadata) -> bool {
         .is_some_and(|(pid, starttime)| {
             crate::workspace::session_process_matches(pid, Some(starttime))
         })
+}
+
+fn verify_disk_image_loop_detached(workspace: &WorkspaceMetadata) -> Result<()> {
+    if !workspace_uses_disk_image(workspace) {
+        return Ok(());
+    }
+    let image = workspace_disk_image_path(workspace);
+    for attempt in 0..3 {
+        let output = Command::new("losetup")
+            .args(["-j"])
+            .arg(&image)
+            .output()
+            .with_context(|| format!("failed to inspect loop devices for {}", image.display()))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!(
+                "losetup could not inspect workspace image {} ({}): {}",
+                image.display(),
+                output.status,
+                stderr.trim()
+            );
+        }
+        let devices = parse_loop_devices(&String::from_utf8_lossy(&output.stdout));
+        if devices.is_empty() {
+            return Ok(());
+        }
+        if attempt < 2 {
+            thread::sleep(Duration::from_millis(25 * (attempt as u64 + 1)));
+        } else {
+            bail!(
+                "workspace image {} remains attached to loop device(s): {}",
+                image.display(),
+                devices.join(", ")
+            );
+        }
+    }
+    unreachable!("loop verification always returns or errors")
+}
+
+fn parse_loop_devices(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            line.split_once(":")
+                .map(|(device, _)| device.trim().to_string())
+        })
+        .filter(|device| {
+            device.strip_prefix("/dev/loop").is_some_and(|suffix| {
+                !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -549,7 +607,14 @@ fn initialize_disk_image(workspace: &WorkspaceMetadata) -> Result<()> {
 
 fn ensure_disk_backend_available() -> Result<()> {
     let result = DISK_BACKEND_CHECK.get_or_init(|| {
-        for command in ["truncate", "mkfs.ext4", "resize2fs", "e2fsck", "mount"] {
+        for command in [
+            "truncate",
+            "mkfs.ext4",
+            "resize2fs",
+            "e2fsck",
+            "mount",
+            "losetup",
+        ] {
             let status = Command::new("sh")
                 .args(["-c", &format!("command -v {command} >/dev/null 2>&1")])
                 .status()

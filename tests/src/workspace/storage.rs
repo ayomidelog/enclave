@@ -223,3 +223,9 @@ fn missing_starttime_does_not_block_lazy_unmount_fallback() {
     workspace.runtime_starttime_ticks = None;
     assert!(workspace_owner_is_dead(&workspace));
 }
+
+#[test]
+fn loop_device_parser_extracts_only_loop_backings() {
+    let output = "/dev/loop7: []: (/tmp/a/fs.img)\n/dev/loop-control: []: (/tmp/control)\n";
+    assert_eq!(parse_loop_devices(output), vec!["/dev/loop7"]);
+}
