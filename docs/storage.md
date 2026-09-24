@@ -18,7 +18,9 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
     │   ├── <suite>/             # Suite-specific cached rootfs
     │   └── base/                # Optional generic cached rootfs
     └── <sandbox-id>/
-        ├── rootfs/              # Sandbox root filesystem on disk
+        ├── rootfs/              # Sandbox root filesystem (overlay mount when a shared base is used)
+        ├── rootfs-upper/        # Sandbox-specific rootfs writes (shared-base sandboxes)
+        ├── rootfs-work/         # OverlayFS work directory for the rootfs overlay
         ├── runtime/rootfs.mnt/  # Active mount point used while running
         ├── runtime/session-helper # Cached sandbox-local copy of the internal session helper
         ├── home-base/           # Shared lower layer for workspace home overlays
@@ -37,7 +39,23 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 
 - `sandboxes/rootfs-cache/` stores reusable source root filesystems.
   - `debootstrap` automatically populates a suite-specific cache like `bookworm/` after a successful bootstrap.
-  - `cached_rootfs` can copy from either a suite-specific cache or the generic `base/` cache.
+  - `cached_rootfs` uses either a suite-specific cache or the generic `base/` cache.
+
+### Shared base layer
+
+When a sandbox is created from a cached rootfs, `rootfs/` is an OverlayFS mount
+whose lower layer is the cache directory and whose upper and work directories
+live in the sandbox directory. Nothing is copied, so creation cost does not
+scale with the number of files in the cached rootfs.
+
+The cache is only ever a lower layer, so writes made through a sandbox rootfs
+(setup commands, package installs, or anything else) land in that sandbox's
+`rootfs-upper/` and are invisible to every other sandbox and to the cache
+itself. `enclave sandbox status` reports the size of the sandbox's own writes.
+
+The overlay is mounted for the sandbox's whole lifetime, running or not, and is
+remounted by the daemon on startup, so it survives a host reboot. If the mount
+cannot be created, sandbox creation falls back to copying the cached rootfs.
   - `rootfs-cache/index.json` records indexed cache entries, suite/source metadata, architecture, creation time, tool version, content digest, and required-directory fingerprints so bootstrap avoids repeated recursive discovery while still detecting stale cache roots.
 - `sandboxes/<sandbox-id>/rootfs/` is the sandbox's on-disk root filesystem.
 - `sandboxes/<sandbox-id>/runtime/rootfs.mnt/` is the active mount point used while the sandbox is running.

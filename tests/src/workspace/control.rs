@@ -37,6 +37,7 @@ fn cleanup_workspace_artifacts_removes_stale_workspace_resources() {
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_dir.to_string_lossy().to_string(),
         rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_dir
             .join("runtime")
             .join("rootfs.mnt")
@@ -107,6 +108,7 @@ fn cleanup_workspace_artifacts_accepts_missing_workspace_root() {
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_dir.to_string_lossy().to_string(),
         rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_dir
             .join("runtime")
             .join("rootfs.mnt")
@@ -176,6 +178,7 @@ fn cleanup_workspace_artifacts_preserves_a_live_runtime_when_workspace_root_is_m
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_dir.to_string_lossy().to_string(),
         rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_dir
             .join("runtime")
             .join("rootfs.mnt")
@@ -251,6 +254,7 @@ fn cleanup_workspace_artifacts_retains_record_when_runtime_outlives_missing_root
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_dir.to_string_lossy().to_string(),
         rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_dir
             .join("runtime")
             .join("rootfs.mnt")

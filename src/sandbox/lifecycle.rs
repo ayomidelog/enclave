@@ -27,7 +27,37 @@ pub fn init_storage(state_dir: &Path) -> Result<()> {
     bootstrap::ensure_rootfs_cache(state_dir)?;
     ensure_registry(state_dir)?;
     repair_registry(state_dir, false)?;
+    restore_shared_rootfs_mounts(state_dir)?;
     reconcile_workspace_states(state_dir)?;
+    Ok(())
+}
+
+/// Remount shared-base rootfs overlays that are missing.
+///
+/// The overlay is kernel mount state, so it survives a daemon restart but not
+/// a host reboot. Without this, a sandbox created before a reboot would look
+/// like it had an empty rootfs.
+fn restore_shared_rootfs_mounts(state_dir: &Path) -> Result<()> {
+    let sandboxes = with_registry(state_dir, |registry| {
+        Ok(registry
+            .sandboxes
+            .values()
+            .filter(|entry| entry.metadata.rootfs_lower_path.is_some())
+            .map(|entry| {
+                let mut metadata = entry.metadata.clone();
+                normalize_sandbox_metadata(&mut metadata);
+                metadata
+            })
+            .collect::<Vec<_>>())
+    })?;
+    for metadata in sandboxes {
+        if let Err(err) = mounts::ensure_rootfs_overlay_mounted(&metadata) {
+            tracing::warn!(
+                "sandbox '{}': failed to restore shared rootfs base: {err:#}",
+                metadata.id
+            );
+        }
+    }
     Ok(())
 }
 
@@ -171,17 +201,53 @@ pub fn create_sandbox_with_options(
         name,
         state_dir,
     });
-    if let Err(err) = bootstrap_result {
-        if sandbox_dir.exists() {
-            fs::remove_dir_all(&sandbox_dir).with_context(|| {
-                format!(
-                    "failed to clean up sandbox directory after bootstrap failure {}",
-                    sandbox_dir.display()
-                )
-            })?;
+    let outcome = match bootstrap_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            if sandbox_dir.exists() {
+                fs::remove_dir_all(&sandbox_dir).with_context(|| {
+                    format!(
+                        "failed to clean up sandbox directory after bootstrap failure {}",
+                        sandbox_dir.display()
+                    )
+                })?;
+            }
+            return Err(err);
         }
-        return Err(err);
-    }
+    };
+
+    // A shared base is mounted as an overlay so the cached rootfs is never
+    // copied. If the mount cannot be set up, fall back to the copy so sandbox
+    // creation still succeeds on kernels or filesystems without OverlayFS.
+    let shared_lower = match outcome.shared_lower {
+        Some(lower) => {
+            let shared = SandboxMetadata {
+                id: sandbox_id.clone(),
+                name: name.to_string(),
+                sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+                rootfs_path: rootfs_dir.to_string_lossy().to_string(),
+                rootfs_lower_path: Some(lower.to_string_lossy().to_string()),
+                mounted_rootfs_path: mounted_rootfs_dir.to_string_lossy().to_string(),
+                ..SandboxMetadata::default()
+            };
+            match mounts::ensure_rootfs_overlay_mounted(&shared) {
+                Ok(()) => Some(lower.to_string_lossy().to_string()),
+                Err(err) => {
+                    tracing::warn!(
+                        "sandbox '{}': shared rootfs base unavailable ({err:#}); copying instead",
+                        name
+                    );
+                    let _ = mounts::unmount_rootfs_overlay(&shared);
+                    if let Err(copy_err) = bootstrap::copy_cached_rootfs(&lower, &rootfs_dir) {
+                        let _ = fs::remove_dir_all(&sandbox_dir);
+                        return Err(copy_err);
+                    }
+                    None
+                }
+            }
+        }
+        None => None,
+    };
 
     let metadata = SandboxMetadata {
         id: sandbox_id,
@@ -192,6 +258,7 @@ pub fn create_sandbox_with_options(
         created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         sandbox_path: sandbox_dir.to_string_lossy().to_string(),
         rootfs_path: rootfs_dir.to_string_lossy().to_string(),
+        rootfs_lower_path: shared_lower,
         mounted_rootfs_path: mounted_rootfs_dir.to_string_lossy().to_string(),
         workspaces_path: workspaces_dir.to_string_lossy().to_string(),
         home_base_path: home_base_dir.to_string_lossy().to_string(),
@@ -526,6 +593,11 @@ pub fn destroy_sandbox(state_dir: &Path, selector: &str) -> Result<String> {
             false
         }
     };
+    // The shared-base overlay lives at the rootfs directory itself, so it must
+    // be detached before the sandbox directory is removed.
+    if let Err(error) = mounts::unmount_rootfs_overlay(&metadata) {
+        cleanup_errors.push(format!("rootfs overlay cleanup: {error:#}"));
+    }
     let sandbox_cgroup = PathBuf::from("/sys/fs/cgroup")
         .join(crate::sandbox::cgroup::sandbox_cgroup_name(&metadata.id));
     if let Err(err) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_cgroup) {

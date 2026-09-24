@@ -112,6 +112,7 @@ fn repair_removes_stale_records_and_metadata_less_orphans() {
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: stale_dir.to_string_lossy().to_string(),
         rootfs_path: stale_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: stale_dir
             .join("runtime")
             .join("rootfs.mnt")

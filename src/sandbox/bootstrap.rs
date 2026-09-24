@@ -21,7 +21,29 @@ pub struct BootstrapParams<'a> {
     pub state_dir: &'a Path,
 }
 
-pub fn bootstrap_rootfs(params: &BootstrapParams<'_>) -> Result<()> {
+/// How the sandbox rootfs was produced.
+#[derive(Debug)]
+pub struct BootstrapOutcome {
+    /// Cache directory to use as an immutable OverlayFS lower layer.
+    ///
+    /// `None` means the rootfs directory already holds the complete tree, so
+    /// the sandbox can be used without an overlay mount.
+    pub shared_lower: Option<PathBuf>,
+}
+
+impl BootstrapOutcome {
+    fn local() -> Self {
+        Self { shared_lower: None }
+    }
+
+    fn shared(path: PathBuf) -> Self {
+        Self {
+            shared_lower: Some(path),
+        }
+    }
+}
+
+pub fn bootstrap_rootfs(params: &BootstrapParams<'_>) -> Result<BootstrapOutcome> {
     features::validate_platform()?;
 
     match params.method {
@@ -34,12 +56,9 @@ pub fn bootstrap_rootfs(params: &BootstrapParams<'_>) -> Result<()> {
             params.name,
             params.state_dir,
         ),
-        BootstrapMethod::CachedRootfs => bootstrap_cached_rootfs(
-            params.rootfs_dir,
-            params.name,
-            params.suite,
-            params.state_dir,
-        ),
+        BootstrapMethod::CachedRootfs => {
+            bootstrap_cached_rootfs(params.name, params.suite, params.state_dir)
+        }
     }
 }
 
@@ -51,7 +70,7 @@ fn bootstrap_debootstrap(
     mirror: &str,
     name: &str,
     state_dir: &Path,
-) -> Result<()> {
+) -> Result<BootstrapOutcome> {
     validate_debootstrap_binary(debootstrap_binary)?;
 
     let cache_dir = rootfs_cache_dir(state_dir);
@@ -64,14 +83,7 @@ fn bootstrap_debootstrap(
             suite,
             suite_cache.display()
         );
-        copy_dir_recursive(&suite_cache, rootfs_dir).with_context(|| {
-            format!(
-                "failed to copy cached rootfs from {} to {}",
-                suite_cache.display(),
-                rootfs_dir.display()
-            )
-        })?;
-        return Ok(());
+        return Ok(BootstrapOutcome::shared(suite_cache));
     }
 
     let log_path = sandbox_dir.join("debootstrap.log");
@@ -106,48 +118,31 @@ fn bootstrap_debootstrap(
         tracing::warn!("failed to cache rootfs for suite '{}': {err:#}", suite);
     }
 
-    Ok(())
+    Ok(BootstrapOutcome::local())
 }
 
-fn bootstrap_cached_rootfs(
-    rootfs_dir: &Path,
-    name: &str,
-    suite: &str,
-    state_dir: &Path,
-) -> Result<()> {
+fn bootstrap_cached_rootfs(name: &str, suite: &str, state_dir: &Path) -> Result<BootstrapOutcome> {
     let cache_dir = rootfs_cache_dir(state_dir);
     cache::ensure(&cache_dir)?;
     let suite_cache = cache_dir.join(suite);
     if cache::contains(&cache_dir, suite, &suite_cache) {
         tracing::info!(
-            "sandbox '{}' bootstrap: copying cached rootfs for suite '{}' from {}",
+            "sandbox '{}' bootstrap: using cached rootfs for suite '{}' from {}",
             name,
             suite,
             suite_cache.display()
         );
-        return copy_dir_recursive(&suite_cache, rootfs_dir).with_context(|| {
-            format!(
-                "failed to copy cached rootfs from {} to {}",
-                suite_cache.display(),
-                rootfs_dir.display()
-            )
-        });
+        return Ok(BootstrapOutcome::shared(suite_cache));
     }
 
     let generic_cache = cache_dir.join("base");
     if cache::contains(&cache_dir, "base", &generic_cache) {
         tracing::info!(
-            "sandbox '{}' bootstrap: copying generic cached rootfs from {}",
+            "sandbox '{}' bootstrap: using generic cached rootfs from {}",
             name,
             generic_cache.display()
         );
-        return copy_dir_recursive(&generic_cache, rootfs_dir).with_context(|| {
-            format!(
-                "failed to copy cached rootfs from {} to {}",
-                generic_cache.display(),
-                rootfs_dir.display()
-            )
-        });
+        return Ok(BootstrapOutcome::shared(generic_cache));
     }
 
     bail!(
@@ -202,6 +197,21 @@ pub(crate) fn has_rootfs_content(dir: &Path) -> bool {
     ["bin", "etc", "usr"]
         .iter()
         .all(|required| dir.join(required).is_dir())
+}
+
+/// Copy a cached rootfs tree into a sandbox rootfs directory.
+///
+/// This is the fallback for hosts where the shared-base overlay cannot be set
+/// up, and it is also how a freshly bootstrapped rootfs is published to the
+/// cache.
+pub(crate) fn copy_cached_rootfs(src: &Path, dst: &Path) -> Result<()> {
+    copy_dir_recursive(src, dst).with_context(|| {
+        format!(
+            "failed to copy cached rootfs from {} to {}",
+            src.display(),
+            dst.display()
+        )
+    })
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {

@@ -104,7 +104,7 @@ impl SandboxLimitsUpdate {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxMetadata {
     pub id: String,
     pub name: String,
@@ -115,6 +115,14 @@ pub struct SandboxMetadata {
     pub created_at: String,
     pub sandbox_path: String,
     pub rootfs_path: String,
+    /// Immutable shared base layer for this sandbox rootfs.
+    ///
+    /// When set, `rootfs_path` is an OverlayFS mount whose lower layer is this
+    /// directory, so creating a sandbox from a cached rootfs does not copy the
+    /// whole tree. Writes land in the sandbox's own upper layer and never reach
+    /// the shared base.
+    #[serde(default)]
+    pub rootfs_lower_path: Option<String>,
     #[serde(default)]
     pub mounted_rootfs_path: String,
     #[serde(default)]

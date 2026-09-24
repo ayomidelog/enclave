@@ -193,7 +193,10 @@ After that, set:
 bootstrap_method = "cached_rootfs"
 ```
 
-and first-time `enclave up` will copy the prebuilt rootfs instead of constructing one from `debootstrap`.
+and first-time `enclave up` will mount the prebuilt rootfs as a shared,
+read-only lower layer instead of constructing one from `debootstrap` or copying
+it. Each sandbox gets its own writable overlay on top, so creation cost does
+not depend on how many files the cached rootfs contains.
 
 ## Install from source
 

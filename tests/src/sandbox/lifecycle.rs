@@ -24,6 +24,7 @@ fn destroy_keeps_registry_entry_until_unmount_cleanup_succeeds() {
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_dir.to_string_lossy().to_string(),
         rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_dir
             .join("runtime")
             .join("rootfs.mnt")
@@ -87,6 +88,7 @@ fn destroy_with_missing_sandbox_path_preserves_live_workspace_runtime_record() {
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_path.to_string_lossy().to_string(),
         rootfs_path: sandbox_path.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_path
             .join("runtime/rootfs.mnt")
             .to_string_lossy()
@@ -185,6 +187,7 @@ fn destroy_with_live_workspace_retains_sandbox_and_registry() {
         created_at: "2026-08-06T00:00:00Z".to_string(),
         sandbox_path: sandbox_path.to_string_lossy().to_string(),
         rootfs_path: sandbox_path.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
         mounted_rootfs_path: sandbox_path
             .join("runtime/rootfs.mnt")
             .to_string_lossy()
