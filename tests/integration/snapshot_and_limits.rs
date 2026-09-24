@@ -457,18 +457,48 @@ fn workspace_disk_backed_tmp_is_linked_writable_and_uses_workspace_storage() {
         .join(runtime_pid.to_string())
         .join("root");
     let runtime_tmp = runtime_root.join("tmp");
+    let runtime_backing = runtime_root.join("home").join(".enclave-tmp");
     let runtime_home_tmp = runtime_root.join("home/tmp");
 
     let tmp_metadata = fs::metadata(&runtime_tmp).expect("workspace /tmp metadata");
-    let home_tmp_metadata = fs::metadata(&runtime_home_tmp).expect("workspace /home/tmp metadata");
+    let backing_metadata =
+        fs::metadata(&runtime_backing).expect("workspace /tmp backing directory metadata");
     assert!(tmp_metadata.is_dir());
     assert!(
         tmp_metadata.nlink() >= 2,
         "workspace /tmp must have a live directory link"
     );
-    assert_eq!(tmp_metadata.dev(), home_tmp_metadata.dev());
-    assert_eq!(tmp_metadata.ino(), home_tmp_metadata.ino());
+    assert_eq!(tmp_metadata.dev(), backing_metadata.dev());
+    assert_eq!(tmp_metadata.ino(), backing_metadata.ino());
     assert_eq!(tmp_metadata.permissions().mode() & 0o1777, 0o1777);
+    // The backing directory must not be reachable as `/home/tmp`. When it was,
+    // removing that entry unlinked the live `/tmp` mount and every later write
+    // under `/tmp` failed with ENOENT.
+    assert!(
+        !runtime_home_tmp.exists(),
+        "the /tmp backing directory must not be aliased in the workspace home view"
+    );
+
+    let churn = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "mkdir -p /home/tmp && rm -rf /home/tmp && printf ok > /tmp/enclave-alias-probe && rm /tmp/enclave-alias-probe".to_string(),
+        ],
+    )
+    .expect("churn /home/tmp");
+    assert_eq!(
+        churn.exit_code, 0,
+        "creating and removing /home/tmp must not affect /tmp: {}",
+        churn.stderr
+    );
+    let after_churn = fs::metadata(&runtime_tmp).expect("workspace /tmp metadata after churn");
+    assert_eq!(after_churn.ino(), tmp_metadata.ino());
+    assert!(after_churn.nlink() >= 2);
 
     let result = exec_workspace_command(
         &state,

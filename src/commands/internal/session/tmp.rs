@@ -9,7 +9,7 @@ pub(crate) fn mount_workspace_tmp_if_needed(
 ) -> Result<()> {
     fs::create_dir_all(target).with_context(|| format!("failed to create {}", target.display()))?;
     if disk_backed_tmp {
-        let workspace_tmp = workspace_fs.join("tmp");
+        let workspace_tmp = workspace_fs.join(crate::workspace::WORKSPACE_TMP_DIR);
         ensure_workspace_tmp_source(old_root, &workspace_tmp)?;
         let source = path_inside_old_root(old_root, &workspace_tmp)?;
         let source_identity = directory_identity(&source)?;

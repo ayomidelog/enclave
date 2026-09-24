@@ -13,6 +13,20 @@ use super::types::WorkspaceMetadata;
 
 const DISK_IMAGE_NAME: &str = "fs.img";
 const MIN_DISK_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Directory on the workspace filesystem that backs the workspace's `/tmp`.
+///
+/// The name is hidden on purpose. The workspace filesystem root is mounted at
+/// `/home`, so any directory in it is reachable from inside the workspace; a
+/// plain `tmp` entry there was the same directory as the `/tmp` mount, and
+/// removing it unlinked the live mount source, leaving every later `/tmp` write
+/// failing with `ENOENT`. A dot-prefixed name keeps the backing directory out of
+/// the workspace's home view for ordinary cleanup commands and makes the
+/// aliasing impossible to trigger by name.
+pub(crate) const WORKSPACE_TMP_DIR: &str = ".enclave-tmp";
+
+/// Backing directory that older workspaces used for the `/tmp` mount.
+pub(crate) const LEGACY_WORKSPACE_TMP_DIR: &str = "tmp";
 const LOOP_DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 const LOOP_DETACH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 static DISK_BACKEND_CHECK: OnceLock<Result<(), String>> = OnceLock::new();
@@ -55,7 +69,10 @@ pub use unmount::ensure_workspace_storage_unmounted;
 // Used by workspace lifecycle modules and their tests.
 pub(crate) use image::{workspace_disk_image_path, workspace_uses_disk_image};
 pub(crate) use mount::with_workspace_storage_mounted;
+#[cfg(test)]
+pub(crate) use tmp::ensure_workspace_tmp_layout;
 pub(crate) use tmp::reset_workspace_tmp;
+pub(crate) use tmp::workspace_tmp_path;
 pub(crate) use unmount::ensure_workspace_storage_unmounted_many;
 pub(crate) use unmount::unmount_mounts_at_or_below_excluding;
 

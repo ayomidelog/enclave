@@ -60,6 +60,7 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
         network::check_workspace_network(state_dir),
         network::check_workspace_loop_devices(state_dir),
         check_stale_runtime_state(state_dir),
+        check_workspace_tmp_integrity(state_dir),
         check_operation_journal(state_dir),
         check_cgroup_v2_availability(),
     ];
@@ -347,6 +348,86 @@ fn check_stale_runtime_state(state_dir: &Path) -> DoctorCheck {
     }
     findings.push("run 'enclave registry repair' to reconcile".to_string());
     DoctorCheck::warn(name, &findings.join("; "))
+}
+
+/// Check that every running workspace has a usable `/tmp`.
+///
+/// The workspace `/tmp` is a bind mount of a directory on the workspace's own
+/// filesystem. If that directory is replaced while the runtime is alive, the
+/// mount keeps pointing at the old, unlinked inode and every write under `/tmp`
+/// fails with `ENOENT` for the rest of the runtime's life. That is invisible to
+/// the registry and to the mount inventory, so it needs its own check.
+fn check_workspace_tmp_integrity(state_dir: &Path) -> DoctorCheck {
+    use std::os::unix::fs::MetadataExt;
+
+    let name = "workspace_tmp";
+    let workspaces = match crate::workspace::list_workspaces(state_dir, None) {
+        Ok(workspaces) => workspaces,
+        Err(err) => return DoctorCheck::warn(name, &format!("failed to check: {err:#}")),
+    };
+
+    let mut broken = Vec::new();
+    let mut checked = 0usize;
+    for workspace in workspaces {
+        if !crate::workspace::workspace_runtime_is_active(&workspace) {
+            continue;
+        }
+        let Some(pid) = workspace.runtime_pid else {
+            continue;
+        };
+        checked += 1;
+        let tmp = Path::new("/proc").join(pid.to_string()).join("root/tmp");
+        let metadata = match fs::metadata(&tmp) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                broken.push(format!("{}: /tmp is unreadable ({error})", workspace.id));
+                continue;
+            }
+        };
+        if !metadata.is_dir() {
+            broken.push(format!("{}: /tmp is not a directory", workspace.id));
+            continue;
+        }
+        if metadata.nlink() < 2 {
+            broken.push(format!(
+                "{}: /tmp references an unlinked directory, so every /tmp write fails; \
+                 restart the workspace to repair",
+                workspace.id
+            ));
+            continue;
+        }
+        if metadata.mode() & 0o1777 != 0o1777 {
+            broken.push(format!(
+                "{}: /tmp mode is {:o} instead of 1777",
+                workspace.id,
+                metadata.mode() & 0o7777
+            ));
+            continue;
+        }
+        if crate::workspace::workspace_uses_disk_image(&workspace) {
+            let backing = crate::workspace::workspace_tmp_path(&workspace);
+            match fs::metadata(&backing) {
+                Ok(backing_metadata) if backing_metadata.dev() == metadata.dev() => {}
+                Ok(_) => broken.push(format!(
+                    "{}: /tmp is not backed by the workspace filesystem",
+                    workspace.id
+                )),
+                Err(error) => broken.push(format!(
+                    "{}: /tmp backing directory {} is unavailable ({error})",
+                    workspace.id,
+                    backing.display()
+                )),
+            }
+        }
+    }
+
+    if broken.is_empty() {
+        return DoctorCheck::ok(
+            name,
+            &format!("{checked} running workspace(s) have a usable /tmp"),
+        );
+    }
+    DoctorCheck::warn(name, &broken.join("; "))
 }
 
 fn check_operation_journal(state_dir: &Path) -> DoctorCheck {

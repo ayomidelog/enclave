@@ -17,6 +17,9 @@ pub fn ensure_workspace_storage_ready(workspace: &WorkspaceMetadata) -> Result<(
         initialize_disk_image(workspace)?;
         mount_disk_image_if_needed(workspace)?;
         ensure_root_overlay_layout(workspace)?;
+        // The workspace `/tmp` mount needs its backing directory to exist and to
+        // be outside the workspace's home view before the session starts.
+        super::tmp::ensure_workspace_tmp_layout(workspace)?;
     }
     Ok(())
 }

@@ -1,4 +1,50 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
+
+/// Backing directory for the workspace `/tmp` mount inside the workspace filesystem.
+pub(crate) fn workspace_tmp_path(workspace: &WorkspaceMetadata) -> PathBuf {
+    PathBuf::from(&workspace.filesystem_path).join(WORKSPACE_TMP_DIR)
+}
+
+/// Make sure the workspace filesystem has a usable `/tmp` backing directory.
+///
+/// A workspace created before the backing directory was hidden has its `/tmp`
+/// content in a plain `tmp` directory. That directory is the same directory the
+/// workspace sees at `/home/tmp`, so a workspace-side cleanup could remove it
+/// and leave the live `/tmp` mount pointing at an unlinked inode. Renaming it
+/// once is enough to move the content and stop the aliasing; the rename is
+/// atomic and is skipped whenever the destination already exists.
+pub(crate) fn ensure_workspace_tmp_layout(workspace: &WorkspaceMetadata) -> Result<()> {
+    if !workspace_uses_disk_image(workspace) {
+        return Ok(());
+    }
+    let root = PathBuf::from(&workspace.filesystem_path);
+    let tmp = root.join(WORKSPACE_TMP_DIR);
+    let legacy = root.join(LEGACY_WORKSPACE_TMP_DIR);
+    if !tmp.exists() && legacy.is_dir() && !legacy.is_symlink() {
+        fs::rename(&legacy, &tmp).with_context(|| {
+            format!(
+                "failed to move the legacy workspace /tmp backing directory {} to {}",
+                legacy.display(),
+                tmp.display()
+            )
+        })?;
+        tracing::info!(
+            "workspace '{}': moved the /tmp backing directory to {}",
+            workspace.id,
+            tmp.display()
+        );
+    }
+    fs::create_dir_all(&tmp).with_context(|| {
+        format!(
+            "failed to create workspace /tmp backing directory {}",
+            tmp.display()
+        )
+    })?;
+    fs::set_permissions(&tmp, fs::Permissions::from_mode(0o1777))
+        .with_context(|| format!("failed to set permissions on {}", tmp.display()))?;
+    Ok(())
+}
 
 pub(crate) fn reset_workspace_tmp(workspace: &WorkspaceMetadata) -> Result<()> {
     if !workspace_uses_disk_image(workspace) {
@@ -22,10 +68,10 @@ pub(crate) fn reset_mounted_workspace_tmp(workspace: &WorkspaceMetadata) -> Resu
     clear_workspace_tmp_contents(&workspace_root)
 }
 
-/// Remove every entry under `<workspace filesystem>/tmp`, keeping the directory
-/// itself. The caller owns the storage mount; this only touches paths.
+/// Remove every entry under the workspace `/tmp` backing directory, keeping the
+/// directory itself. The caller owns the storage mount; this only touches paths.
 pub(crate) fn clear_workspace_tmp_contents(workspace_root: &Path) -> Result<()> {
-    let tmp_path = workspace_root.join("tmp");
+    let tmp_path = workspace_root.join(WORKSPACE_TMP_DIR);
     let canonical_root = fs::canonicalize(workspace_root).with_context(|| {
         format!(
             "failed to resolve workspace filesystem {}",
