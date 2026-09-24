@@ -184,7 +184,7 @@ fn registry_cache_refreshes_after_external_atomic_replace() {
     assert_eq!(observed, 7);
 
     let replacement = serde_json::to_vec(&enclave::registry::Registry {
-        version: 8,
+        version: 1,
         generation: 9,
         sandboxes: Default::default(),
     })
@@ -194,6 +194,27 @@ fn registry_cache_refreshes_after_external_atomic_replace() {
     fs::rename(&replacement_path, state.join("registry.json")).expect("replace registry");
 
     let refreshed = with_registry(&state, |registry| Ok(registry.version)).expect("refresh read");
-    assert_eq!(refreshed, 8);
+    assert_eq!(refreshed, 1);
+    let _ = fs::remove_dir_all(state);
+}
+
+#[test]
+fn future_registry_schema_is_rejected_before_mutation() {
+    let state = state_dir("enclave-registry-future-version");
+    ensure_registry(&state).expect("registry init");
+    fs::write(
+        state.join("registry.json"),
+        format!(
+            "{{\"version\":{},\"generation\":0,\"sandboxes\":{{}}}}",
+            999
+        ),
+    )
+    .expect("write future registry");
+
+    let err = with_registry(&state, |registry| Ok(registry.version))
+        .expect_err("future schema must not be read");
+    assert!(err.to_string().contains("newer than this binary supports"));
+    let err = with_registry_mut(&state, |_| Ok(())).expect_err("future schema must not be mutated");
+    assert!(err.to_string().contains("newer than this binary supports"));
     let _ = fs::remove_dir_all(state);
 }

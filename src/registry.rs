@@ -12,6 +12,17 @@ use crate::workspace::WorkspaceMetadata;
 
 const REGISTRY_VERSION: u32 = 1;
 
+fn validate_registry_version(version: u32) -> Result<()> {
+    if version > REGISTRY_VERSION {
+        bail!(
+            "registry schema version {} is newer than this binary supports ({}); upgrade Enclave before using this state",
+            version,
+            REGISTRY_VERSION
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RegistryFingerprint {
     device: u64,
@@ -581,6 +592,7 @@ fn load_registry_unlocked(state_dir: &Path) -> Result<Registry> {
         .with_context(|| format!("failed to read registry {}", path.display()))?;
     let registry: Registry = serde_json::from_str(&raw)
         .with_context(|| format!("invalid registry {}", path.display()))?;
+    validate_registry_version(registry.version)?;
     Ok(registry)
 }
 
