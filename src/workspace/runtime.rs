@@ -7,7 +7,7 @@ use crate::sandbox::resolve_sandbox_id;
 
 use super::control::resolve_workspace_id;
 use super::session;
-use super::types::{WorkspaceRuntimeInfo, WorkspaceStatus};
+use super::types::WorkspaceRuntimeInfo;
 
 pub fn workspace_runtime_info(
     state_dir: &Path,
@@ -26,10 +26,11 @@ pub fn workspace_runtime_info(
             .get(&workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
 
-        if workspace.status != WorkspaceStatus::Running {
+        if !workspace.status.is_running() {
             bail!(
-                "workspace '{}' is stopped; start workspace first",
-                workspace.id
+                "workspace '{}' is {}; start workspace first",
+                workspace.id,
+                workspace.status.as_str()
             );
         }
 

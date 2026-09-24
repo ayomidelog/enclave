@@ -14,9 +14,7 @@ use crate::sandbox::resolve_sandbox_id;
 
 use super::control::{resolve_workspace_id, set_workspace_stopped};
 use super::session;
-use super::types::{
-    WorkspaceMetadata, WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo, WorkspaceStatus,
-};
+use super::types::{WorkspaceMetadata, WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo};
 
 pub const DEFAULT_SNAPSHOT_KEEP: usize = 5;
 

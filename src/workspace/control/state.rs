@@ -94,7 +94,7 @@ pub(crate) fn remove_sandbox_cgroup_if_idle(sandbox: &RegistrySandbox) {
     if sandbox
         .workspaces
         .values()
-        .all(|item| item.status != WorkspaceStatus::Running)
+        .all(|item| !item.status.may_have_runtime())
         && !sandbox.metadata.limits.has_limits()
     {
         remove_sandbox_cgroup(&sandbox.metadata);
@@ -141,7 +141,43 @@ pub(crate) fn resolve_workspace_id(sandbox: &RegistrySandbox, selector: &str) ->
 }
 
 pub(crate) fn reconcile_workspace_runtime_state(workspace: &mut WorkspaceMetadata) -> Result<bool> {
-    if workspace.status != WorkspaceStatus::Running {
+    // An interrupted transition is resolved deterministically by rolling it
+    // back: a launch that never committed is not resumed, and a stop that never
+    // committed is completed. Never resume a half-started runtime, because its
+    // recorded identity may not match the process that is actually running.
+    if workspace.status.is_transitional() {
+        let interrupted = workspace.status.clone();
+        if let Some((pid, starttime)) = workspace.runtime_pid.zip(workspace.runtime_starttime_ticks)
+        {
+            if session::process_matches(pid, Some(starttime)) {
+                // A live runtime from the interrupted operation must be stopped
+                // before the workspace can be reported as cleanly stopped.
+                if let Err(error) = session::stop_session(pid, Some(starttime)) {
+                    tracing::warn!(
+                        "reconcile: failed to stop runtime {} for interrupted {:?} workspace '{}': {error:#}",
+                        pid,
+                        interrupted,
+                        workspace.id
+                    );
+                    return Ok(false);
+                }
+            }
+        }
+        tracing::warn!(
+            "reconcile: rolled back interrupted {:?} transition for workspace '{}'",
+            interrupted,
+            workspace.id
+        );
+        workspace.status = WorkspaceStatus::Stopped;
+        workspace.runtime_pid = None;
+        workspace.runtime_starttime_ticks = None;
+        workspace.assigned_ip = None;
+        clear_workspace_namespace_refs(workspace);
+        persist_workspace_metadata(workspace)?;
+        return Ok(true);
+    }
+
+    if !workspace.status.is_running() {
         let stale_runtime_state = workspace.runtime_pid.is_some()
             || workspace.runtime_starttime_ticks.is_some()
             || workspace.assigned_ip.is_some()

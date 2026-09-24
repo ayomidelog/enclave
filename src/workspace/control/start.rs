@@ -29,11 +29,27 @@ pub fn start_workspace_with_security(
                 );
             }
             let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
+            if sandbox.metadata.status.is_transitional() {
+                bail!(
+                    "sandbox '{}' is {:?}; wait for it to settle before starting workspaces",
+                    sandbox.metadata.id,
+                    sandbox.metadata.status
+                );
+            }
             let mut workspace_snapshot = sandbox
                 .workspaces
                 .get(&workspace_id)
                 .cloned()
                 .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+            // A competing lifecycle operation is already in flight; refuse
+            // rather than launch a second runtime for the same workspace.
+            if workspace_snapshot.status.is_transitional() {
+                bail!(
+                    "workspace '{}' is {:?}; wait for the current operation to finish",
+                    workspace_id,
+                    workspace_snapshot.status
+                );
+            }
             workspace_snapshot.sandbox_rootfs_path = effective_rootfs_path(&sandbox.metadata);
             Ok((
                 sandbox_id,
@@ -44,9 +60,6 @@ pub fn start_workspace_with_security(
             ))
         })?;
 
-    let expected_runtime = workspace_snapshot
-        .runtime_pid
-        .zip(workspace_snapshot.runtime_starttime_ticks);
     if workspace_snapshot.status == WorkspaceStatus::Running {
         if let Some((pid, starttime)) = workspace_snapshot
             .runtime_pid
@@ -86,6 +99,10 @@ pub fn start_workspace_with_security(
         format!("{}/{}", sandbox_id, workspace_id),
     )?;
     journal.phase("launch_runtime")?;
+    // Record the in-flight transition durably so a crash during launch is
+    // visible to the next daemon start instead of looking like a stopped
+    // workspace that never started.
+    mark_workspace_starting(state_dir, &sandbox_id, &workspace_id)?;
     let started = match launch_workspace_runtime(
         state_dir,
         &sandbox_snapshot,
@@ -96,6 +113,7 @@ pub fn start_workspace_with_security(
     ) {
         Ok(started) => started,
         Err(error) => {
+            let _ = mark_workspace_start_failed(state_dir, &sandbox_id, &workspace_id);
             let _ = journal.fail(format!("{error:#}"));
             return Err(error);
         }
@@ -111,10 +129,16 @@ pub fn start_workspace_with_security(
             .workspaces
             .get_mut(&workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-        if workspace.status == WorkspaceStatus::Running
-            && workspace.runtime_pid.zip(workspace.runtime_starttime_ticks) != expected_runtime
-        {
-            bail!("workspace became running while startup was in progress");
+        // `mark_workspace_starting` recorded the transition before the runtime
+        // was launched. Anything else means a competing operation touched the
+        // workspace while the launch was in flight, so the runtime identity
+        // captured below cannot be trusted as the current one.
+        if workspace.status != WorkspaceStatus::Starting {
+            bail!(
+                "workspace '{}' is {} while a start was in progress; refusing to commit runtime metadata",
+                workspace.id,
+                workspace.status.as_str()
+            );
         }
         workspace.sandbox_rootfs_path = workspace_snapshot.sandbox_rootfs_path.clone();
         workspace.status = WorkspaceStatus::Running;
@@ -165,10 +189,44 @@ pub fn start_workspace_with_security(
             } else {
                 error
             };
+            let _ = mark_workspace_start_failed(state_dir, &sandbox_id, &workspace_id);
             let _ = journal.fail(format!("{failure:#}"));
             Err(failure)
         }
     }
+}
+
+/// Record that a workspace runtime launch has begun.
+fn mark_workspace_starting(
+    state_dir: &std::path::Path,
+    sandbox_id: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    with_registry_mut(state_dir, |registry| {
+        let workspace = registry
+            .sandboxes
+            .get_mut(sandbox_id)
+            .and_then(|sandbox| sandbox.workspaces.get_mut(workspace_id))
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+        workspace.status = WorkspaceStatus::Starting;
+        persist_workspace_metadata(workspace)
+    })
+}
+
+/// Roll a failed launch back to `Stopped`, tearing down anything the partial
+/// launch left behind (workspace storage mounts, cgroups, network, `/tmp`).
+fn mark_workspace_start_failed(
+    state_dir: &std::path::Path,
+    sandbox_id: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    with_registry_mut(state_dir, |registry| {
+        let sandbox = registry
+            .sandboxes
+            .get_mut(sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        set_workspace_stopped(sandbox, workspace_id)
+    })
 }
 
 pub(crate) fn launch_workspace_runtime(

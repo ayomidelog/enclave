@@ -44,10 +44,34 @@ impl FromStr for BootstrapMethod {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxStatus {
+    /// A start or resume transition is in progress.
+    Starting,
     Running,
     Paused,
+    /// A stop transition is in progress.
+    Stopping,
     #[default]
     Stopped,
+}
+
+impl SandboxStatus {
+    /// A lifecycle operation is in flight.
+    pub fn is_transitional(&self) -> bool {
+        matches!(self, Self::Starting | Self::Stopping)
+    }
+
+    /// The sandbox rootfs is expected to be mounted right now.
+    pub fn rootfs_is_mounted(&self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Running | Self::Paused | Self::Stopping
+        )
+    }
+
+    /// Workspaces are expected to be usable.
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Running | Self::Paused)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

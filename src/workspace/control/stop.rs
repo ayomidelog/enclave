@@ -26,6 +26,10 @@ pub fn stop_workspace(
         format!("{}/{}", sandbox_id, workspace_id),
     )?;
     journal.phase("stop_runtime")?;
+    // Record the in-flight transition so an observer sees that teardown is
+    // underway, and so a crash mid-stop leaves evidence instead of a workspace
+    // that still claims to be running.
+    mark_workspace_stopping(state_dir, &sandbox_id, &workspace_id)?;
     let stop_runtime = crate::perf::Timer::new("workspace.stop.runtime");
     if let Some(pid) = current.runtime_pid {
         if let Err(error) = session::stop_session(pid, current.runtime_starttime_ticks) {
@@ -77,11 +81,30 @@ pub fn stop_workspace(
     }
 }
 
+/// Record that teardown of a workspace runtime has begun.
+fn mark_workspace_stopping(
+    state_dir: &std::path::Path,
+    sandbox_id: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    with_registry_mut(state_dir, |registry| {
+        let workspace = registry
+            .sandboxes
+            .get_mut(sandbox_id)
+            .and_then(|sandbox| sandbox.workspaces.get_mut(workspace_id))
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+        workspace.status = WorkspaceStatus::Stopping;
+        persist_workspace_metadata(workspace)
+    })
+}
+
 pub(crate) fn stop_running_workspaces_in_sandbox(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
 ) -> Result<Vec<String>> {
-    let running = with_registry(state_dir, |registry| {
+    // Anything that may own a runtime is a stop target, including workspaces
+    // left in a transitional state by an interrupted lifecycle operation.
+    let targets = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
@@ -90,12 +113,12 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
         Ok(sandbox
             .workspaces
             .values()
-            .filter(|workspace| workspace.status == WorkspaceStatus::Running)
+            .filter(|workspace| workspace.status.may_have_runtime())
             .cloned()
             .collect::<Vec<_>>())
     })?;
 
-    let stop_targets = running
+    let stop_targets = targets
         .iter()
         .filter_map(|workspace| {
             workspace
@@ -103,7 +126,7 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
                 .map(|pid| (pid, workspace.runtime_starttime_ticks))
         })
         .collect::<Vec<_>>();
-    let network_targets = running
+    let network_targets = targets
         .iter()
         .filter_map(|workspace| {
             workspace
@@ -112,7 +135,7 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
                 .map(|ip| (ip, workspace.id.clone()))
         })
         .collect::<Vec<_>>();
-    let network_owner_ids = running
+    let network_owner_ids = targets
         .iter()
         .filter(|workspace| workspace.assigned_ip.is_some())
         .map(|workspace| workspace.id.clone())
@@ -153,7 +176,7 @@ pub(crate) fn stop_running_workspaces_in_sandbox(
     let mut stopped_ids = BTreeSet::new();
     let mut cleanup_jobs = Vec::new();
     let mut failed_ids = Vec::new();
-    for workspace in &running {
+    for workspace in &targets {
         let failed = workspace
             .runtime_pid
             .is_some_and(|pid| stop_result.failed_pids.contains(&pid));
@@ -237,7 +260,7 @@ pub(crate) fn freeze_workspaces_in_sandbox(
     sandbox_selector: &str,
     frozen: bool,
 ) -> Result<()> {
-    let (sandbox_id, has_running_workspace) = with_registry(state_dir, |registry| {
+    let (sandbox_id, has_active_workspace) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
             .sandboxes
@@ -248,13 +271,13 @@ pub(crate) fn freeze_workspaces_in_sandbox(
             sandbox
                 .workspaces
                 .values()
-                .filter(|workspace| workspace.status == WorkspaceStatus::Running)
+                .filter(|workspace| workspace.status.may_have_runtime())
                 .count()
                 > 0,
         ))
     })?;
 
-    if !has_running_workspace {
+    if !has_active_workspace {
         return Ok(());
     }
     let cgroup_path = std::path::PathBuf::from("/sys/fs/cgroup")

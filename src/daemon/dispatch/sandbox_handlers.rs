@@ -72,7 +72,7 @@ pub(super) fn dispatch_sandbox_stop(
         );
     }
     for workspace in workspaces {
-        if workspace.status == crate::workspace::WorkspaceStatus::Running {
+        if workspace.status.is_running() {
             port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
         }
     }
@@ -89,7 +89,7 @@ pub(super) fn dispatch_sandbox_pause(
     let metadata = sandbox::pause_sandbox(&config.state_dir, selector)?;
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     for workspace in workspaces {
-        if workspace.status == crate::workspace::WorkspaceStatus::Running {
+        if workspace.status.is_running() {
             port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
         }
     }
@@ -106,9 +106,7 @@ pub(super) fn dispatch_sandbox_resume(
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     let mut port_failures = Vec::new();
     for workspace in workspaces {
-        if workspace.status == crate::workspace::WorkspaceStatus::Running
-            && !workspace.published_ports.is_empty()
-        {
+        if workspace.status.is_running() && !workspace.published_ports.is_empty() {
             let Some(ip) = workspace.assigned_ip.as_deref() else {
                 port_failures.push(format!("{}: missing workspace IP", workspace.name));
                 continue;

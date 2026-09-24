@@ -20,7 +20,7 @@ pub fn restore_workspace_snapshot(
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
         validate_snapshot_name(snapshot_name)?;
 
-        if workspace.status == WorkspaceStatus::Running {
+        if workspace.status.may_have_runtime() {
             if let Some(pid) = workspace.runtime_pid {
                 session::stop_session(pid, workspace.runtime_starttime_ticks)?;
             }

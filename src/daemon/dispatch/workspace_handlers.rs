@@ -330,7 +330,7 @@ pub(super) fn dispatch_workspace_resize(
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
     let new_disk_bytes = parse_required_disk_bytes(params)?;
     let current = workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-    if current.status == workspace::WorkspaceStatus::Running
+    if current.status.is_running()
         && current
             .limits
             .disk_bytes

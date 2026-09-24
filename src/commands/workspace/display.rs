@@ -282,10 +282,7 @@ pub(crate) fn print_workspace_stats_table(stats: &[WorkspaceStatsReport]) -> Res
 }
 
 fn workspace_status_label(status: &WorkspaceStatus) -> &'static str {
-    match status {
-        WorkspaceStatus::Running => "running",
-        WorkspaceStatus::Stopped => "stopped",
-    }
+    status.as_str()
 }
 
 fn print_workspace_limits(label: &str, limits: &crate::workspace::WorkspaceLimits) {

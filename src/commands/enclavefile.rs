@@ -156,6 +156,9 @@ fn failed_up_rollback_target(
         SandboxStatus::Running => None,
         SandboxStatus::Paused => Some(SandboxStatus::Paused),
         SandboxStatus::Stopped => Some(SandboxStatus::Stopped),
+        // An interrupted transition is resolved by rolling back to stopped,
+        // matching how the daemon reconciles transitional sandboxes.
+        SandboxStatus::Starting | SandboxStatus::Stopping => Some(SandboxStatus::Stopped),
     }
 }
 
@@ -185,7 +188,9 @@ fn rollback_failed_up(
     let (action, description) = match target_status {
         SandboxStatus::Stopped => ("sandbox.stop", "stop"),
         SandboxStatus::Paused => ("sandbox.pause", "pause"),
-        SandboxStatus::Running => return cause,
+        // `failed_up_rollback_target` never returns these, so reaching them
+        // means the sandbox is already where it needs to be.
+        SandboxStatus::Running | SandboxStatus::Starting | SandboxStatus::Stopping => return cause,
     };
     if let Err(error) = send(socket, action, json!({ "sandbox": sandbox_name })) {
         return anyhow::anyhow!(

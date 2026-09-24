@@ -46,7 +46,7 @@ pub fn list_running_workspace_stats(state_dir: &Path) -> Result<Vec<WorkspaceSta
         let mut workspaces = Vec::new();
         for sandbox in registry.sandboxes.values() {
             for workspace in sandbox.workspaces.values() {
-                if workspace.status == WorkspaceStatus::Running {
+                if workspace.status.is_running() {
                     workspaces.push((workspace.clone(), sandbox.metadata.limits.clone()));
                 }
             }

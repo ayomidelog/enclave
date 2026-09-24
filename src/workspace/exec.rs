@@ -11,7 +11,7 @@ use crate::workspace::sanitize_workspace_cwd;
 use super::control::resolve_workspace_id;
 use super::logs;
 use super::session;
-use super::types::{WorkspaceExecResult, WorkspaceMetadata, WorkspaceStatus};
+use super::types::{WorkspaceExecResult, WorkspaceMetadata};
 
 pub fn exec_workspace_command(
     state_dir: &Path,
@@ -45,10 +45,11 @@ pub fn exec_workspace_command(
         Ok(workspace)
     })?;
 
-    if workspace.status != WorkspaceStatus::Running {
+    if !workspace.status.is_running() {
         bail!(
-            "workspace '{}' is stopped; start workspace first",
-            workspace.id
+            "workspace '{}' is {}; start workspace first",
+            workspace.id,
+            workspace.status.as_str()
         );
     }
 
@@ -102,10 +103,11 @@ pub(crate) fn spawn_workspace_command(
     if command.is_empty() {
         bail!("workspace command helper requires a command");
     }
-    if workspace.status != WorkspaceStatus::Running {
+    if !workspace.status.is_running() {
         bail!(
-            "workspace '{}' is stopped; start workspace first",
-            workspace.id
+            "workspace '{}' is {}; start workspace first",
+            workspace.id,
+            workspace.status.as_str()
         );
     }
     let runtime_pid = workspace.runtime_pid.ok_or_else(|| {

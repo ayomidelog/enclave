@@ -3,9 +3,21 @@ use super::*;
 pub fn stop_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata> {
     let mut journal =
         crate::operation::Journal::begin(state_dir, "sandbox.stop", selector.to_string())?;
+    journal.phase("mark_stopping")?;
+    // Record the in-flight transition durably so a crash before the rootfs is
+    // unmounted is visible to the next daemon start, which completes the stop.
+    let sandbox_id = with_registry_mut(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, selector)?;
+        let entry = registry
+            .sandboxes
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
+        entry.metadata.status = SandboxStatus::Stopping;
+        persist_sandbox_metadata(&entry.metadata)?;
+        Ok(sandbox_id)
+    })?;
     journal.phase("unmount_rootfs")?;
     let metadata = match with_registry_mut(state_dir, |registry| {
-        let sandbox_id = resolve_sandbox_id(registry, selector)?;
         let entry = registry
             .sandboxes
             .get_mut(&sandbox_id)

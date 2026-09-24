@@ -28,6 +28,7 @@ pub fn init_storage(state_dir: &Path) -> Result<()> {
     ensure_registry(state_dir)?;
     repair_registry(state_dir, false)?;
     restore_shared_rootfs_mounts(state_dir)?;
+    reconcile_sandbox_states(state_dir)?;
     reconcile_workspace_states(state_dir)?;
     Ok(())
 }
@@ -57,6 +58,49 @@ fn restore_shared_rootfs_mounts(state_dir: &Path) -> Result<()> {
                 metadata.id
             );
         }
+    }
+    Ok(())
+}
+
+/// Roll back sandboxes left in a transitional state by an interrupted start or
+/// stop. Both transitions end in `stopped`, and any rootfs bind mount from the
+/// interrupted operation is removed first.
+fn reconcile_sandbox_states(state_dir: &Path) -> Result<()> {
+    let transitional = with_registry(state_dir, |registry| {
+        Ok(registry
+            .sandboxes
+            .values()
+            .filter(|entry| entry.metadata.status.is_transitional())
+            .map(|entry| {
+                let mut metadata = entry.metadata.clone();
+                normalize_sandbox_metadata(&mut metadata);
+                metadata
+            })
+            .collect::<Vec<_>>())
+    })?;
+
+    for metadata in transitional {
+        let interrupted = metadata.status.clone();
+        if let Err(err) = mounts::ensure_rootfs_unmounted(&metadata) {
+            tracing::warn!(
+                "reconcile: failed to unmount rootfs for interrupted {:?} sandbox '{}': {err:#}",
+                interrupted,
+                metadata.id
+            );
+            continue;
+        }
+        with_registry_mut(state_dir, |registry| {
+            let Some(entry) = registry.sandboxes.get_mut(&metadata.id) else {
+                return Ok(());
+            };
+            entry.metadata.status = SandboxStatus::Stopped;
+            persist_sandbox_metadata(&entry.metadata)
+        })?;
+        tracing::warn!(
+            "reconcile: rolled back interrupted {:?} transition for sandbox '{}'",
+            interrupted,
+            metadata.id
+        );
     }
     Ok(())
 }

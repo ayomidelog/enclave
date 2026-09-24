@@ -16,7 +16,6 @@ use std::time::Duration;
 use crate::policy;
 use crate::protocol::{Request, Response};
 use crate::sandbox;
-use crate::workspace::WorkspaceStatus;
 use anyhow::{bail, Context, Result};
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
@@ -307,7 +306,7 @@ fn reconcile_published_ports(
 ) -> Result<()> {
     let workspaces = crate::workspace::list_workspaces(state_dir, None)?;
     for workspace in workspaces {
-        if workspace.status != WorkspaceStatus::Running || workspace.published_ports.is_empty() {
+        if !workspace.status.is_running() || workspace.published_ports.is_empty() {
             continue;
         }
 

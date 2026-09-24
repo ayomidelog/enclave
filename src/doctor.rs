@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::operation::OperationStatus;
 use crate::registry::{ensure_registry, repair_registry, with_registry};
 use crate::sandbox::cgroup;
-use crate::workspace::WorkspaceStatus;
 
 mod cgroups;
 mod network;
@@ -87,10 +86,7 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
             // A shared-base rootfs overlay is mounted for the sandbox's whole
             // lifetime, running or not, so it is never a stale mount.
             active_roots.push(PathBuf::from(&sandbox.metadata.rootfs_path));
-            if matches!(
-                sandbox.metadata.status,
-                crate::sandbox::SandboxStatus::Running | crate::sandbox::SandboxStatus::Paused
-            ) {
+            if sandbox.metadata.status.rootfs_is_mounted() {
                 active_roots.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
             }
             for workspace in sandbox.workspaces.values() {
@@ -243,11 +239,7 @@ fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
                         // Shared-base rootfs overlays stay mounted for the whole
                         // sandbox lifetime, so they are expected at any status.
                         paths.push(PathBuf::from(&sandbox.metadata.rootfs_path));
-                        if matches!(
-                            sandbox.metadata.status,
-                            crate::sandbox::SandboxStatus::Running
-                                | crate::sandbox::SandboxStatus::Paused
-                        ) {
+                        if sandbox.metadata.status.rootfs_is_mounted() {
                             paths.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
                         }
                         for workspace in sandbox.workspaces.values() {
@@ -305,11 +297,16 @@ fn check_stale_cgroups(state_dir: &Path) -> DoctorCheck {
 fn check_stale_runtime_state(state_dir: &Path) -> DoctorCheck {
     let name = "stale_runtime_state";
 
-    match with_registry(state_dir, |registry| {
+    let (stale_count, transitional) = match with_registry(state_dir, |registry| {
         let mut stale_count = 0usize;
+        let mut transitional = Vec::new();
         for sandbox in registry.sandboxes.values() {
             for workspace in sandbox.workspaces.values() {
-                if workspace.status != WorkspaceStatus::Running {
+                if workspace.status.is_transitional() {
+                    transitional.push(workspace.id.clone());
+                    continue;
+                }
+                if !workspace.status.is_running() {
                     continue;
                 }
                 let pid_alive = workspace
@@ -326,19 +323,30 @@ fn check_stale_runtime_state(state_dir: &Path) -> DoctorCheck {
                 }
             }
         }
-        Ok(stale_count)
+        Ok((stale_count, transitional))
     }) {
-        Ok(0) => DoctorCheck::ok(name, "all running workspaces have active session processes"),
-        Ok(count) => DoctorCheck::warn(
-            name,
-            &format!(
-                "{} workspace(s) marked running but session process is gone; \
-                 run 'enclave registry repair' to reconcile",
-                count
-            ),
-        ),
-        Err(err) => DoctorCheck::warn(name, &format!("failed to check: {err:#}")),
+        Ok(value) => value,
+        Err(err) => return DoctorCheck::warn(name, &format!("failed to check: {err:#}")),
+    };
+
+    let mut findings = Vec::new();
+    if stale_count > 0 {
+        findings.push(format!(
+            "{stale_count} workspace(s) marked running but session process is gone"
+        ));
     }
+    if !transitional.is_empty() {
+        findings.push(format!(
+            "{} workspace(s) have an unfinished lifecycle transition ({})",
+            transitional.len(),
+            transitional.join(", ")
+        ));
+    }
+    if findings.is_empty() {
+        return DoctorCheck::ok(name, "all running workspaces have active session processes");
+    }
+    findings.push("run 'enclave registry repair' to reconcile".to_string());
+    DoctorCheck::warn(name, &findings.join("; "))
 }
 
 fn check_operation_journal(state_dir: &Path) -> DoctorCheck {

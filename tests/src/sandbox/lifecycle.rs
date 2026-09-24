@@ -164,6 +164,85 @@ fn destroy_with_missing_sandbox_path_preserves_live_workspace_runtime_record() {
     let _ = fs::remove_dir_all(&state_dir);
 }
 
+fn transitional_sandbox(
+    state_dir: &std::path::Path,
+    id: &str,
+    status: SandboxStatus,
+) -> SandboxMetadata {
+    let sandbox_path = state_dir.join("sandboxes").join(id);
+    fs::create_dir_all(&sandbox_path).unwrap();
+    SandboxMetadata {
+        id: id.to_string(),
+        name: id.to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "https://deb.debian.org/debian".to_string(),
+        bootstrap_method: BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_path.to_string_lossy().to_string(),
+        rootfs_path: sandbox_path.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
+        mounted_rootfs_path: sandbox_path
+            .join("runtime")
+            .join("rootfs.mnt")
+            .to_string_lossy()
+            .to_string(),
+        workspaces_path: sandbox_path
+            .join("workspaces")
+            .to_string_lossy()
+            .to_string(),
+        home_base_path: sandbox_path.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status,
+    }
+}
+
+#[test]
+fn reconcile_rolls_back_interrupted_sandbox_transitions() {
+    let state_dir =
+        std::env::temp_dir().join(format!("enclave-sandbox-reconcile-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&state_dir);
+    crate::registry::ensure_registry(&state_dir).unwrap();
+
+    let starting = transitional_sandbox(&state_dir, "sandbox-starting", SandboxStatus::Starting);
+    let stopping = transitional_sandbox(&state_dir, "sandbox-stopping", SandboxStatus::Stopping);
+    let running = transitional_sandbox(&state_dir, "sandbox-running", SandboxStatus::Running);
+    with_registry_mut(&state_dir, |registry| {
+        for metadata in [&starting, &stopping, &running] {
+            registry.sandboxes.insert(
+                metadata.id.clone(),
+                RegistrySandbox {
+                    metadata: metadata.clone(),
+                    workspaces: BTreeMap::new(),
+                },
+            );
+        }
+        Ok(())
+    })
+    .unwrap();
+
+    reconcile_sandbox_states(&state_dir).unwrap();
+
+    with_registry(&state_dir, |registry| {
+        assert_eq!(
+            registry.sandboxes[&starting.id].metadata.status,
+            SandboxStatus::Stopped
+        );
+        assert_eq!(
+            registry.sandboxes[&stopping.id].metadata.status,
+            SandboxStatus::Stopped
+        );
+        // A settled sandbox is never touched by the reconcile pass.
+        assert_eq!(
+            registry.sandboxes[&running.id].metadata.status,
+            SandboxStatus::Running
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let _ = fs::remove_dir_all(&state_dir);
+}
+
 #[test]
 fn destroy_with_live_workspace_retains_sandbox_and_registry() {
     let state_dir = std::env::temp_dir().join(format!(

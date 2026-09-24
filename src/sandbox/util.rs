@@ -196,11 +196,7 @@ pub fn ensure_sandbox_layout(metadata: &SandboxMetadata) -> Result<()> {
 }
 
 pub fn effective_rootfs_path(metadata: &SandboxMetadata) -> String {
-    if matches!(
-        metadata.status,
-        super::types::SandboxStatus::Running | super::types::SandboxStatus::Paused
-    ) && !metadata.mounted_rootfs_path.is_empty()
-    {
+    if metadata.status.is_active() && !metadata.mounted_rootfs_path.is_empty() {
         return metadata.mounted_rootfs_path.clone();
     }
     metadata.rootfs_path.clone()

@@ -487,7 +487,7 @@ fn update_workspace_definition_with_runtime(
         return workspace::workspace_metadata(state_dir, &updated.sandbox_id, &updated.id);
     }
 
-    let apply_result = if updated.status == workspace::WorkspaceStatus::Running {
+    let apply_result = if updated.status.is_running() {
         let workspace_ip = updated.assigned_ip.as_deref().ok_or_else(|| {
             anyhow::anyhow!(
                 "workspace '{}' is running without networking; restart it before publishing ports",
@@ -566,7 +566,7 @@ fn rollback_workspace_definition_update(
         );
     }
 
-    if previous.status == workspace::WorkspaceStatus::Running {
+    if previous.status.is_running() {
         if let Some(workspace_ip) = previous.assigned_ip.as_deref() {
             let Some(runtime_pid) = previous.runtime_pid else {
                 port_publisher.clear_workspace_ports(&previous.sandbox_id, &previous.id);

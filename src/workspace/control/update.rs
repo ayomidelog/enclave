@@ -108,6 +108,13 @@ pub fn resize_workspace_disk_with_security(
             .get(&workspace_id)
             .cloned()
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_selector))?;
+        if current.status.is_transitional() {
+            bail!(
+                "workspace '{}' is {}; wait for the current operation to finish before resizing",
+                current.name,
+                current.status.as_str()
+            );
+        }
         let previous_disk_bytes = current.limits.disk_bytes.ok_or_else(|| {
             anyhow!(
                 "workspace '{}' has no Enclave-managed disk allocation; configure disk_mb when creating it",
@@ -130,7 +137,7 @@ pub fn resize_workspace_disk_with_security(
             });
         }
 
-        let was_running = current.status == WorkspaceStatus::Running;
+        let was_running = current.status.is_running();
         if was_running {
             if let Some(pid) = current.runtime_pid {
                 session::stop_session(pid, current.runtime_starttime_ticks).with_context(|| {

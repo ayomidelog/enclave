@@ -12,7 +12,7 @@ use crate::sandbox::resolve_sandbox_id;
 
 use super::control::resolve_workspace_id;
 use super::session;
-use super::types::{WorkspaceCpResult, WorkspaceMetadata, WorkspaceStatus};
+use super::types::{WorkspaceCpResult, WorkspaceMetadata};
 
 use self::path::{
     validate_direction_paths, validate_host_destination, validate_host_source, Direction,
@@ -160,10 +160,11 @@ fn load_workspace(
 }
 
 fn ensure_workspace_running(workspace: &WorkspaceMetadata) -> Result<()> {
-    if workspace.status != WorkspaceStatus::Running {
+    if !workspace.status.is_running() {
         bail!(
-            "workspace '{}' is stopped; start workspace first",
-            workspace.id
+            "workspace '{}' is {}; start workspace first",
+            workspace.id,
+            workspace.status.as_str()
         );
     }
     let pid = workspace.runtime_pid.ok_or_else(|| {
