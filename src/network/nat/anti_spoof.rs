@@ -1,6 +1,6 @@
 use super::primitives::{
     comment_args, detect_iptables, ensure_forward_rule_first, ensure_input_rule_first,
-    remove_filter_rule,
+    remove_filter_rule, split_rule_args,
 };
 use super::*;
 
@@ -72,20 +72,46 @@ pub(in crate::network) fn chains_with_anti_spoof_rule(
     veth_host: &str,
     assigned_ip: &str,
 ) -> Vec<&'static str> {
-    let signature = anti_spoof_signature(veth_host, assigned_ip);
     ["INPUT", "FORWARD"]
         .into_iter()
         .filter(|chain| {
-            dump.lines()
-                .any(|line| line.starts_with(&format!("-A {chain} ")) && line.contains(&signature))
+            dump.lines().any(|line| {
+                let Some(rule) = line.strip_prefix(&format!("-A {chain} ")) else {
+                    return false;
+                };
+                is_anti_spoof_rule(rule, veth_host, assigned_ip)
+            })
         })
         .collect()
 }
 
-/// The interface and source pattern that identifies an Enclave anti-spoofing
-/// rule regardless of which comment or version installed it.
-pub(in crate::network) fn anti_spoof_signature(veth_host: &str, assigned_ip: &str) -> String {
-    format!("-i {veth_host} ! -s {assigned_ip}/32")
+/// Whether one `iptables -S` rule body is the anti-spoofing rule for this
+/// interface and address.
+///
+/// The rule is identified by what it matches rather than by the argument order it
+/// was installed with. `iptables` normalizes a negated match to the front of the
+/// rule, so a rule added as `-i <veth> ! -s <ip>/32` is printed as
+/// `! -s <ip>/32 -i <veth>`. Comparing against the installed form would match
+/// nothing, which makes both the removal and its absence check vacuous.
+pub(in crate::network) fn is_anti_spoof_rule(
+    rule: &str,
+    veth_host: &str,
+    assigned_ip: &str,
+) -> bool {
+    let args = split_rule_args(rule);
+    let target = args
+        .windows(2)
+        .any(|pair| pair[0] == "-j" && pair[1] == "DROP");
+    if !target {
+        return false;
+    }
+    let interface_matches = args
+        .windows(2)
+        .any(|pair| pair[0] == "-i" && pair[1] == veth_host);
+    let negated_source_matches = args.windows(3).any(|triple| {
+        triple[0] == "!" && triple[1] == "-s" && triple[2] == format!("{assigned_ip}/32")
+    });
+    interface_matches && negated_source_matches
 }
 
 pub(in crate::network) fn run_iptables_dump(iptables: &str) -> Result<String> {

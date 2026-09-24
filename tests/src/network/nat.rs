@@ -22,6 +22,32 @@ fn anti_spoof_rule_uses_interface_and_assigned_ip() {
     );
 }
 
+/// `iptables` normalizes a negated match to the front of the rule, so the rule
+/// it prints is not the argument list Enclave installed. Matching on the
+/// installed order found nothing, which made both the removal and its absence
+/// check vacuous: every workspace start leaked two rules and the stop still
+/// reported that the network had been released.
+#[test]
+fn anti_spoof_detection_matches_the_order_iptables_prints() {
+    let normalized = "-P INPUT ACCEPT\n\
+-A INPUT ! -s 10.200.0.4/32 -i veth-4-0a1b2c -m comment --comment \"enclave:session-a\" -j DROP\n\
+-A FORWARD ! -s 10.200.0.4/32 -i veth-4-0a1b2c -m comment --comment \"enclave:session-a\" -j DROP\n";
+    assert_eq!(
+        chains_with_anti_spoof_rule(normalized, "veth-4-0a1b2c", "10.200.0.4"),
+        vec!["INPUT", "FORWARD"]
+    );
+    // The interface and address alone are not enough: the source must be negated
+    // and the target must be DROP.
+    let allow_same_interface = "-A INPUT -i veth-4-0a1b2c -j ACCEPT\n";
+    assert!(
+        chains_with_anti_spoof_rule(allow_same_interface, "veth-4-0a1b2c", "10.200.0.4").is_empty()
+    );
+    let unnegated_source = "-A INPUT -s 10.200.0.4/32 -i veth-4-0a1b2c -j DROP\n";
+    assert!(
+        chains_with_anti_spoof_rule(unnegated_source, "veth-4-0a1b2c", "10.200.0.4").is_empty()
+    );
+}
+
 #[test]
 fn anti_spoof_rule_tags_enclave_ownership() {
     let rule = anti_spoof_rule_args("veth-encl10", "10.200.0.10", Some("session-abc"));
