@@ -27,14 +27,7 @@ pub(super) fn shutdown_requested(shutdown: &Arc<AtomicBool>) -> bool {
 /// a stuck or very long operation cannot hold the daemon open. The journals
 /// make the abandoned work recoverable, so waiting forever buys nothing.
 pub(super) fn shutdown_grace() -> Duration {
-    const DEFAULT_SECS: u64 = 30;
-    const MAX_SECS: u64 = 600;
-    std::env::var("ENCLAVE_SHUTDOWN_GRACE_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| (1..=MAX_SECS).contains(value))
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(DEFAULT_SECS))
+    crate::deadlines::daemon_shutdown_grace().get()
 }
 
 /// Name every operation shutdown had to abandon, with how to recover it.

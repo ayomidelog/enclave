@@ -148,7 +148,12 @@ pub fn start_session(
     }
 
     let ready = crate::perf::Timer::new("session.ready");
-    wait_for_session_ready(&ready_file, &pid_file, &log_file, START_TIMEOUT)?;
+    wait_for_session_ready(
+        &ready_file,
+        &pid_file,
+        &log_file,
+        crate::deadlines::session_ready().get(),
+    )?;
     drop(ready);
     let pid = process::read_pid_file(&pid_file)?;
     if !process_alive(pid) {

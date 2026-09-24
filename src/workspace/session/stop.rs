@@ -55,7 +55,10 @@ where
         process::send_signal(*pid, libc::SIGTERM)?;
     }
     after_signal();
-    wait_for_targets_to_exit(&pending, STOP_TIMEOUT);
+    // Dedicated cgroups provide a fast fallback for the remaining process tree,
+    // so the graceful window is short: every workspace would otherwise pay a
+    // fixed multi-second delay before cgroup.kill is used.
+    wait_for_targets_to_exit(&pending, crate::deadlines::runtime_term_grace().get());
 
     let mut remaining = collect_running_targets(&pending);
     for (pid, _) in &remaining {
@@ -72,7 +75,7 @@ where
             process::send_signal(*pid, libc::SIGKILL)?;
         }
     }
-    wait_for_targets_to_exit(&remaining, POST_KILL_TIMEOUT);
+    wait_for_targets_to_exit(&remaining, crate::deadlines::runtime_kill_grace().get());
 
     // Some kernels report a successful cgroup.kill write before the leader
     // disappears. Keep the PID/start-time guard and issue one direct fallback
@@ -85,7 +88,7 @@ where
             process::send_signal(*pid, libc::SIGKILL)?;
         }
     }
-    wait_for_targets_to_exit(&still_running, POST_KILL_TIMEOUT);
+    wait_for_targets_to_exit(&still_running, crate::deadlines::runtime_kill_grace().get());
 
     for (pid, expected_starttime_ticks) in pending {
         if process_matches(pid, expected_starttime_ticks) {

@@ -17,7 +17,6 @@ use super::namespace_cache::{duplicate_for_child, raw_fds};
 use super::process_matches;
 use crate::workspace::types::WorkspaceMetadata;
 
-const HELPER_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const MAX_HELPER_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -207,9 +206,10 @@ fn start_helper(
     drop(fds);
     drop(pidfd);
 
-    let started = Instant::now();
+    let start_timeout = crate::deadlines::helper_start().get();
     let readiness_pidfd = open_process_pidfd(child.id());
-    while started.elapsed() < HELPER_START_TIMEOUT {
+    let started = Instant::now();
+    while started.elapsed() < start_timeout {
         if socket.exists() {
             if let Some(fd) = readiness_pidfd {
                 unsafe { libc::close(fd) };
@@ -227,7 +227,7 @@ fn start_helper(
         {
             break;
         }
-        let remaining = HELPER_START_TIMEOUT.saturating_sub(started.elapsed());
+        let remaining = start_timeout.saturating_sub(started.elapsed());
         wait_for_helper_progress(readiness_pidfd, remaining);
     }
     if let Some(fd) = readiness_pidfd {

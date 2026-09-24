@@ -28,7 +28,6 @@ pub(crate) const WORKSPACE_TMP_DIR: &str = ".enclave-tmp";
 
 /// Backing directory that older workspaces used for the `/tmp` mount.
 pub(crate) const LEGACY_WORKSPACE_TMP_DIR: &str = "tmp";
-const LOOP_DETACH_TIMEOUT: Duration = Duration::from_secs(2);
 const LOOP_DETACH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 static DISK_BACKEND_CHECK: OnceLock<Result<(), String>> = OnceLock::new();
 

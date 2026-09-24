@@ -126,7 +126,7 @@ pub(crate) fn verify_disk_image_loop_detached(workspace: &WorkspaceMetadata) -> 
     // The kernel releases an autoclear loop device asynchronously once the last
     // mount reference is gone, so poll briefly instead of failing a stop that is
     // still tearing down.
-    let deadline = Instant::now() + LOOP_DETACH_TIMEOUT;
+    let deadline = Instant::now() + crate::deadlines::loop_detach().get();
     let mut devices = loop_devices_for_image(&image)?;
     while !devices.is_empty() && Instant::now() < deadline {
         thread::sleep(LOOP_DETACH_POLL_INTERVAL);

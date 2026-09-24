@@ -96,6 +96,9 @@ pub(crate) fn dispatch(
             // The last lifecycle operation the daemon ran, so a status report can
             // name it without the operator reading the journal directory.
             "last_operation": crate::operation::latest(&config.state_dir)?,
+            // The deadlines actually in force, so a wait that ended early or late
+            // can be explained without reading the environment of the daemon.
+            "deadlines": crate::deadlines::describe_all(),
             "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {

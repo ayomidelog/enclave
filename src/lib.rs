@@ -13,6 +13,7 @@ pub mod workspace;
 mod client;
 mod config;
 mod daemon;
+mod deadlines;
 mod doctor;
 mod network;
 pub mod operation;

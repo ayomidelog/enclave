@@ -83,8 +83,45 @@ pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Resu
                 workspaces.len()
             );
             report_daemon_activity(&health);
+            report_deadline_overrides(&health);
             Ok(())
         }
+    }
+}
+
+/// Print the deadlines an operator has overridden.
+///
+/// A wait that ends sooner or later than the documented default is otherwise
+/// invisible: the operator sees the consequence (a start that failed, a stop that
+/// took longer) without the cause. Only the overrides are printed, because the
+/// defaults are the documented behaviour and printing seven of them on every
+/// status call would bury the one that changed.
+fn report_deadline_overrides(health: &Value) {
+    let Some(deadlines) = health.get("deadlines").and_then(Value::as_array) else {
+        return;
+    };
+    let overridden = deadlines
+        .iter()
+        .filter(|deadline| deadline.get("overridden") == Some(&Value::Bool(true)))
+        .collect::<Vec<_>>();
+    if overridden.is_empty() {
+        return;
+    }
+    for deadline in overridden {
+        let field = |name: &str| deadline.get(name).and_then(Value::as_str).unwrap_or("-");
+        let value = deadline
+            .get("value_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let default = deadline
+            .get("default_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        println!(
+            "deadline: {} is {value}ms (default {default}ms), set by {}",
+            field("name"),
+            field("variable"),
+        );
     }
 }
 

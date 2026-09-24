@@ -35,12 +35,6 @@ pub(crate) use security::{
 };
 pub(crate) use userns::{detect_user_namespace_mode, UserNamespaceMode};
 
-const START_TIMEOUT: Duration = Duration::from_secs(5);
-// Dedicated cgroups provide a fast fallback for the remaining process tree.
-// Keep graceful shutdown short so every workspace does not pay a fixed
-// multi-second delay before cgroup.kill is used.
-const STOP_TIMEOUT: Duration = Duration::from_millis(500);
-const POST_KILL_TIMEOUT: Duration = Duration::from_millis(500);
 const SESSION_HELPER_BASENAME: &str = "session-helper";
 const SELF_EXE_PATH: &str = "/proc/self/exe";
 const HELPER_OVERRIDE_ENV: &str = "ENCLAVE_SELF_EXE";

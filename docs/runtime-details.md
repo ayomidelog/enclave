@@ -80,7 +80,25 @@ Numbers vary by host hardware, suite, and setup commands. The key tradeoff: one 
 | `ENCLAVE_CONTROL_WORKERS` | 6 | Daemon workers serving lifecycle and read requests. |
 | `ENCLAVE_TRANSFER_WORKERS` | 2 | Daemon workers serving transfers. |
 | `ENCLAVE_SHUTDOWN_GRACE_SECS` | 30 | How long shutdown waits for running lifecycle operations before reporting them incomplete. Accepted in the range 1 to 600. |
-| `ENCLAVE_HOST_COMMAND_TIMEOUT_SECS` | per command | Overrides the deadline for host commands. |
+| `ENCLAVE_HOST_COMMAND_TIMEOUT_SECS` | 30 | Deadline for a host command that does not set its own. Accepted in the range 1 to 3600. |
+| `ENCLAVE_SESSION_READY_MS` | 5000 | How long a launched runtime gets to publish its pid and ready files. Accepted in the range 1 to 120000. |
+| `ENCLAVE_RUNTIME_TERM_GRACE_MS` | 500 | How long a runtime gets to exit after `SIGTERM` before it is killed. Accepted in the range 1 to 30000. |
+| `ENCLAVE_RUNTIME_KILL_GRACE_MS` | 500 | How long a killed runtime gets to disappear before the stop reports failure. Accepted in the range 1 to 30000. |
+| `ENCLAVE_LOOP_DETACH_MS` | 2000 | How long a workspace image's loop device gets to detach after its mount is released. Accepted in the range 1 to 60000. |
+| `ENCLAVE_HELPER_START_MS` | 5000 | How long the persistent command helper gets to accept a connection. Accepted in the range 1 to 60000. |
+
+Every lifecycle wait is bounded and each bound has a hard ceiling, so a value
+past the ceiling is clamped rather than honoured. A value that does not parse,
+or that is zero, is ignored with a warning and the default is used. Values are
+read when they are used, so an override applies to the next operation without a
+daemon restart, and `daemon.health` reports the whole table with each value's
+default, ceiling, and whether an operator set it. `enclave daemon status` prints
+the overrides, which is what makes a start that failed on a short deadline
+distinguishable from a start that failed on its own.
+
+Deadlines for jobs that are minutes long and have their own supervision —
+`debootstrap`, rootfs copies, snapshot archives — are not in this table. They are
+bounded where the job is defined.
 
 Shutdown stops accepting requests, waits up to the grace period for the lifecycle
 operations already running, and then logs each one it left behind with its

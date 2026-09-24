@@ -6,22 +6,15 @@
 
 use std::time::Duration;
 
-use super::{HostCommandError, DEFAULT_TIMEOUT, MAX_TIMEOUT};
+use super::HostCommandError;
 
+/// The deadline for a command that does not set its own.
+///
+/// The value and its clamp live in the deadline table with every other lifecycle
+/// bound, so an operator reads and sets all of them the same way and daemon health
+/// reports the whole set.
 pub(crate) fn configured_timeout() -> Duration {
-    match std::env::var("ENCLAVE_HOST_COMMAND_TIMEOUT_SECS") {
-        Ok(value) => match value.parse::<u64>() {
-            Ok(seconds) if seconds > 0 => Duration::from_secs(seconds).min(MAX_TIMEOUT),
-            _ => {
-                tracing::warn!(
-                    "ignoring ENCLAVE_HOST_COMMAND_TIMEOUT_SECS value {value}; using {:?}",
-                    DEFAULT_TIMEOUT
-                );
-                DEFAULT_TIMEOUT
-            }
-        },
-        Err(_) => DEFAULT_TIMEOUT,
-    }
+    crate::deadlines::host_command().get()
 }
 
 /// Resolve a program the way a shell would, without starting one.
