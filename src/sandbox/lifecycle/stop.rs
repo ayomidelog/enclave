@@ -17,13 +17,31 @@ pub fn stop_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata>
         Ok(sandbox_id)
     })?;
     journal.phase("unmount_rootfs")?;
+    // Unmounting is a slow host operation, so it runs outside the registry lock:
+    // holding the lock across it would stall every other sandbox's requests for
+    // the duration. The snapshot is read under the lock and the result committed
+    // under it again.
+    let snapshot = with_registry(state_dir, |registry| {
+        let entry = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
+        let mut metadata = entry.metadata.clone();
+        normalize_sandbox_metadata(&mut metadata);
+        Ok(metadata)
+    })?;
+    if let Err(error) = mounts::ensure_rootfs_unmounted(&snapshot) {
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
+    }
     let metadata = match with_registry_mut(state_dir, |registry| {
         let entry = registry
             .sandboxes
             .get_mut(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
+        // Normalize here too, so the persisted metadata carries the resolved
+        // paths exactly as it did when the unmount ran under the lock.
         normalize_sandbox_metadata(&mut entry.metadata);
-        mounts::ensure_rootfs_unmounted(&entry.metadata)?;
         entry.metadata.status = SandboxStatus::Stopped;
         persist_sandbox_metadata(&entry.metadata)?;
         Ok(entry.metadata.clone())
