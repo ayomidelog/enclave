@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use super::{handle_client, DaemonConfig};
+use super::request::handle_client;
+use super::DaemonConfig;
 
 const CONTROL_WORKER_COUNT: usize = 6;
 const TRANSFER_WORKER_COUNT: usize = 2;

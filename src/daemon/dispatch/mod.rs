@@ -290,7 +290,7 @@ pub(crate) fn dispatch(
         }
         Action::Shutdown => {
             shutdown.store(true, Ordering::SeqCst);
-            super::SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
+            super::shutdown::SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
             Ok(json!({"status": "shutting_down"}))
         }
     }

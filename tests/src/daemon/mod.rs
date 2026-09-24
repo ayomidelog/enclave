@@ -1,4 +1,5 @@
-use super::{prepare_runtime_paths, wait_for_listener};
+use super::socket::prepare_runtime_paths;
+use super::wait_for_listener;
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;

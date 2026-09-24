@@ -1,38 +1,58 @@
+//! The sandbox daemon: its entry point, its accept loop, and its lifecycle.
+//!
+//! The daemon owns the configured state directory through a lock file, serves
+//! newline-delimited JSON requests over a Unix socket, and is the only process
+//! that mutates the registry or the host resources a workspace owns. Each concern
+//! lives in its own module:
+//!
+//! - `socket` prepares and removes the socket and pid file.
+//! - `request` handles one client request, including its operation id.
+//! - `shutdown` owns the signals, the drain deadline, and the report.
+//! - `workers` runs the bounded request worker pools.
+//! - `leases` serializes overlapping lifecycle operations.
+//! - `active_operations` records the operations running right now.
+//! - `ports` re-establishes the published ports of a running workspace.
+
 mod active_operations;
 mod dispatch;
 mod leases;
+mod ports;
 mod rate_limiter;
+mod request;
 mod services;
+mod shutdown;
+mod socket;
 pub(crate) mod state_lock;
 mod workers;
 
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::os::unix::net::UnixListener;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::policy;
-use crate::protocol::{Request, Response};
-
-use crate::operation;
-use crate::sandbox;
 use anyhow::{bail, Context, Result};
-use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
-use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
+
+use crate::policy;
+use crate::sandbox;
 
 use rate_limiter::RateLimiter;
+use shutdown::shutdown_requested;
 
-const MAX_REQUEST_BYTES: usize = 64 * 1024;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(2);
 const RATE_LIMIT_MAX_REQUESTS: usize = 120;
 const RATE_LIMIT_GLOBAL_MAX_REQUESTS: usize = 600;
-static SIGNAL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+/// Longest shutdown waits for a worker to finish a request it already started.
+///
+/// The lifecycle drain has its own, longer deadline; by the time this runs the
+/// only work left is a request that ignored the drain or a read that will not
+/// return. Waiting longer than a moment for those buys nothing.
+const WORKER_JOIN_GRACE: Duration = Duration::from_secs(1);
+
+/// Everything the daemon needs to know about where it lives.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
@@ -44,11 +64,11 @@ pub struct DaemonConfig {
 }
 
 pub fn run_daemon(config: DaemonConfig) -> Result<()> {
-    install_signal_handlers()?;
+    shutdown::install_signal_handlers()?;
     let _state_lock = state_lock::acquire_state_lock(&config.state_dir, &config.socket_path)?;
     sandbox::init_storage(&config.state_dir)?;
     policy::ensure_policy(&config.state_dir)?;
-    prepare_runtime_paths(&config.socket_path, &config.pid_file)?;
+    socket::prepare_runtime_paths(&config.socket_path, &config.pid_file)?;
     let services = services::DaemonServices {
         rate_limiter: Arc::new(RateLimiter::with_global_limit(
             RATE_LIMIT_WINDOW,
@@ -59,7 +79,7 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         leases: Arc::new(leases::LifecycleLeases::default()),
         active_operations: Arc::new(active_operations::ActiveOperations::default()),
     };
-    reconcile_published_ports(&config.state_dir, &services.port_publisher)?;
+    ports::reconcile_published_ports(&config.state_dir, &services.port_publisher)?;
 
     let listener = UnixListener::bind(&config.socket_path)
         .with_context(|| format!("failed to bind socket {}", config.socket_path.display()))?;
@@ -70,24 +90,47 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         .with_context(|| format!("failed to write pid file {}", config.pid_file.display()))?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let serve_result = serve(listener, &config, &shutdown, &services);
-    let workers = match serve_result {
-        Ok(workers) => Some(workers),
+    let workers = match serve(listener, &config, &shutdown, &services) {
+        Ok(workers) => workers,
         Err(err) => {
             tracing::error!("daemon accept loop failed: {err:#}");
-            None
+            // Drain and clean up before returning the error, so a failed accept
+            // loop does not leave a stale socket that looks like a live daemon.
+            finish_shutdown(&services, None);
+            if let Err(cleanup) = socket::cleanup_files(&config.socket_path, &config.pid_file) {
+                tracing::warn!("daemon cleanup failed: {cleanup:#}");
+            }
+            return Err(err);
         }
     };
 
-    // Shutdown stops accepting new requests, waits a bounded time for the
-    // operations already running, and then names whatever is left. Their
-    // journals survive, so the next daemon start finishes or rolls back the
-    // interrupted work; this report is what makes that visible now.
-    let grace = shutdown_grace();
+    finish_shutdown(&services, Some(workers));
+
+    drop(services);
+    crate::network::cleanup_host_networking();
+
+    if let Err(err) = socket::cleanup_files(&config.socket_path, &config.pid_file) {
+        tracing::warn!("daemon cleanup failed: {err:#}");
+    }
+    Ok(())
+}
+
+/// Drain the running operations, report what did not finish, and join the workers.
+///
+/// Shutdown stops accepting new requests, waits a bounded time for the operations
+/// already running, and then names whatever is left. Their journals survive, so
+/// the next daemon start finishes or rolls back the interrupted work; this report
+/// is what makes that visible now.
+fn finish_shutdown(
+    services: &services::DaemonServices,
+    workers: Option<workers::RequestWorkerPool>,
+) {
+    let grace = shutdown::shutdown_grace();
     let remaining = services.active_operations.wait_for_drain(grace);
-    report_incomplete_operations(&remaining, grace);
+    shutdown::report_incomplete_operations(&remaining, grace);
+
     if let Some(workers) = workers {
-        let unfinished = workers.finish_within(Duration::from_secs(1));
+        let unfinished = workers.finish_within(WORKER_JOIN_GRACE);
         if unfinished > 0 {
             tracing::error!(
                 "daemon shutdown left {} request worker(s) still running",
@@ -95,80 +138,6 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
             );
         }
     }
-
-    drop(services);
-    crate::network::cleanup_host_networking();
-
-    if let Err(err) = cleanup_files(&config.socket_path, &config.pid_file) {
-        tracing::warn!("daemon cleanup failed: {err:#}");
-    }
-    Ok(())
-}
-
-fn prepare_runtime_paths(socket_path: &Path, pid_file: &Path) -> Result<()> {
-    if let Some(parent) = socket_path.parent() {
-        crate::fsutil::ensure_secure_dir(parent)?;
-    }
-    if let Some(parent) = pid_file.parent() {
-        crate::fsutil::ensure_secure_dir(parent)?;
-    }
-    if socket_path.exists() {
-        let metadata = fs::symlink_metadata(socket_path)
-            .with_context(|| format!("failed to stat {}", socket_path.display()))?;
-        if metadata.file_type().is_symlink() {
-            bail!(
-                "refusing to use symlink socket path {}",
-                socket_path.display()
-            );
-        }
-        if !metadata.file_type().is_socket() {
-            bail!(
-                "refusing to use non-socket path {} for daemon socket",
-                socket_path.display()
-            );
-        }
-
-        match UnixStream::connect(socket_path) {
-            Ok(_) => {
-                bail!(
-                    "socket path {} is active; stop the running daemon first",
-                    socket_path.display()
-                );
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused => {
-                fs::remove_file(socket_path).with_context(|| {
-                    format!("failed to remove stale socket {}", socket_path.display())
-                })?;
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
-                bail!(
-                    "permission denied while probing existing socket {}: {}",
-                    socket_path.display(),
-                    err
-                );
-            }
-            Err(err) => {
-                bail!(
-                    "failed to probe existing socket {}: {}",
-                    socket_path.display(),
-                    err
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn cleanup_files(socket_path: &Path, pid_file: &Path) -> Result<()> {
-    if socket_path.exists() {
-        fs::remove_file(socket_path)
-            .with_context(|| format!("failed to remove socket {}", socket_path.display()))?;
-    }
-    if pid_file.exists() {
-        fs::remove_file(pid_file)
-            .with_context(|| format!("failed to remove pid file {}", pid_file.display()))?;
-    }
-    Ok(())
 }
 
 fn serve(
@@ -238,288 +207,6 @@ fn wait_for_listener(listener: &UnixListener) -> Result<()> {
         }
         return Err(error).context("failed to wait for daemon listener readiness");
     }
-}
-
-fn handle_client(
-    mut stream: UnixStream,
-    config: &DaemonConfig,
-    shutdown: &Arc<AtomicBool>,
-    services: &services::DaemonServices,
-) -> Result<()> {
-    crate::perf::record_request();
-    let _request_total = crate::perf::Timer::new("daemon.request");
-    let request_raw = match read_request_line(&stream) {
-        Ok(Some(request_raw)) => request_raw,
-        Ok(None) => return Ok(()),
-        Err(err) => {
-            // The request never parsed, so it has no id of its own. A fresh one
-            // still lets the caller find the failure in the logs.
-            let response = Response::err(err.to_string(), operation::new_id());
-            write_response(&mut stream, &response)?;
-            return Ok(());
-        }
-    };
-
-    let request: Request = match serde_json::from_str(&request_raw) {
-        Ok(request) => request,
-        Err(err) => {
-            let response = Response::err(
-                format!("invalid request payload: {err}"),
-                operation::new_id(),
-            );
-            write_response(&mut stream, &response)?;
-            return Ok(());
-        }
-    };
-
-    // One request is one operation. The id is the trace id the caller is told
-    // about, the id the lifecycle journal records, and the id every log line and
-    // phase timing for this request carries.
-    let operation_id = request
-        .operation_id
-        .as_deref()
-        .filter(|id| operation::is_valid_id(id))
-        .map(str::to_string)
-        .unwrap_or_else(operation::new_id);
-    operation::set_current(Some(operation_id.clone()));
-    let _clear = ClearOperationOnDrop;
-
-    // A lifecycle operation is worth one line at the default level: it is how an
-    // operator ties a command to the journal record and the phase timings for the
-    // same operation. A read-only request stays quiet, so the log is not doubled
-    // for status polling.
-    // A lifecycle operation is registered so shutdown can name what it
-    // interrupted, and so a report of "nothing was running" is evidence rather
-    // than silence. Read-only requests are not registered: they are short, and
-    // registering them would make shutdown wait on status polling.
-    let _active = dispatch::action_is_lifecycle(&request.action).then(|| {
-        services.active_operations.begin(
-            &operation_id,
-            &request.action,
-            &operation_target(&request.params),
-        )
-    });
-
-    if dispatch::action_is_lifecycle(&request.action) {
-        tracing::info!(
-            operation_id = %operation_id,
-            action = %request.action,
-            "lifecycle operation started"
-        );
-    }
-
-    let peer_uid = peer_uid(&stream).context("failed to resolve peer uid")?;
-    if !services.rate_limiter.allow(peer_uid) {
-        let response = Response::err(
-            format!(
-                "rate limit exceeded for uid {} (max {} requests per {}s)",
-                peer_uid,
-                RATE_LIMIT_MAX_REQUESTS,
-                RATE_LIMIT_WINDOW.as_secs()
-            ),
-            operation_id,
-        );
-        write_response(&mut stream, &response)?;
-        return Ok(());
-    }
-    if let Err(err) = policy::authorize(&config.state_dir, peer_uid, &request.action) {
-        let response = Response::err(err.to_string(), operation_id);
-        write_response(&mut stream, &response)?;
-        return Ok(());
-    }
-
-    let _dispatch = crate::perf::Timer::new("daemon.dispatch");
-    let response = match dispatch::dispatch(request, config, shutdown, services, Some(&stream)) {
-        Ok(result) => Response::ok(result, operation_id),
-        Err(err) => {
-            // A lifecycle failure is the one place the id is worth repeating at
-            // the default log level: it is how an operator finds the journal
-            // record for the operation that failed.
-            tracing::error!(error = %format!("{err:#}"), "request failed");
-            Response::err(err.to_string(), operation_id)
-        }
-    };
-    drop(_dispatch);
-
-    write_response(&mut stream, &response)?;
-    Ok(())
-}
-
-/// A short human label for what a request acts on, for shutdown reporting.
-///
-/// The sandbox and workspace names are the two things an operator needs to find
-/// the affected state, and both are optional, so whatever the request carries is
-/// used and the rest is left out rather than invented.
-fn operation_target(params: &serde_json::Value) -> String {
-    let field = |names: &[&str]| {
-        names
-            .iter()
-            .find_map(|name| params.get(*name).and_then(serde_json::Value::as_str))
-    };
-    let sandbox = field(&["sandbox", "sandbox_id", "name"]);
-    let workspace = field(&["workspace", "workspace_id"]);
-    match (sandbox, workspace) {
-        (Some(sandbox), Some(workspace)) => format!("{sandbox}/{workspace}"),
-        (Some(sandbox), None) => sandbox.to_string(),
-        (None, Some(workspace)) => workspace.to_string(),
-        (None, None) => "-".to_string(),
-    }
-}
-
-/// Clear the thread-local operation id when the request that set it finishes.
-///
-/// A worker thread outlives the request, and a later request that does not set an
-/// id would otherwise inherit this one.
-struct ClearOperationOnDrop;
-
-impl Drop for ClearOperationOnDrop {
-    fn drop(&mut self) {
-        operation::set_current(None);
-    }
-}
-
-fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
-    let payload = serde_json::to_vec(&response)?;
-    stream.write_all(&payload)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-    Ok(())
-}
-
-fn peer_uid(stream: &UnixStream) -> Result<u32> {
-    let creds =
-        getsockopt(stream, PeerCredentials).context("getsockopt(PeerCredentials) failed")?;
-    Ok(creds.uid())
-}
-
-fn read_request_line(stream: &UnixStream) -> Result<Option<String>> {
-    let mut request_raw = String::new();
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut limited_reader = reader.by_ref().take((MAX_REQUEST_BYTES + 1) as u64);
-    let read = limited_reader
-        .read_line(&mut request_raw)
-        .context("failed to read request line")?;
-
-    if read == 0 || request_raw.trim().is_empty() {
-        return Ok(None);
-    }
-    if request_raw.len() > MAX_REQUEST_BYTES {
-        bail!("request exceeds maximum size ({} bytes)", MAX_REQUEST_BYTES);
-    }
-    if !request_raw.ends_with('\n') {
-        bail!("request must be newline-terminated");
-    }
-    Ok(Some(request_raw))
-}
-
-fn shutdown_requested(shutdown: &Arc<AtomicBool>) -> bool {
-    shutdown.load(Ordering::SeqCst) || SIGNAL_SHUTDOWN.load(Ordering::SeqCst)
-}
-
-/// How long shutdown waits for running operations before leaving them behind.
-///
-/// Long enough for a stop, a destroy, or a resize to finish; short enough that
-/// a stuck or very long operation cannot hold the daemon open. The journals
-/// make the abandoned work recoverable, so waiting forever buys nothing.
-fn shutdown_grace() -> Duration {
-    const DEFAULT_SECS: u64 = 30;
-    const MAX_SECS: u64 = 600;
-    std::env::var("ENCLAVE_SHUTDOWN_GRACE_SECS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| (1..=MAX_SECS).contains(value))
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(DEFAULT_SECS))
-}
-
-/// Name every operation shutdown had to abandon, with how to recover it.
-fn report_incomplete_operations(remaining: &[active_operations::ActiveOperation], grace: Duration) {
-    if remaining.is_empty() {
-        tracing::info!("daemon shutdown: no lifecycle operation was left running");
-        return;
-    }
-    for operation in remaining {
-        tracing::error!(
-            operation_id = %operation.id,
-            action = %operation.action,
-            target = %operation.target,
-            elapsed_secs = operation.elapsed().as_secs(),
-            "daemon shutdown left an operation running after {}s; its journal is retained",
-            grace.as_secs()
-        );
-    }
-    tracing::error!(
-        "daemon shutdown report: {} operation(s) incomplete; the next daemon start finishes or rolls them back",
-        remaining.len()
-    );
-}
-
-fn reconcile_published_ports(
-    state_dir: &Path,
-    port_publisher: &crate::network::publish::PortPublisher,
-) -> Result<()> {
-    let workspaces = crate::workspace::list_workspaces(state_dir, None)?;
-    for workspace in workspaces {
-        if !workspace.status.is_running() || workspace.published_ports.is_empty() {
-            continue;
-        }
-
-        let Some(runtime_pid) = workspace.runtime_pid else {
-            tracing::warn!(
-                "workspace {} is marked running without a runtime pid; skipping port republish",
-                workspace.id
-            );
-            continue;
-        };
-        if !crate::workspace::session_process_matches(
-            runtime_pid,
-            workspace.runtime_starttime_ticks,
-        ) {
-            tracing::warn!(
-                "workspace {} runtime pid {} is not alive; skipping port republish",
-                workspace.id,
-                runtime_pid
-            );
-            continue;
-        }
-
-        let Some(workspace_ip) = workspace.assigned_ip.as_deref() else {
-            tracing::warn!(
-                "workspace {} is running without an assigned IP; skipping port republish",
-                workspace.id
-            );
-            continue;
-        };
-
-        port_publisher.reconcile_workspace_ports(
-            &workspace.sandbox_id,
-            &workspace.id,
-            runtime_pid,
-            workspace_ip,
-            &workspace.published_ports,
-        )?;
-    }
-    Ok(())
-}
-
-fn install_signal_handlers() -> Result<()> {
-    SIGNAL_SHUTDOWN.store(false, Ordering::SeqCst);
-    let action = SigAction::new(
-        SigHandler::Handler(handle_shutdown_signal),
-        SaFlags::SA_RESTART,
-        SigSet::empty(),
-    );
-
-    unsafe {
-        signal::sigaction(Signal::SIGINT, &action).context("failed to register SIGINT handler")?;
-        signal::sigaction(Signal::SIGTERM, &action)
-            .context("failed to register SIGTERM handler")?;
-    }
-    Ok(())
-}
-
-extern "C" fn handle_shutdown_signal(_: i32) {
-    SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
 #[cfg(test)]
