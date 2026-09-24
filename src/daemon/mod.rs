@@ -185,6 +185,10 @@ fn serve(
 }
 
 fn wait_for_listener(listener: &UnixListener) -> Result<()> {
+    // The poll wakes once a second even when nothing connects. That is the
+    // price of noticing a shutdown request while blocked in the accept loop: a
+    // self-pipe would let the poll block indefinitely, but one wakeup per second
+    // costs nothing next to the thread and socket machinery it would add.
     let mut readiness = libc::pollfd {
         fd: std::os::fd::AsRawFd::as_raw_fd(listener),
         events: libc::POLLIN,
