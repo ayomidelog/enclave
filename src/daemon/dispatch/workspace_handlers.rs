@@ -223,10 +223,25 @@ pub(super) fn dispatch_workspace_target(
             Ok(serde_json::to_value(metadata)?)
         }
         "stop" => {
-            let metadata =
-                workspace::stop_workspace(&config.state_dir, sandbox, workspace_selector)?;
+            let (metadata, certificate) = workspace::stop_workspace_with_certificate(
+                &config.state_dir,
+                sandbox,
+                workspace_selector,
+            )?;
             port_publisher.clear_workspace_ports(&metadata.sandbox_id, &metadata.id);
-            Ok(serde_json::to_value(metadata)?)
+            // The port publisher lives in the daemon, so its release is verified
+            // here and folded into the workspace cleanup certificate.
+            let released =
+                !port_publisher.has_active_workspace_ports(&metadata.sandbox_id, &metadata.id);
+            let certificate = certificate.with_ports_released(released);
+            if !certificate.is_complete() {
+                bail!(
+                    "workspace '{}' stop left resources behind: {}",
+                    metadata.id,
+                    certificate.failure_summary()
+                );
+            }
+            Ok(json!({ "workspace": metadata, "certificate": certificate }))
         }
         "destroy" => {
             let metadata_before =

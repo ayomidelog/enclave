@@ -1,10 +1,25 @@
 use super::*;
+use crate::workspace::WorkspaceCleanupCertificate;
 
 pub fn stop_workspace(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
     workspace_selector: &str,
 ) -> Result<WorkspaceMetadata> {
+    stop_workspace_with_certificate(state_dir, sandbox_selector, workspace_selector)
+        .map(|(metadata, _)| metadata)
+}
+
+/// Stop a workspace and return the verified cleanup certificate alongside it.
+///
+/// Callers that own host resources outside the workspace layer (the port
+/// publisher, for example) can attach their own verification to the certificate
+/// before reporting the stop as complete.
+pub fn stop_workspace_with_certificate(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+) -> Result<(WorkspaceMetadata, WorkspaceCleanupCertificate)> {
     let (sandbox_id, workspace_id, current) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
@@ -60,19 +75,19 @@ pub fn stop_workspace(
                 workspace_id
             );
         }
-        set_workspace_stopped(sandbox, &workspace_id)?;
+        let certificate = set_workspace_stopped(sandbox, &workspace_id)?;
         let result = sandbox
             .workspaces
             .get(&workspace_id)
             .cloned()
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-        Ok(result)
+        Ok((result, certificate))
     });
     drop(cleanup_phase);
     match result {
-        Ok(metadata) => {
+        Ok((metadata, certificate)) => {
             journal.succeed()?;
-            Ok(metadata)
+            Ok((metadata, certificate))
         }
         Err(error) => {
             let _ = journal.fail(format!("{error:#}"));

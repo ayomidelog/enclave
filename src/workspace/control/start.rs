@@ -225,7 +225,7 @@ fn mark_workspace_start_failed(
             .sandboxes
             .get_mut(sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
-        set_workspace_stopped(sandbox, workspace_id)
+        set_workspace_stopped(sandbox, workspace_id).map(|_| ())
     })
 }
 

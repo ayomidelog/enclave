@@ -8,6 +8,7 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use super::runtime_limits::{legacy_workspace_cgroup_name, workspace_cgroup_name};
 use crate::network;
+use crate::network::NetworkCleanupReport;
 use crate::sandbox::SandboxMetadata;
 use crate::workspace::session;
 
@@ -364,7 +365,7 @@ pub(super) fn run_workspace_stop_cleanup(
     cleanup: WorkspaceStopCleanup,
     network_already_cleaned: bool,
     storage_already_unmounted: bool,
-) -> Result<()> {
+) -> Result<Option<NetworkCleanupReport>> {
     let workspace = cleanup.workspace;
     let sandbox = cleanup.sandbox;
 
@@ -374,19 +375,21 @@ pub(super) fn run_workspace_stop_cleanup(
     remove_workspace_cgroups(&sandbox, &workspace.id, workspace.runtime_pid)?;
     drop(cgroups);
 
+    let mut network_report = None;
     if !network_already_cleaned {
         if let Some(ip) = workspace.assigned_ip.as_deref() {
             let network = crate::perf::Timer::new("workspace.stop.network");
             let report = crate::network::teardown_workspace_network(ip, &workspace.id);
             drop(network);
             if !report.is_complete() {
-                bail!("{}", format_network_cleanup_error(&report));
+                return Err(anyhow!("{}", format_network_cleanup_error(&report)));
             }
+            network_report = Some(report);
         }
     }
 
     if storage_already_unmounted {
-        return Ok(());
+        return Ok(network_report);
     }
 
     // `/tmp` is backed by the workspace disk image, so it must be cleared
@@ -401,7 +404,7 @@ pub(super) fn run_workspace_stop_cleanup(
     crate::workspace::ensure_workspace_storage_unmounted(&workspace)
         .context("failed to unmount workspace storage")?;
     drop(unmount);
-    Ok(())
+    Ok(network_report)
 }
 
 pub(super) fn remove_workspace_cgroups(

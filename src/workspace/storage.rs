@@ -75,6 +75,7 @@ pub(crate) use tmp::reset_workspace_tmp;
 pub(crate) use tmp::workspace_tmp_path;
 pub(crate) use unmount::ensure_workspace_storage_unmounted_many;
 pub(crate) use unmount::unmount_mounts_at_or_below_excluding;
+pub(crate) use unmount::verify_disk_image_loop_detached;
 
 pub(crate) use image::ensure_disk_backend_available;
 pub(crate) use mount::root_overlay_paths;

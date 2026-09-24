@@ -163,6 +163,20 @@ impl PortPublisher {
         shutdown_publications(active);
     }
 
+    /// Whether any published port for a workspace is still serving.
+    ///
+    /// `clear_workspace_ports` returns nothing, so a caller that wants to prove
+    /// the listeners were released has to look at the publisher afterwards. This
+    /// is what lets a stop certificate cover ports rather than assume them.
+    pub fn has_active_workspace_ports(&self, sandbox_id: &str, workspace_id: &str) -> bool {
+        let key = WorkspacePublishKey::new(sandbox_id, workspace_id);
+        let state = self.inner.lock().expect("port publisher mutex poisoned");
+        state
+            .active
+            .get(&key)
+            .is_some_and(|publications| !publications.is_empty())
+    }
+
     pub fn workspace_statuses(
         &self,
         sandbox_id: &str,

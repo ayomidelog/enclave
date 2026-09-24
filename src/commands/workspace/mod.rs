@@ -263,7 +263,7 @@ fn run_workspace_stop(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceTargetAr
         args.workspace,
         args.sandbox
     );
-    send_managed(
+    let response = send_managed(
         ctx.socket,
         "workspace.stop",
         json!({
@@ -272,6 +272,23 @@ fn run_workspace_stop(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceTargetAr
         }),
     )?;
     println!("stopped workspace");
+    // The daemon only reports a stop as successful once every mandatory host
+    // resource has been verified released, so the certificate is the evidence
+    // behind that success rather than a restatement of it.
+    if let Some(certificate) = response.get("certificate") {
+        let certificate: crate::workspace::WorkspaceCleanupCertificate =
+            serde_json::from_value(certificate.clone())?;
+        println!(
+            "cleanup verified: runtime exited, cgroup removed, mounts released, loop device detached, runtime files removed, network and ports released"
+        );
+        if !certificate.is_complete() {
+            bail!(
+                "workspace '{}' cleanup is incomplete: {}",
+                certificate.workspace_id,
+                certificate.failure_summary()
+            );
+        }
+    }
     Ok(())
 }
 

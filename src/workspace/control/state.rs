@@ -1,25 +1,39 @@
 use super::*;
+use crate::workspace::WorkspaceCleanupCertificate;
 
 pub(crate) fn set_workspace_stopped(
     sandbox: &mut RegistrySandbox,
     workspace_id: &str,
-) -> Result<()> {
+) -> Result<WorkspaceCleanupCertificate> {
     let workspace = sandbox
         .workspaces
         .get(workspace_id)
         .cloned()
         .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-    cleanup::run_workspace_stop_cleanup(
+    let network = cleanup::run_workspace_stop_cleanup(
         WorkspaceStopCleanup {
             sandbox: sandbox.metadata.clone(),
-            workspace,
+            workspace: workspace.clone(),
         },
         false,
         false,
     )?;
     mark_workspace_stopped(sandbox, workspace_id)?;
     remove_sandbox_cgroup_if_idle(sandbox);
-    Ok(())
+    // Verify the host state the cleanup claimed to release. A registry mutation
+    // succeeding is not evidence that the runtime, its cgroup, its mounts, or its
+    // loop device are gone, so the certificate is what makes the stop trustworthy.
+    // It runs after the runtime markers are removed because those markers are one
+    // of the things it verifies.
+    let certificate = crate::workspace::verify_workspace_cleanup(&workspace, network.as_ref());
+    if !certificate.is_complete() {
+        bail!(
+            "workspace '{}' cleanup is incomplete: {}",
+            workspace_id,
+            certificate.failure_summary()
+        );
+    }
+    Ok(certificate)
 }
 
 pub(crate) fn mark_workspace_stopped(

@@ -44,8 +44,8 @@ pub use query::{
 };
 pub(crate) use start::launch_workspace_runtime;
 pub use start::{start_workspace, start_workspace_with_security};
-pub use stop::stop_workspace;
 pub(crate) use stop::{freeze_workspaces_in_sandbox, stop_running_workspaces_in_sandbox};
+pub use stop::{stop_workspace, stop_workspace_with_certificate};
 pub use update::{
     resize_workspace_disk, resize_workspace_disk_with_security, update_workspace_definition,
 };
