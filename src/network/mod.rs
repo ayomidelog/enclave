@@ -75,19 +75,6 @@ pub fn ensure_host_networking() -> Result<()> {
     Ok(())
 }
 
-pub fn setup_workspace_network(
-    pid: u32,
-    used_ips: &BTreeSet<u8>,
-    workspace_rootfs: &Path,
-    workspace_id: &str,
-) -> Result<String> {
-    ensure_host_networking()?;
-    let ip = ipam::allocate_ip(used_ips)?;
-    attach_workspace_network(pid, &ip, workspace_rootfs, workspace_id)?;
-
-    Ok(ip)
-}
-
 /// Attach a workspace network at an address the caller already reserved.
 ///
 /// A reservation is what makes concurrent starts safe: the address is chosen

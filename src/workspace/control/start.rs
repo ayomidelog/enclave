@@ -128,7 +128,7 @@ pub fn start_workspace_with_security(
         &workspace_snapshot,
         apparmor_profile,
         selinux_label,
-        NetworkStartPlan::UseReserved(reserved_ip),
+        &reserved_ip,
     ) {
         Ok(started) => started,
         Err(error) => {
@@ -216,7 +216,7 @@ pub fn start_workspace_with_security(
 }
 
 /// Record that a workspace runtime launch has begun.
-fn mark_workspace_starting(
+pub(crate) fn mark_workspace_starting(
     state_dir: &std::path::Path,
     sandbox_id: &str,
     workspace_id: &str,
@@ -238,7 +238,7 @@ fn mark_workspace_starting(
 
 /// Roll a failed launch back to `Stopped`, tearing down anything the partial
 /// launch left behind (workspace storage mounts, cgroups, network, `/tmp`).
-fn mark_workspace_start_failed(
+pub(crate) fn mark_workspace_start_failed(
     state_dir: &std::path::Path,
     sandbox_id: &str,
     workspace_id: &str,
@@ -258,7 +258,7 @@ pub(crate) fn launch_workspace_runtime(
     workspace_snapshot: &WorkspaceMetadata,
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
-    network_plan: NetworkStartPlan,
+    reserved_ip: &str,
 ) -> Result<WorkspaceRuntimeStart> {
     // Each phase below is on the user-visible startup critical path. Timing
     // them separately is what makes a slow start attributable to storage,
@@ -329,20 +329,14 @@ pub(crate) fn launch_workspace_runtime(
 
     let network = crate::perf::Timer::new("workspace.start.network");
     let workspace_rootfs = PathBuf::from(format!("/proc/{}/root", session_info.pid));
-    let assigned_ip = match network_plan {
-        NetworkStartPlan::UseReserved(ip) => network::setup_reserved_workspace_network(
-            session_info.pid,
-            &ip,
-            &workspace_rootfs,
-            &workspace_snapshot.id,
-        ),
-        NetworkStartPlan::AllocateFromUsedIps(used_ips) => network::setup_workspace_network(
-            session_info.pid,
-            &used_ips,
-            &workspace_rootfs,
-            &workspace_snapshot.id,
-        ),
-    };
+    // The address was reserved under the registry lock before the launch began,
+    // so a concurrent start cannot hand the same one to another workspace.
+    let assigned_ip = network::setup_reserved_workspace_network(
+        session_info.pid,
+        reserved_ip,
+        &workspace_rootfs,
+        &workspace_snapshot.id,
+    );
     let assigned_ip = match assigned_ip {
         Ok(ip) => ip,
         Err(err) => {

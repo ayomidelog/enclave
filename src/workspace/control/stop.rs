@@ -97,7 +97,7 @@ pub fn stop_workspace_with_certificate(
 }
 
 /// Record that teardown of a workspace runtime has begun.
-fn mark_workspace_stopping(
+pub(crate) fn mark_workspace_stopping(
     state_dir: &std::path::Path,
     sandbox_id: &str,
     workspace_id: &str,

@@ -43,9 +43,13 @@ pub use query::{
     list_workspace_items, list_workspaces, workspace_metadata, workspace_runtime_is_active,
     workspace_status,
 };
-pub(crate) use start::launch_workspace_runtime;
+pub(crate) use start::{
+    launch_workspace_runtime, mark_workspace_start_failed, mark_workspace_starting,
+};
 pub use start::{start_workspace, start_workspace_with_security};
-pub(crate) use stop::{freeze_workspaces_in_sandbox, stop_running_workspaces_in_sandbox};
+pub(crate) use stop::{
+    freeze_workspaces_in_sandbox, mark_workspace_stopping, stop_running_workspaces_in_sandbox,
+};
 pub use stop::{stop_workspace, stop_workspace_with_certificate};
 pub use update::{
     resize_workspace_disk, resize_workspace_disk_with_security, update_workspace_definition,
@@ -66,15 +70,6 @@ pub(crate) struct WorkspaceRuntimeStart {
     mount_ns: String,
     pid_ns: String,
     assigned_ip: String,
-}
-
-/// How a starting workspace should obtain its network identity.
-pub(crate) enum NetworkStartPlan {
-    /// Allocate the first free address from a set the caller read while holding
-    /// the registry lock. Only safe when the lock is held across the launch.
-    AllocateFromUsedIps(BTreeSet<u8>),
-    /// Use an address the caller already reserved in the registry.
-    UseReserved(String),
 }
 
 #[cfg(test)]
