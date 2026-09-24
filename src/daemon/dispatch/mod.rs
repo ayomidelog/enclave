@@ -31,6 +31,8 @@ use snapshots::{
     dispatch_workspace_restore, dispatch_workspace_snapshot, dispatch_workspace_snapshot_export,
     dispatch_workspace_snapshot_gc, dispatch_workspace_snapshot_import,
 };
+#[cfg(test)]
+use workspace_handlers::existing_workspace_update;
 use workspace_handlers::{
     dispatch_workspace_cp, dispatch_workspace_create, dispatch_workspace_exec,
     dispatch_workspace_list, dispatch_workspace_logs, dispatch_workspace_resize,

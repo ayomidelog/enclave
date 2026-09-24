@@ -174,3 +174,56 @@ fn clear_tmp_on_restart_rejects_non_boolean_values() {
     )
     .is_err());
 }
+
+/// `workspace.start_many` reuses a start item as an update when the workspace
+/// already exists. `disk_mb` is valid on a start item but cannot be applied by
+/// an update, so forwarding it made every `up` after a `down` fail for
+/// quota-backed workspaces.
+#[test]
+fn existing_workspace_update_drops_the_declared_disk_allocation() {
+    let spec = serde_json::json!({
+        "sandbox_id": "sandbox-id",
+        "name": "dev",
+        "disk_mb": 64,
+        "memory_mb": 256,
+        "clear_tmp_on_restart": true,
+        "path": serde_json::Value::Null,
+    });
+
+    let update = existing_workspace_update(&spec, "sandbox-id", "dev");
+    let object = update.as_object().expect("update is an object");
+
+    assert!(!object.contains_key("disk_mb"));
+    assert!(!object.contains_key("path"));
+    assert_eq!(
+        object.get("sandbox").and_then(Value::as_str),
+        Some("sandbox-id")
+    );
+    assert_eq!(object.get("workspace").and_then(Value::as_str), Some("dev"));
+    assert_eq!(object.get("memory_mb").and_then(Value::as_u64), Some(256));
+    assert_eq!(
+        object.get("clear_tmp_on_restart").and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+/// The declared disk allocation is the only field with update-incompatible
+/// semantics, so the rest of the definition must still reach the update.
+#[test]
+fn existing_workspace_update_keeps_supported_limits() {
+    let spec = serde_json::json!({
+        "name": "dev",
+        "cpu_percent": 25.0,
+        "cpu_seconds": 30,
+        "max_procs": 64,
+        "max_open_files": 1024,
+    });
+
+    let update = existing_workspace_update(&spec, "sb", "dev");
+    let parsed = parse_workspace_limits_update(&update).expect("update limits parse");
+    assert_eq!(parsed.cpu_seconds, Some(Some(30)));
+    assert_eq!(parsed.cpu_percent, Some(Some(25.0)));
+    assert_eq!(parsed.max_processes, Some(Some(64)));
+    assert_eq!(parsed.max_open_files, Some(Some(1024)));
+    assert_eq!(parsed.disk_bytes, None);
+}

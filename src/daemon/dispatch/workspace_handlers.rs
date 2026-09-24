@@ -89,27 +89,7 @@ pub(super) fn dispatch_workspace_start_many_item(
             if !exists {
                 return Err(error);
             }
-            let mut update = spec.clone();
-            if let Some(object) = update.as_object_mut() {
-                for key in [
-                    "cpu_seconds",
-                    "cpu_percent",
-                    "memory_mb",
-                    "max_procs",
-                    "max_open_files",
-                    "disk_mb",
-                    "path",
-                ] {
-                    if object.get(key).is_some_and(Value::is_null) {
-                        object.remove(key);
-                    }
-                }
-                object.insert("sandbox".to_string(), Value::String(sandbox.to_string()));
-                object.insert(
-                    "workspace".to_string(),
-                    Value::String(workspace.to_string()),
-                );
-            }
+            let update = existing_workspace_update(spec, sandbox, workspace);
             dispatch_workspace_update(&update, config, port_publisher)?;
             dispatch_workspace_target(
                 &json!({ "sandbox": sandbox, "workspace": workspace }),
@@ -135,6 +115,39 @@ pub(super) fn dispatch_workspace_start_many_item(
         })?;
     }
     Ok(started)
+}
+
+/// Translate a `workspace.start_many` item into a `workspace.update` request
+/// for a workspace that already exists.
+///
+/// The two requests share parameter names but not semantics. A start item
+/// carries the declared definition, including `disk_mb`, while an update
+/// cannot change an existing disk allocation at all. Forwarding the declared
+/// size would make every `up` after a `down` fail for quota-backed workspaces.
+pub(super) fn existing_workspace_update(spec: &Value, sandbox: &str, workspace: &str) -> Value {
+    let mut update = spec.clone();
+    let Some(object) = update.as_object_mut() else {
+        return update;
+    };
+    for key in [
+        "cpu_seconds",
+        "cpu_percent",
+        "memory_mb",
+        "max_procs",
+        "max_open_files",
+        "path",
+    ] {
+        if object.get(key).is_some_and(Value::is_null) {
+            object.remove(key);
+        }
+    }
+    object.remove("disk_mb");
+    object.insert("sandbox".to_string(), Value::String(sandbox.to_string()));
+    object.insert(
+        "workspace".to_string(),
+        Value::String(workspace.to_string()),
+    );
+    update
 }
 
 pub(super) fn dispatch_workspace_create(
