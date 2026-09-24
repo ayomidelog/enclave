@@ -60,10 +60,10 @@ That didn't exist. So I built it.
 
 On the bounded eight-workspace cached-rootfs benchmark (bootstrap preparation excluded):
 
-- cold workspace boot: `2.55s`
-- cold shutdown: `1.63s`
-- warm workspace boot: `2.66s`
-- warm shutdown: `1.38s`
+- cold workspace boot: `2.93s`
+- cold shutdown: `0.62s`
+- warm workspace boot: `1.80s`
+- warm shutdown: `0.53s`
 
 These numbers are host-dependent. Reproduce them with:
 

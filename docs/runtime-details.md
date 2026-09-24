@@ -96,17 +96,17 @@ ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 \
 
 It reuses a local cached rootfs, applies an eight-workspace memory/CPU/process
 budget, and excludes rootfs preparation from lifecycle timings. On the current
-validation host it measured approximately 2.55 seconds for cold workspace boot,
-1.63 seconds for cold shutdown, 2.66 seconds for warm boot, and 1.38 seconds
+validation host it measured approximately 2.93 seconds for cold workspace boot,
+0.62 seconds for cold shutdown, 1.80 seconds for warm boot, and 0.53 seconds
 for warm shutdown.
 
 On the current bounded eight-workspace cached-rootfs validation, the lifecycle
 timings are approximately:
 
-- cold workspace boot: `2.55s`
-- cold shutdown: `1.63s`
-- warm workspace boot: `2.66s`
-- warm shutdown: `1.38s`
+- cold workspace boot: `2.93s`
+- cold shutdown: `0.62s`
+- warm workspace boot: `1.80s`
+- warm shutdown: `0.53s`
 
 These measurements are host-dependent; use the repository benchmark to compare
 changes on the same machine.
