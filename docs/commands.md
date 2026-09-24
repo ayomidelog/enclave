@@ -16,7 +16,7 @@ enclave doctor [--repair]
 |---------|-------------|
 | `daemon run` | Run the daemon in the foreground. |
 | `daemon start` | Start the daemon in the background and wait for it to be ready. |
-| `daemon status` | Check if the daemon is running. |
+| `daemon status` | Check if the daemon is running, and report the lifecycle operation running now and the last one that ran. |
 | `daemon stop` | Stop the daemon. |
 | `ping` | Send a ping to the daemon and print the response. |
 | `health` | Print daemon health information (state dir, uptime, etc.). |
@@ -105,6 +105,51 @@ enclave wipe
 | `status` | Show detailed status for a sandbox. |
 | `remove` | Remove a sandbox entry from the registry (does not delete files). |
 | `wipe` | Destroy all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
+
+## Lifecycle Tiers
+
+The lifecycle commands are not interchangeable, and their costs differ by an order
+of magnitude. Each row states what survives the command and what has to be rebuilt.
+
+| Command | Processes | Mounts | Memory | Published ports | Rebuild cost |
+|---------|-----------|--------|--------|-----------------|--------------|
+| `pause` / `resume` | preserved | preserved | preserved | withdrawn on pause, restored on resume | near zero |
+| `workspace stop` / `start` | rebuilt | rebuilt | lost | withdrawn on stop, restored on start | full workspace start |
+| `workspace create` / `destroy` | n/a | n/a | n/a | n/a | filesystem plus start |
+| `sandbox stop` / `start` | every workspace rebuilt | rebuilt | lost | withdrawn | every workspace start |
+| `down` / `up` | rebuilt | rebuilt | lost | restored | sandbox plus every workspace |
+| `up --rebuild` | rebuilt | rebuilt | lost | restored | rootfs bootstrap plus setup |
+
+`pause` is the fast path: it freezes the sandbox cgroup in place, so nothing is
+torn down or recreated. `stop` releases every host resource the workspace owned
+and reports a verified cleanup certificate, so it is the right choice when a
+workspace must not keep holding memory, mounts, or a loop device.
+
+## Operation IDs
+
+Every daemon request runs as one operation with one id. Mutating commands print it
+on success:
+
+```console
+$ enclave workspace start mybox agent1
+started workspace
+operation 8f0c3a2e-6d1b-4c9a-9f4e-2b7d5a1c8e30
+```
+
+A failing command names it in the error, so a failure can be traced without
+reproducing it:
+
+```console
+$ enclave workspace start mybox missing
+error: workspace 'missing' not found in sandbox 'mybox-1a2b3c4d5e6f' (operation 7c6b...)
+```
+
+The same id names the lifecycle journal record under `<state_dir>/operations/`,
+the `lifecycle operation started` and `request failed` log lines, and the phase
+timings emitted with `--verbose` or `ENCLAVE_PERF=1`. `enclave daemon status`
+prints the operation running now and the last one that ran.
+
+Read-only requests such as `workspace status` are not journaled and print no id.
 
 ## Workspace
 

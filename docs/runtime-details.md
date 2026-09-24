@@ -69,6 +69,24 @@ Rough ballpark on a 4-core x86_64 host (NVMe):
 
 Numbers vary by host hardware, suite, and setup commands. The key tradeoff: one shared rootfs means the bootstrap cost is paid once regardless of workspace count.
 
+### Lifecycle and shutdown controls
+
+| Variable | Default | Effect |
+|---|---|---|
+| `ENCLAVE_PERF` | unset | Emit phase timings to stderr and the log, and enable the health counters. |
+| `ENCLAVE_LOG` | info | Tracing filter for the daemon and CLI. |
+| `ENCLAVE_UP_WORKERS` | available parallelism | Concurrency for a batch workspace start, capped at the number of workspaces. |
+| `ENCLAVE_CLEANUP_WORKERS` | available parallelism, capped at 4 | Concurrency for a batch workspace teardown. |
+| `ENCLAVE_CONTROL_WORKERS` | 6 | Daemon workers serving lifecycle and read requests. |
+| `ENCLAVE_TRANSFER_WORKERS` | 2 | Daemon workers serving transfers. |
+| `ENCLAVE_SHUTDOWN_GRACE_SECS` | 30 | How long shutdown waits for running lifecycle operations before reporting them incomplete. Accepted in the range 1 to 600. |
+| `ENCLAVE_HOST_COMMAND_TIMEOUT_SECS` | per command | Overrides the deadline for host commands. |
+
+Shutdown stops accepting requests, waits up to the grace period for the lifecycle
+operations already running, and then logs each one it left behind with its
+operation id, action, target, and elapsed time. Their journals survive, so the
+next daemon start finishes or rolls back the interrupted work.
+
 The repository includes a bounded live lifecycle benchmark:
 
 ```bash
