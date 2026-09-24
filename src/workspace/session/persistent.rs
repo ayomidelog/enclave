@@ -153,37 +153,49 @@ fn start_helper(
         .open(&helper_log)
         .with_context(|| format!("failed to open {}", helper_log.display()))?;
     crate::perf::record_process_spawn();
+    let mut args = vec![
+        "internal".to_string(),
+        "workspace-session-persistent-helper".to_string(),
+        "--helper-socket".to_string(),
+        socket
+            .to_str()
+            .context("helper socket path is not UTF-8")?
+            .to_string(),
+        "--runtime-pid".to_string(),
+        runtime_pid.to_string(),
+        "--runtime-starttime-ticks".to_string(),
+        runtime_starttime_ticks.to_string(),
+        "--runtime-pidfd".to_string(),
+        pidfd.as_raw_fd().to_string(),
+        "--sandbox-id".to_string(),
+        workspace.sandbox_id.clone(),
+        "--workspace-id".to_string(),
+        workspace.id.clone(),
+        "--auth-token".to_string(),
+        auth_token.clone(),
+    ];
+    // Commands forked by the helper inherit its cgroup, so attaching the helper
+    // here is what makes daemon-managed `workspace exec` respect the
+    // workspace's declared CPU, memory, and process limits.
+    if let Some(cgroup_path) =
+        crate::workspace::existing_workspace_cgroup_path(&workspace.sandbox_id, &workspace.id)
+    {
+        args.push("--cgroup-path".to_string());
+        args.push(cgroup_path);
+    }
+    for (name, fd) in [
+        ("--root-fd", raw_fds[0]),
+        ("--user-ns-fd", raw_fds[1]),
+        ("--mount-ns-fd", raw_fds[2]),
+        ("--pid-ns-fd", raw_fds[3]),
+        ("--net-ns-fd", raw_fds[4]),
+        ("--uts-ns-fd", raw_fds[5]),
+    ] {
+        args.push(name.to_string());
+        args.push(fd.to_string());
+    }
     let mut child = Command::new(current_exe)
-        .args([
-            "internal",
-            "workspace-session-persistent-helper",
-            "--helper-socket",
-            socket.to_str().context("helper socket path is not UTF-8")?,
-            "--runtime-pid",
-            &runtime_pid.to_string(),
-            "--runtime-starttime-ticks",
-            &runtime_starttime_ticks.to_string(),
-            "--runtime-pidfd",
-            &pidfd.as_raw_fd().to_string(),
-            "--sandbox-id",
-            &workspace.sandbox_id,
-            "--workspace-id",
-            &workspace.id,
-            "--auth-token",
-            &auth_token,
-            "--root-fd",
-            &raw_fds[0].to_string(),
-            "--user-ns-fd",
-            &raw_fds[1].to_string(),
-            "--mount-ns-fd",
-            &raw_fds[2].to_string(),
-            "--pid-ns-fd",
-            &raw_fds[3].to_string(),
-            "--net-ns-fd",
-            &raw_fds[4].to_string(),
-            "--uts-ns-fd",
-            &raw_fds[5].to_string(),
-        ])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(helper_stderr))

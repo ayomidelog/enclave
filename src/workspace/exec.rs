@@ -204,7 +204,7 @@ pub(crate) fn spawn_workspace_file_receiver(
         runtime_pid,
         runtime_starttime_ticks,
         target,
-        existing_workspace_cgroup_path(&workspace.sandbox_id, &workspace.id).as_deref(),
+        super::existing_workspace_cgroup_path(&workspace.sandbox_id, &workspace.id).as_deref(),
         fds,
     );
     Command::new(current_exe)
@@ -329,15 +329,6 @@ fn append_namespace_fd_args(args: &mut Vec<String>, fds: [std::os::fd::RawFd; 6]
         args.push(name.to_string());
         args.push(fd.to_string());
     }
-}
-
-/// Path of the workspace cgroup, when it already exists on this host.
-///
-/// A workspace started before the cgroup was introduced has no cgroup to attach
-/// to, so the helper is spawned without one instead of failing the transfer.
-fn existing_workspace_cgroup_path(sandbox_id: &str, workspace_id: &str) -> Option<String> {
-    let path = super::workspace_cgroup_path(sandbox_id, workspace_id);
-    path.is_dir().then(|| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

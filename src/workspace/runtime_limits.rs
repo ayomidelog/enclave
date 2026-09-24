@@ -17,6 +17,19 @@ pub(crate) fn workspace_cgroup_path(sandbox_id: &str, workspace_id: &str) -> std
         .join(workspace_cgroup_name(sandbox_id, workspace_id))
 }
 
+/// Path of the workspace cgroup, when it already exists on this host.
+///
+/// A workspace started before the cgroup was introduced has no cgroup to attach
+/// to, so callers that spawn helpers into the workspace run them without one
+/// instead of failing.
+pub(crate) fn existing_workspace_cgroup_path(
+    sandbox_id: &str,
+    workspace_id: &str,
+) -> Option<String> {
+    let path = workspace_cgroup_path(sandbox_id, workspace_id);
+    path.is_dir().then(|| path.to_string_lossy().into_owned())
+}
+
 pub(crate) fn legacy_workspace_cgroup_name(pid: u32) -> String {
     format!("enclave-ws-{pid}")
 }

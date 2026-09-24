@@ -62,6 +62,8 @@ fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
             .expect("symlink sh");
         std::os::unix::fs::symlink("/bin/busybox", cache.join("bin").join("dd"))
             .expect("symlink dd");
+        std::os::unix::fs::symlink("/bin/busybox", cache.join("bin").join("cat"))
+            .expect("symlink cat");
         std::os::unix::fs::symlink("/bin/busybox", cache.join("usr").join("bin").join("env"))
             .expect("symlink env");
     }
@@ -222,6 +224,7 @@ fn cgroup_limits_are_applied_to_workspace_runtime() {
     start_sandbox(&state, &sandbox.id).expect("start sandbox");
 
     let limits = WorkspaceLimits {
+        cpu_percent: Some(10.0),
         memory_bytes: Some(128 * 1024 * 1024),
         max_processes: Some(64),
         ..WorkspaceLimits::default()
@@ -232,6 +235,44 @@ fn cgroup_limits_are_applied_to_workspace_runtime() {
 
     let runtime = workspace_runtime_info(&state, &sandbox.id, &workspace.id).expect("runtime info");
     assert!(runtime.runtime_pid > 0);
+
+    let cgroup_path = runtime
+        .cgroup_path
+        .as_deref()
+        .expect("a limited workspace must report its cgroup");
+    assert!(
+        Path::new(cgroup_path).is_dir(),
+        "{cgroup_path} is not a cgroup directory"
+    );
+    let cpu_max = fs::read_to_string(Path::new(cgroup_path).join("cpu.max")).expect("read cpu.max");
+    assert_ne!(
+        cpu_max.split_whitespace().next().unwrap_or_default(),
+        "max",
+        "cpu_percent must cap the workspace cgroup: {cpu_max}"
+    );
+
+    // The daemon-managed exec path runs commands through a persistent helper;
+    // the commands it forks must inherit the workspace cgroup, otherwise the
+    // declared limits would not apply to them.
+    let result = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "cat /proc/self/cgroup".to_string(),
+        ],
+    )
+    .expect("run workspace command");
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let expected = format!("enclave-ws-{}-{}", sandbox.id, workspace.id);
+    assert!(
+        result.stdout.contains(&expected),
+        "expected the command to run inside {expected}, got: {}",
+        result.stdout
+    );
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");

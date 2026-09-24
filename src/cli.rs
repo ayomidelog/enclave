@@ -480,6 +480,8 @@ pub struct WorkspaceSessionPersistentHelperArgs {
     pub workspace_id: String,
     #[arg(long)]
     pub auth_token: String,
+    #[arg(long, default_value = "")]
+    pub cgroup_path: String,
     #[arg(long)]
     pub root_fd: i32,
     #[arg(long)]

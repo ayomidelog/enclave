@@ -60,6 +60,7 @@ pub(crate) fn run_workspace_session_persistent_helper(
     ) {
         bail!("workspace runtime is no longer alive or has changed identity");
     }
+    attach_helper_to_workspace_cgroup(&args.cgroup_path)?;
     let socket_path = Path::new(&args.helper_socket);
     if let Some(parent) = socket_path.parent() {
         fs::create_dir_all(parent)
