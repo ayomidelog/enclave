@@ -281,6 +281,14 @@ pub struct WorkspaceLogsResult {
     pub next_offset: u64,
     #[serde(default)]
     pub reset: bool,
+    /// Identity of the log file these offsets refer to.
+    ///
+    /// A follower passes it back with its offset. If the file has been replaced
+    /// since — the same path now names a different inode — the offsets no
+    /// longer describe the content, so the daemon answers with a reset instead
+    /// of a slice of unrelated bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

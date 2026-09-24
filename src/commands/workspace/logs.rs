@@ -18,10 +18,17 @@ pub(super) fn run_workspace_logs(
     }
 
     let mut offset = logs.next_offset;
+    let mut stream_id = logs.stream_id;
     let mut poll_interval = LOG_FOLLOW_POLL_INTERVAL;
     loop {
         thread::sleep(poll_interval);
-        logs = fetch_workspace_logs_at_offset(ctx, &sandbox, &workspace, offset)?;
+        logs = fetch_workspace_logs_at_offset(
+            ctx,
+            &sandbox,
+            &workspace,
+            offset,
+            stream_id.as_deref(),
+        )?;
         if logs.content.is_empty() && !logs.reset {
             poll_interval = std::cmp::min(
                 poll_interval.saturating_mul(2),
@@ -36,6 +43,7 @@ pub(super) fn run_workspace_logs(
         print!("{}", logs.content);
         std::io::stdout().flush()?;
         offset = logs.next_offset;
+        stream_id = logs.stream_id;
     }
 }
 
@@ -62,6 +70,7 @@ fn fetch_workspace_logs_at_offset(
     sandbox: &str,
     workspace: &str,
     offset: u64,
+    stream_id: Option<&str>,
 ) -> Result<WorkspaceLogsResult> {
     let response = send_managed(
         ctx.socket,
@@ -70,6 +79,7 @@ fn fetch_workspace_logs_at_offset(
             "sandbox": sandbox,
             "workspace": workspace,
             "offset": offset,
+            "stream_id": stream_id,
         }),
     )?;
     serde_json::from_value(response).map_err(Into::into)
