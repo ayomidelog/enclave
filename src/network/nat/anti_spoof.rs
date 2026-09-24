@@ -1,5 +1,5 @@
 use super::primitives::{
-    comment_args, detect_iptables, insert_filter_rule_first, remove_filter_rule, split_rule_args,
+    comment_args, detect_iptables, insert_filter_rules_first, remove_filter_rule, split_rule_args,
 };
 use super::*;
 
@@ -17,22 +17,25 @@ pub fn ensure_workspace_anti_spoofing(
     let rule = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
     let rule_refs: Vec<&str> = rule.iter().map(String::as_str).collect();
 
+    // The rules that are missing are installed in one iptables-restore call. Both
+    // chains carry the same match, and the start path pays per process, so this is
+    // the same rule set for one spawn instead of one per chain.
+    let mut missing: Vec<(&str, &[&str], &str)> = Vec::new();
     if !present.contains(&"INPUT") {
-        insert_filter_rule_first(
-            &iptables,
+        missing.push((
             "INPUT",
             &rule_refs,
             "block spoofed source addresses from workspace interface to host",
-        )?;
+        ));
     }
     if !present.contains(&"FORWARD") {
-        insert_filter_rule_first(
-            &iptables,
+        missing.push((
             "FORWARD",
             &rule_refs,
             "block spoofed source addresses from workspace interface to forwarded destinations",
-        )?;
+        ));
     }
+    insert_filter_rules_first(&iptables, &missing)?;
     Ok(())
 }
 

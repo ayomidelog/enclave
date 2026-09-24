@@ -49,29 +49,85 @@ pub(crate) fn split_rule_args(rule: &str) -> Vec<String> {
     args
 }
 
-/// Insert a filter rule first, without checking whether it is already present.
+/// Insert several filter rules at the head of their chains in one process.
 ///
-/// The caller has to have proven the rule absent already — normally by reading a
-/// full `iptables -S` dump — because the check costs one process and the whole
-/// point of this entry point is to skip it. An insert that turns out to be a
-/// duplicate is caught by the same already-exists handling as `ensure_rule`, so
-/// a wrong guess is a wasted insert rather than a duplicated rule.
-pub(in crate::network) fn insert_filter_rule_first(
+/// iptables has no batch mode, so installing the two anti-spoofing rules took two
+/// processes on the workspace start path. iptables-restore with --noflush applies
+/// a whole table's worth of rules in one process, which is the same work for half
+/// the spawns. The --noflush flag is what keeps it additive: without it the
+/// restore would replace the table instead of adding to it.
+///
+/// Each entry is inserted at position 1, so the entries are written in reverse to
+/// leave them in the order given. Like the single-rule form, the caller has to
+/// have proven the rules absent already; a duplicate insert is tolerated by the
+/// kernel rather than detected here.
+pub(in crate::network) fn insert_filter_rules_first(
     iptables: &str,
-    chain: &str,
-    rule_args: &[&str],
-    rule_desc: &str,
+    rules: &[(&str, &[&str], &str)],
 ) -> Result<()> {
-    let mut add_args = vec!["-t", "filter", "-I", chain, "1"];
-    add_args.extend_from_slice(rule_args);
-    let output = HostCommand::new(iptables)
-        .args(&add_args)
+    if rules.is_empty() {
+        return Ok(());
+    }
+
+    let mut script = String::from("*filter\n");
+    for (chain, rule_args, _) in rules.iter().rev() {
+        script.push_str("-I ");
+        script.push_str(chain);
+        script.push_str(" 1");
+        for argument in rule_args.iter() {
+            script.push(' ');
+            script.push_str(&quote_restore_argument(argument));
+        }
+        script.push('\n');
+    }
+    script.push_str("COMMIT\n");
+
+    let restore = restore_binary_for(iptables);
+    let descriptions = rules
+        .iter()
+        .map(|(_, _, description)| *description)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let output = HostCommand::new(&restore)
+        .arg("--noflush")
+        .stdin(script.into_bytes())
         .run()
-        .with_context(|| format!("failed to add {rule_desc} via {iptables}"))?;
-    if !output.success() && !is_rule_already_exists_error(&output.stderr) {
-        bail!("failed to add {rule_desc}: {}", output.stderr_text());
+        .with_context(|| format!("failed to add {descriptions} via {restore}"))?;
+    if !output.success() {
+        bail!("failed to add {descriptions}: {}", output.stderr_text());
     }
     Ok(())
+}
+
+/// Quote one argument for iptables-restore input.
+///
+/// The restore input is the format iptables-save writes, where a value containing
+/// whitespace or quotes is wrapped in double quotes. The arguments come from
+/// Enclave's own rule builders, so the only realistic case is a comment containing
+/// spaces, but quoting everything that is not plainly safe keeps the parser from
+/// splitting a value.
+pub(in crate::network) fn quote_restore_argument(argument: &str) -> String {
+    let plain = !argument.is_empty()
+        && argument
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:!=".contains(&byte));
+    if plain {
+        return argument.to_string();
+    }
+    let escaped = argument.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+/// The restore binary that matches the detected iptables.
+///
+/// The nft and legacy variants keep separate rule sets, so restoring through the
+/// wrong one would add rules the running firewall never sees.
+pub(in crate::network) fn restore_binary_for(iptables: &str) -> String {
+    if iptables == "iptables" {
+        "iptables-restore".to_string()
+    } else {
+        format!("{iptables}-restore")
+    }
 }
 
 /// Add a rule unless an identical one is already in the chain.

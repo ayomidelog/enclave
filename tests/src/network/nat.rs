@@ -1,5 +1,46 @@
 use super::*;
 
+/// The restore script is parsed by iptables-restore the same way iptables-save
+/// writes it, so a value containing whitespace has to be quoted or the parser
+/// splits it into two arguments.
+#[test]
+fn restore_arguments_are_quoted_only_when_they_need_to_be() {
+    // Plain values are left alone, which is what keeps the common case readable.
+    for plain in [
+        "INPUT",
+        "-i",
+        "veth-10-0a1b2c",
+        "10.200.0.10/32",
+        "DROP",
+        "!",
+    ] {
+        assert_eq!(quote_restore_argument(plain), plain);
+    }
+
+    // A comment with spaces is the realistic case.
+    assert_eq!(
+        quote_restore_argument("enclave:session-abc"),
+        "enclave:session-abc"
+    );
+    assert_eq!(quote_restore_argument("two words"), "\"two words\"");
+    assert_eq!(quote_restore_argument(""), "\"\"");
+
+    // A quote inside the value is escaped rather than ending the quoted run.
+    assert_eq!(quote_restore_argument("a\"b"), "\"a\\\"b\"");
+}
+
+/// The nft and legacy variants keep separate rule sets, so the restore has to use
+/// the binary that matches the detected iptables.
+#[test]
+fn the_restore_binary_matches_the_detected_iptables() {
+    assert_eq!(restore_binary_for("iptables-nft"), "iptables-nft-restore");
+    assert_eq!(
+        restore_binary_for("iptables-legacy"),
+        "iptables-legacy-restore"
+    );
+    assert_eq!(restore_binary_for("iptables"), "iptables-restore");
+}
+
 #[test]
 fn detect_iptables_does_not_panic() {
     let _ = detect_iptables();
