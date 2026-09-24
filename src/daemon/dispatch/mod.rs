@@ -13,11 +13,20 @@ use crate::workspace;
 
 use super::DaemonConfig;
 
+mod action;
+mod params;
 mod ports;
 mod sandbox_handlers;
 mod snapshots;
+mod workspace_definition;
 mod workspace_handlers;
 
+use action::Action;
+use params::{
+    parse_optional_bool_field, parse_required_disk_bytes, parse_sandbox_limits_create,
+    parse_sandbox_limits_update, parse_string_array, parse_workspace_limits_create,
+    parse_workspace_limits_update, require_param_str,
+};
 use ports::{
     dispatch_workspace_port_list, dispatch_workspace_port_publish,
     dispatch_workspace_port_unpublish,
@@ -31,6 +40,11 @@ use snapshots::{
     dispatch_workspace_restore, dispatch_workspace_snapshot, dispatch_workspace_snapshot_export,
     dispatch_workspace_snapshot_gc, dispatch_workspace_snapshot_import,
 };
+use workspace_definition::{
+    ensure_workspace_ports_started, parse_published_ports,
+    update_workspace_definition_with_runtime, workspace_port_statuses,
+    WorkspaceDefinitionUpdateRequest,
+};
 #[cfg(test)]
 use workspace_handlers::existing_workspace_update;
 use workspace_handlers::{
@@ -38,154 +52,6 @@ use workspace_handlers::{
     dispatch_workspace_list, dispatch_workspace_logs, dispatch_workspace_resize,
     dispatch_workspace_start_many, dispatch_workspace_target, dispatch_workspace_update,
 };
-
-fn require_param_str<'a>(params: &'a Value, keys: &[&str]) -> Result<&'a str> {
-    for key in keys {
-        if let Some(value) = params.get(key).and_then(Value::as_str) {
-            return Ok(value);
-        }
-    }
-    bail!("missing '{}'", keys[0])
-}
-
-fn parse_string_array(params: &Value, key: &str) -> Result<Vec<String>> {
-    let values = params
-        .get(key)
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("missing '{}' array", key))?;
-
-    let mut out = Vec::with_capacity(values.len());
-    for (idx, value) in values.iter().enumerate() {
-        let item = value
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("'{}[{}]' must be a string", key, idx))?;
-        out.push(item.to_string());
-    }
-
-    Ok(out)
-}
-
-fn parse_optional_u64_field(params: &Value, key: &str) -> Result<Option<Option<u64>>> {
-    let Some(value) = params.get(key) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(Some(None));
-    }
-    let parsed = value
-        .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("'{}' must be an unsigned integer", key))?;
-    Ok(Some(Some(parsed)))
-}
-
-fn parse_optional_f64_field(params: &Value, key: &str) -> Result<Option<Option<f64>>> {
-    let Some(value) = params.get(key) else {
-        return Ok(None);
-    };
-    if value.is_null() {
-        return Ok(Some(None));
-    }
-    let parsed = value
-        .as_f64()
-        .ok_or_else(|| anyhow::anyhow!("'{}' must be a number", key))?;
-    Ok(Some(Some(parsed)))
-}
-
-fn parse_workspace_limits_create(params: &Value) -> Result<workspace::WorkspaceLimits> {
-    let cpu_seconds = params.get("cpu_seconds").and_then(Value::as_u64);
-    let cpu_percent = params.get("cpu_percent").and_then(Value::as_f64);
-    let memory_mb = params.get("memory_mb").and_then(Value::as_u64);
-    let max_procs = params.get("max_procs").and_then(Value::as_u64);
-    let max_open_files = params.get("max_open_files").and_then(Value::as_u64);
-    let disk_mb = params.get("disk_mb").and_then(Value::as_u64);
-    let memory_bytes = checked_megabytes(memory_mb, "memory_mb")?;
-    let disk_bytes = checked_megabytes(disk_mb, "disk_mb")?;
-    let limits = workspace::WorkspaceLimits {
-        cpu_seconds,
-        cpu_percent,
-        memory_bytes,
-        max_processes: max_procs,
-        max_open_files,
-        disk_bytes,
-    };
-    limits.validate()?;
-    Ok(limits)
-}
-
-fn parse_required_disk_bytes(params: &Value) -> Result<u64> {
-    let disk_mb = params
-        .get("disk_mb")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("missing 'disk_mb' unsigned integer"))?;
-    disk_mb
-        .checked_mul(1024 * 1024)
-        .ok_or_else(|| anyhow::anyhow!("'disk_mb' is too large"))
-}
-
-fn parse_workspace_limits_update(params: &Value) -> Result<workspace::WorkspaceLimitsUpdate> {
-    let memory_bytes =
-        checked_optional_megabytes(parse_optional_u64_field(params, "memory_mb")?, "memory_mb")?;
-    let disk_bytes =
-        checked_optional_megabytes(parse_optional_u64_field(params, "disk_mb")?, "disk_mb")?;
-    Ok(workspace::WorkspaceLimitsUpdate {
-        clear_tmp_on_restart: parse_optional_bool_field(params, "clear_tmp_on_restart")?,
-        cpu_seconds: parse_optional_u64_field(params, "cpu_seconds")?,
-        cpu_percent: parse_optional_f64_field(params, "cpu_percent")?,
-        memory_bytes,
-        max_processes: parse_optional_u64_field(params, "max_procs")?,
-        max_open_files: parse_optional_u64_field(params, "max_open_files")?,
-        disk_bytes,
-    })
-}
-
-fn checked_megabytes(value: Option<u64>, key: &str) -> Result<Option<u64>> {
-    value
-        .map(|value| {
-            value
-                .checked_mul(1024 * 1024)
-                .ok_or_else(|| anyhow::anyhow!("'{key}' is too large"))
-        })
-        .transpose()
-}
-
-fn checked_optional_megabytes(
-    value: Option<Option<u64>>,
-    key: &str,
-) -> Result<Option<Option<u64>>> {
-    value.map(|value| checked_megabytes(value, key)).transpose()
-}
-
-fn parse_optional_bool_field(params: &Value, key: &str) -> Result<Option<bool>> {
-    match params.get(key) {
-        None => Ok(None),
-        Some(value) => value
-            .as_bool()
-            .map(Some)
-            .ok_or_else(|| anyhow::anyhow!("'{key}' must be a boolean")),
-    }
-}
-
-fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::SandboxLimits> {
-    let limits = sandbox::SandboxLimits {
-        cpu_percent: params.get("cpu_percent").and_then(Value::as_f64),
-        memory_bytes: params
-            .get("memory_mb")
-            .and_then(Value::as_u64)
-            .map(|v| v.saturating_mul(1024 * 1024)),
-        max_processes: params.get("max_procs").and_then(Value::as_u64),
-    };
-    limits.validate()?;
-    Ok(limits)
-}
-
-fn parse_sandbox_limits_update(params: &Value) -> Result<sandbox::SandboxLimitsUpdate> {
-    Ok(sandbox::SandboxLimitsUpdate {
-        cpu_percent: parse_optional_f64_field(params, "cpu_percent")?,
-        memory_bytes: parse_optional_u64_field(params, "memory_mb")?
-            .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
-        max_processes: parse_optional_u64_field(params, "max_procs")?,
-    })
-}
 
 pub(crate) fn dispatch(
     request: crate::protocol::Request,
@@ -399,214 +265,6 @@ pub(super) fn dispatch_policy_rule(
     };
     Ok(serde_json::to_value(updated)?)
 }
-
-mod action;
-use action::Action;
-fn parse_published_ports(
-    params: &Value,
-    key: &str,
-) -> Result<Option<Vec<workspace::PublishedPortSpec>>> {
-    let Some(_) = params.get(key) else {
-        return Ok(None);
-    };
-
-    let raw_specs = parse_string_array(params, key)?;
-    let mut specs = Vec::with_capacity(raw_specs.len());
-    for raw in raw_specs {
-        specs.push(workspace::PublishedPortSpec::parse(&raw)?);
-    }
-    Ok(Some(specs))
-}
-
-fn ensure_workspace_ports_started(
-    state_dir: &std::path::Path,
-    metadata: &workspace::WorkspaceMetadata,
-    port_publisher: &Arc<PortPublisher>,
-) -> Result<workspace::WorkspaceMetadata> {
-    if metadata.published_ports.is_empty() {
-        return Ok(metadata.clone());
-    }
-
-    let workspace_ip = metadata.assigned_ip.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "workspace '{}' started without networking; cannot publish declared ports",
-            metadata.id
-        )
-    })?;
-    let runtime_pid = metadata.runtime_pid.ok_or_else(|| {
-        anyhow::anyhow!(
-            "workspace '{}' is running without a runtime pid; restart it before publishing ports",
-            metadata.id
-        )
-    })?;
-
-    if let Err(err) = port_publisher.apply_workspace_ports_strict(
-        &metadata.sandbox_id,
-        &metadata.id,
-        runtime_pid,
-        workspace_ip,
-        &metadata.published_ports,
-    ) {
-        port_publisher.clear_workspace_ports(&metadata.sandbox_id, &metadata.id);
-        let _ = workspace::stop_workspace(state_dir, &metadata.sandbox_id, &metadata.id);
-        return Err(err);
-    }
-
-    Ok(metadata.clone())
-}
-
-fn update_workspace_definition_with_runtime(
-    state_dir: &std::path::Path,
-    request: WorkspaceDefinitionUpdateRequest,
-    port_publisher: &Arc<PortPublisher>,
-) -> Result<workspace::WorkspaceMetadata> {
-    let WorkspaceDefinitionUpdateRequest {
-        sandbox,
-        workspace_selector,
-        auth_providers,
-        env_tokens,
-        published_ports,
-        limits_update,
-    } = request;
-    let current = workspace::workspace_metadata(state_dir, sandbox, workspace_selector)?;
-    let updated = workspace::update_workspace_definition(
-        state_dir,
-        sandbox,
-        workspace_selector,
-        auth_providers,
-        env_tokens,
-        published_ports.clone(),
-        limits_update.clone(),
-    )?;
-
-    if !limits_update.is_empty() {
-        if let Err(err) =
-            workspace::sync_workspace_runtime_limits(state_dir, &updated.sandbox_id, &updated.id)
-        {
-            rollback_workspace_definition_update(state_dir, &current, port_publisher);
-            return Err(err);
-        }
-    }
-
-    if published_ports.is_none() {
-        return workspace::workspace_metadata(state_dir, &updated.sandbox_id, &updated.id);
-    }
-
-    let apply_result = if updated.status.is_running() {
-        let workspace_ip = updated.assigned_ip.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "workspace '{}' is running without networking; restart it before publishing ports",
-                updated.id
-            )
-        })?;
-        let runtime_pid = updated.runtime_pid.ok_or_else(|| {
-            anyhow::anyhow!(
-                "workspace '{}' is running without a runtime pid; restart it before publishing ports",
-                updated.id
-            )
-        })?;
-        port_publisher.apply_workspace_ports_strict(
-            &updated.sandbox_id,
-            &updated.id,
-            runtime_pid,
-            workspace_ip,
-            &updated.published_ports,
-        )
-    } else {
-        port_publisher.clear_workspace_ports(&updated.sandbox_id, &updated.id);
-        Ok(Vec::new())
-    };
-
-    if let Err(err) = apply_result {
-        rollback_workspace_definition_update(state_dir, &current, port_publisher);
-        return Err(err);
-    }
-
-    workspace::workspace_metadata(state_dir, &updated.sandbox_id, &updated.id)
-}
-
-struct WorkspaceDefinitionUpdateRequest<'a> {
-    sandbox: &'a str,
-    workspace_selector: &'a str,
-    auth_providers: Option<Vec<String>>,
-    env_tokens: Option<Vec<String>>,
-    published_ports: Option<Vec<workspace::PublishedPortSpec>>,
-    limits_update: workspace::WorkspaceLimitsUpdate,
-}
-
-fn rollback_workspace_definition_update(
-    state_dir: &std::path::Path,
-    previous: &workspace::WorkspaceMetadata,
-    port_publisher: &Arc<PortPublisher>,
-) {
-    if let Err(err) = workspace::update_workspace_definition(
-        state_dir,
-        &previous.sandbox_id,
-        &previous.id,
-        Some(previous.auth_providers.clone()),
-        Some(previous.env_tokens.clone()),
-        Some(previous.published_ports.clone()),
-        workspace::WorkspaceLimitsUpdate {
-            clear_tmp_on_restart: Some(previous.clear_tmp_on_restart),
-            cpu_seconds: Some(previous.limits.cpu_seconds),
-            cpu_percent: Some(previous.limits.cpu_percent),
-            memory_bytes: Some(previous.limits.memory_bytes),
-            max_processes: Some(previous.limits.max_processes),
-            max_open_files: Some(previous.limits.max_open_files),
-            disk_bytes: Some(previous.limits.disk_bytes),
-        },
-    ) {
-        tracing::warn!(
-            "failed to roll back workspace definition for {}: {err:#}",
-            previous.id
-        );
-    }
-
-    if let Err(err) =
-        workspace::sync_workspace_runtime_limits(state_dir, &previous.sandbox_id, &previous.id)
-    {
-        tracing::warn!(
-            "failed to restore runtime limits for {} after rollback: {err:#}",
-            previous.id
-        );
-    }
-
-    if previous.status.is_running() {
-        if let Some(workspace_ip) = previous.assigned_ip.as_deref() {
-            let Some(runtime_pid) = previous.runtime_pid else {
-                port_publisher.clear_workspace_ports(&previous.sandbox_id, &previous.id);
-                return;
-            };
-            if let Err(err) = port_publisher.apply_workspace_ports_strict(
-                &previous.sandbox_id,
-                &previous.id,
-                runtime_pid,
-                workspace_ip,
-                &previous.published_ports,
-            ) {
-                tracing::warn!(
-                    "failed to restore published ports for {} after rollback: {err:#}",
-                    previous.id
-                );
-            }
-        } else {
-            port_publisher.clear_workspace_ports(&previous.sandbox_id, &previous.id);
-        }
-    } else {
-        port_publisher.clear_workspace_ports(&previous.sandbox_id, &previous.id);
-    }
-}
-
-fn workspace_port_statuses(
-    metadata: &workspace::WorkspaceMetadata,
-    port_publisher: &Arc<PortPublisher>,
-) -> Vec<workspace::PublishedPortStatus> {
-    workspace::merge_published_port_statuses(
-        &metadata.published_ports,
-        &port_publisher.workspace_statuses(&metadata.sandbox_id, &metadata.id),
-    )
-}
-
 #[cfg(test)]
 #[path = "../../../tests/src/daemon/dispatch.rs"]
 mod tests;

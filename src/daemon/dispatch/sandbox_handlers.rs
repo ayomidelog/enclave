@@ -173,7 +173,7 @@ pub(super) fn dispatch_sandbox_destroy(
 }
 
 #[derive(Debug, serde::Serialize)]
-struct SandboxWipeReport {
+pub(super) struct SandboxWipeReport {
     removed: Vec<String>,
     errors: Vec<String>,
 }
