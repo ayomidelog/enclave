@@ -45,15 +45,24 @@ pub(super) fn check_workspace_network(state_dir: &Path) -> DoctorCheck {
         }
     };
     let owners = expected.values().cloned().collect::<BTreeSet<_>>();
-    let leaked_owners = leaked_rule_owners(&owners, &rules);
+    // The shared bridge rules carry the same ownership comment but belong to no
+    // workspace, so they stay out of the per-workspace leak check.
+    let workspace_rules = rules
+        .iter()
+        .filter(|rule| rule.owner != nat::BRIDGE_RULE_OWNER)
+        .cloned()
+        .collect::<Vec<_>>();
+    let shared_rules = rules.len() - workspace_rules.len();
+    let leaked_owners = leaked_rule_owners(&owners, &workspace_rules);
 
     if diff.is_clean() && leaked_owners.is_empty() {
         return DoctorCheck::ok(
             NAME,
             &format!(
-                "{} workspace veth(s) and {} owned firewall rule(s) accounted for",
+                "{} workspace veth(s), {} workspace firewall rule(s), and {} shared bridge rule(s) accounted for",
                 expected.len(),
-                rules.len()
+                workspace_rules.len(),
+                shared_rules
             ),
         );
     }

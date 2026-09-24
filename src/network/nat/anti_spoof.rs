@@ -1,5 +1,6 @@
 use super::primitives::{
-    detect_iptables, ensure_forward_rule_first, ensure_input_rule_first, remove_filter_rule,
+    comment_args, detect_iptables, ensure_forward_rule_first, ensure_input_rule_first,
+    remove_filter_rule,
 };
 use super::*;
 
@@ -141,13 +142,4 @@ pub(in crate::network) fn anti_spoof_rule_args(
     rule.push("-j".to_string());
     rule.push("DROP".to_string());
     rule
-}
-
-pub(in crate::network) fn comment_args(owner: &str) -> Vec<String> {
-    vec![
-        "-m".to_string(),
-        COMMENT_MODULE.to_string(),
-        "--comment".to_string(),
-        format!("{RULE_COMMENT_PREFIX}{owner}"),
-    ]
 }

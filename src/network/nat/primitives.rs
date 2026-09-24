@@ -1,11 +1,48 @@
 use super::*;
 
-pub(in crate::network) fn ensure_forward_rule(
-    iptables: &str,
-    rule_args: &[&str],
-    rule_desc: &str,
-) -> Result<()> {
-    ensure_filter_rule(iptables, "FORWARD", rule_args, false, rule_desc)
+/// Append the ownership comment that marks a rule as Enclave's.
+pub(in crate::network) fn comment_args(owner: &str) -> Vec<String> {
+    vec![
+        "-m".to_string(),
+        COMMENT_MODULE.to_string(),
+        "--comment".to_string(),
+        format!("{RULE_COMMENT_PREFIX}{owner}"),
+    ]
+}
+
+/// Split one `iptables -S` rule body into the arguments `iptables -D` expects.
+///
+/// `iptables -S` quotes only the values that need it, and the ownership comment
+/// is the one value Enclave reads back, so a double-quote-aware split is enough
+/// to rebuild the argument list. A mistyped argument list cannot delete the
+/// wrong rule: `iptables -D` only removes a rule that matches every argument.
+pub(in crate::network) fn split_rule_args(rule: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut pending = false;
+    for character in rule.chars() {
+        match character {
+            '"' => {
+                quoted = !quoted;
+                pending = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if pending {
+                    args.push(std::mem::take(&mut current));
+                    pending = false;
+                }
+            }
+            c => {
+                current.push(c);
+                pending = true;
+            }
+        }
+    }
+    if pending {
+        args.push(current);
+    }
+    args
 }
 
 pub(in crate::network) fn ensure_input_rule_first(
@@ -13,7 +50,7 @@ pub(in crate::network) fn ensure_input_rule_first(
     rule_args: &[&str],
     rule_desc: &str,
 ) -> Result<()> {
-    ensure_filter_rule(iptables, "INPUT", rule_args, true, rule_desc)
+    ensure_rule(iptables, "filter", "INPUT", rule_args, true, rule_desc)
 }
 
 pub(in crate::network) fn ensure_forward_rule_first(
@@ -21,17 +58,19 @@ pub(in crate::network) fn ensure_forward_rule_first(
     rule_args: &[&str],
     rule_desc: &str,
 ) -> Result<()> {
-    ensure_filter_rule(iptables, "FORWARD", rule_args, true, rule_desc)
+    ensure_rule(iptables, "filter", "FORWARD", rule_args, true, rule_desc)
 }
 
-pub(in crate::network) fn ensure_filter_rule(
+/// Add a rule unless an identical one is already in the chain.
+pub(in crate::network) fn ensure_rule(
     iptables: &str,
+    table: &str,
     chain: &str,
     rule_args: &[&str],
     insert_first: bool,
     rule_desc: &str,
 ) -> Result<()> {
-    let mut check_args = vec!["-C", chain];
+    let mut check_args = vec!["-t", table, "-C", chain];
     check_args.extend_from_slice(rule_args);
 
     let check = Command::new(iptables)
@@ -45,9 +84,9 @@ pub(in crate::network) fn ensure_filter_rule(
     }
 
     let mut add_args = if insert_first {
-        vec!["-I", chain, "1"]
+        vec!["-t", table, "-I", chain, "1"]
     } else {
-        vec!["-A", chain]
+        vec!["-t", table, "-A", chain]
     };
     add_args.extend_from_slice(rule_args);
     let output = Command::new(iptables)
@@ -65,20 +104,14 @@ pub(in crate::network) fn ensure_filter_rule(
     Ok(())
 }
 
-pub(in crate::network) fn remove_forward_rule(iptables: &str, rule_args: &[&str]) -> Result<()> {
-    remove_filter_rule(iptables, "FORWARD", rule_args)
-}
-
-pub(in crate::network) fn remove_input_rule(iptables: &str, rule_args: &[&str]) -> Result<()> {
-    remove_filter_rule(iptables, "INPUT", rule_args)
-}
-
-pub(in crate::network) fn remove_filter_rule(
+/// Delete the first rule in `chain` that matches every argument.
+pub(in crate::network) fn delete_rule(
     iptables: &str,
+    table: &str,
     chain: &str,
     rule_args: &[&str],
 ) -> Result<()> {
-    let mut delete_args = vec!["-D", chain];
+    let mut delete_args = vec!["-t", table, "-D", chain];
     delete_args.extend_from_slice(rule_args);
     let output = Command::new(iptables)
         .args(&delete_args)
@@ -87,14 +120,20 @@ pub(in crate::network) fn remove_filter_rule(
     if !output.status.success() && !is_rule_missing_error(&output.stderr) {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "failed to remove {} rule for {} ({}): {}",
-            chain,
-            ipam::SUBNET_CIDR,
+            "failed to remove {chain} rule in table {table} ({}): {}",
             output.status,
             stderr.trim()
         );
     }
     Ok(())
+}
+
+pub(in crate::network) fn remove_filter_rule(
+    iptables: &str,
+    chain: &str,
+    rule_args: &[&str],
+) -> Result<()> {
+    delete_rule(iptables, "filter", chain, rule_args)
 }
 
 pub(in crate::network) fn is_rule_already_exists_error(stderr: &[u8]) -> bool {

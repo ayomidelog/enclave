@@ -89,3 +89,100 @@ fn anti_spoof_detection_ignores_other_chains() {
     let other_chain = "-A DOCKER-USER -i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP\n";
     assert!(chains_with_anti_spoof_rule(other_chain, "veth-4-0a1b2c", "10.200.0.4").is_empty());
 }
+#[test]
+fn split_rule_args_rebuilds_a_quoted_ownership_comment() {
+    let rule = "-s 10.200.0.0/24 -m comment --comment \"enclave:bridge\" -j ACCEPT";
+    assert_eq!(
+        split_rule_args(rule),
+        vec![
+            "-s",
+            "10.200.0.0/24",
+            "-m",
+            "comment",
+            "--comment",
+            "enclave:bridge",
+            "-j",
+            "ACCEPT"
+        ]
+    );
+}
+
+#[test]
+fn split_rule_args_keeps_an_unquoted_comment_whole() {
+    let rule =
+        "-i veth-3-0a1b2c ! -s 10.200.0.3/32 -m comment --comment enclave:session-abc -j DROP";
+    assert!(split_rule_args(rule).contains(&"enclave:session-abc".to_string()));
+}
+
+#[test]
+fn bridge_rules_are_tagged_and_record_the_untagged_shape() {
+    let rules = bridge_rules();
+    let tag = vec![
+        "-m".to_string(),
+        "comment".to_string(),
+        "--comment".to_string(),
+        format!("{RULE_COMMENT_PREFIX}{BRIDGE_RULE_OWNER}"),
+    ];
+    for rule in &rules {
+        // The tagged shape is the untagged one with the ownership comment
+        // inserted before the jump target, which is where `iptables -S` prints
+        // a match module.
+        let mut tagged = rule.legacy_args.clone();
+        let target = tagged.split_off(tagged.len() - 2);
+        tagged.extend(tag.clone());
+        tagged.extend(target);
+        assert_eq!(tagged, rule.args, "{} {}", rule.table, rule.chain);
+    }
+    assert_eq!(rules.iter().filter(|rule| rule.table == "nat").count(), 1);
+    assert!(rules.iter().any(|rule| rule.table == "filter"));
+}
+
+#[test]
+fn bridge_rules_keep_the_match_each_shared_rule_needs() {
+    let rules = bridge_rules();
+    let has = |table: &str, chain: &str, marker: &str| {
+        rules.iter().any(|rule| {
+            rule.table == table
+                && rule.chain == chain
+                && rule.legacy_args.contains(&marker.to_string())
+        })
+    };
+    assert!(has("filter", "INPUT", "addrtype"));
+    assert!(has("filter", "FORWARD", "conntrack"));
+    assert!(has("filter", "FORWARD", METADATA_IPV4_CIDR));
+    assert!(has("nat", "POSTROUTING", "MASQUERADE"));
+}
+
+#[test]
+fn stale_bridge_rules_retire_other_shapes_and_ignore_workspace_rules() {
+    let rules = bridge_rules();
+    let current = rules[0].clone();
+    let owned = vec![
+        OwnedRule {
+            table: current.table.to_string(),
+            chain: current.chain.to_string(),
+            owner: BRIDGE_RULE_OWNER.to_string(),
+            rule: current.args.join(" "),
+        },
+        // A previous release ordered the ownership comment before the match.
+        OwnedRule {
+            table: "filter".to_string(),
+            chain: "FORWARD".to_string(),
+            owner: BRIDGE_RULE_OWNER.to_string(),
+            rule: "-m comment --comment \"enclave:bridge\" -s 10.200.0.0/24 -j ACCEPT".to_string(),
+        },
+        OwnedRule {
+            table: "filter".to_string(),
+            chain: "INPUT".to_string(),
+            owner: "session-abc".to_string(),
+            rule: "-i veth-3-0a1b2c -j DROP".to_string(),
+        },
+    ];
+
+    let stale = stale_bridge_rules(&rules, &owned);
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0].table, "filter");
+    assert_eq!(stale[0].chain, "FORWARD");
+    // An empty expected set retires every shared rule, which a teardown needs.
+    assert_eq!(stale_bridge_rules(&[], &owned).len(), 2);
+}

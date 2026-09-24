@@ -31,11 +31,13 @@ fn owned_rule_owners_ignore_unrelated_and_known_workspaces() {
     let expected = BTreeSet::from(["session-aaaa".to_string()]);
     let rules = vec![
         crate::network::nat::OwnedRule {
+            table: "filter".to_string(),
             chain: "INPUT".to_string(),
             owner: "session-aaaa".to_string(),
             rule: String::new(),
         },
         crate::network::nat::OwnedRule {
+            table: "filter".to_string(),
             chain: "FORWARD".to_string(),
             owner: "session-bbbb".to_string(),
             rule: String::new(),
