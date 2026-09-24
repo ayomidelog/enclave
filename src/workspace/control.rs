@@ -17,7 +17,7 @@ use crate::network;
 use crate::registry::{with_registry, with_registry_mut, RegistrySandbox};
 use crate::sandbox::{effective_rootfs_path, resolve_sandbox_id, SandboxMetadata, SandboxStatus};
 
-use crate::workspace::cleanup::{self, WorkspaceStopCleanup};
+use crate::workspace::cleanup::{self, CleanupMode, WorkspaceStopCleanup};
 use crate::workspace::ports::{
     merge_published_port_statuses, PublishedPortSpec, PublishedPortStatus,
 };
@@ -36,7 +36,8 @@ mod stop;
 mod update;
 
 pub use destroy::{
-    destroy_all_workspaces, destroy_workspace, remove_workspace, BatchDestroyReport,
+    destroy_all_workspaces, destroy_workspace, destroy_workspace_with_mode, remove_workspace,
+    BatchDestroyReport, WorkspaceDestroyReport,
 };
 pub use query::{
     list_workspace_items, list_workspaces, workspace_metadata, workspace_runtime_is_active,

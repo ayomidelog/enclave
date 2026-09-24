@@ -84,6 +84,24 @@ pub struct WorkspaceTargetOrLocalArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct WorkspaceDestroyArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace: String,
+    /// Remove the registry record even when host resources could not be released
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceWipeArgs {
+    /// Remove registry records even when host resources could not be released
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct WorkspaceExecArgs {
     #[arg(value_parser = parse_entity_name)]
     pub sandbox_id: String,

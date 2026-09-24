@@ -24,9 +24,9 @@ mod workspace_handlers;
 
 use action::Action;
 use params::{
-    parse_optional_bool_field, parse_required_disk_bytes, parse_sandbox_limits_create,
-    parse_sandbox_limits_update, parse_string_array, parse_workspace_limits_create,
-    parse_workspace_limits_update, require_param_str,
+    parse_cleanup_mode, parse_optional_bool_field, parse_required_disk_bytes,
+    parse_sandbox_limits_create, parse_sandbox_limits_update, parse_string_array,
+    parse_workspace_limits_create, parse_workspace_limits_update, require_param_str,
 };
 use ports::{
     dispatch_workspace_port_list, dispatch_workspace_port_publish,
@@ -102,7 +102,7 @@ pub(crate) fn dispatch(
         Action::SandboxResume => dispatch_sandbox_resume(&request.params, config, port_publisher),
         Action::SandboxStatus => dispatch_sandbox_status(&request.params, config),
         Action::SandboxDestroy => dispatch_sandbox_destroy(&request.params, config, port_publisher),
-        Action::SandboxWipe => dispatch_sandbox_wipe(config, port_publisher),
+        Action::SandboxWipe => dispatch_sandbox_wipe(&request.params, config, port_publisher),
         Action::SandboxList => {
             let sandboxes = sandbox::list_sandbox_items(&config.state_dir)?;
             Ok(serde_json::to_value(sandboxes)?)
@@ -151,8 +151,9 @@ pub(crate) fn dispatch(
             dispatch_workspace_target(&request.params, config, "destroy", port_publisher)
         }
         Action::WorkspaceWipe => {
+            let mode = parse_cleanup_mode(&request.params)?;
             let workspaces = workspace::list_workspaces(&config.state_dir, None)?;
-            let report = workspace::destroy_all_workspaces(&config.state_dir)?;
+            let report = workspace::destroy_all_workspaces(&config.state_dir, mode)?;
             for workspace in &workspaces {
                 if report.removed.contains(&workspace.id) {
                     port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);

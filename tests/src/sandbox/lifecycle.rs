@@ -330,7 +330,7 @@ fn destroy_with_live_workspace_retains_sandbox_and_registry() {
 
     let error = destroy_sandbox(&state_dir, &sandbox.id)
         .expect_err("sandbox destroy must refuse a live runtime it cannot safely signal");
-    assert!(format!("{error:#}").contains("runtime pid"));
+    assert!(format!("{error:#}").contains("is still alive"));
     assert!(workspace_path.exists());
     assert!(sandbox_path.join("rootfs").exists());
     with_registry(&state_dir, |registry| {

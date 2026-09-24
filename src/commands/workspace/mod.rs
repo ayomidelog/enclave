@@ -19,18 +19,19 @@ use anyhow::{bail, Result};
 use serde_json::json;
 
 use crate::cli::{
-    SnapshotCommands, WorkspaceCommands, WorkspaceCreateArgs, WorkspaceExecArgs, WorkspaceListArgs,
-    WorkspaceLogsArgs, WorkspacePortCommands, WorkspacePortPublishArgs, WorkspacePortUnpublishArgs,
-    WorkspaceRemoveArgs, WorkspaceResizeArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs,
-    WorkspaceSnapshotExportArgs, WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs,
-    WorkspaceTargetArgs, WorkspaceTargetOrLocalArgs,
+    SnapshotCommands, WorkspaceCommands, WorkspaceCreateArgs, WorkspaceDestroyArgs,
+    WorkspaceExecArgs, WorkspaceListArgs, WorkspaceLogsArgs, WorkspacePortCommands,
+    WorkspacePortPublishArgs, WorkspacePortUnpublishArgs, WorkspaceRemoveArgs, WorkspaceResizeArgs,
+    WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
+    WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
+    WorkspaceTargetOrLocalArgs, WorkspaceWipeArgs,
 };
 use crate::workspace::{
     PublishedPortStatus, WorkspaceListItem, WorkspaceLogsResult, WorkspaceMetadata,
     WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo,
 };
 
-use super::{confirm_destructive_action, daemon, send, send_managed};
+use super::{confirm_destructive_action, daemon, report_retained_resources, send, send_managed};
 
 use exec::{resolve_workspace_target_from_optional, run_workspace_exec};
 use lifecycle::{
@@ -60,7 +61,7 @@ pub(crate) fn run_workspace_command(socket: &Path, command: WorkspaceCommands) -
         WorkspaceCommands::Cp(args) => cp::run_workspace_cp(&ctx, args),
         WorkspaceCommands::List(args) => run_workspace_list(&ctx, args),
         WorkspaceCommands::Remove(args) => run_workspace_remove(&ctx, args),
-        WorkspaceCommands::Wipe => run_workspace_wipe(&ctx),
+        WorkspaceCommands::Wipe(args) => run_workspace_wipe(&ctx, args),
         WorkspaceCommands::Start(args) => run_workspace_start(&ctx, args),
         WorkspaceCommands::Stop(args) => run_workspace_stop(&ctx, args),
         WorkspaceCommands::Destroy(args) => run_workspace_destroy(&ctx, args),

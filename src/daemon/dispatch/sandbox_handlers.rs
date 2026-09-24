@@ -153,13 +153,14 @@ pub(super) fn dispatch_sandbox_destroy(
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let mode = parse_cleanup_mode(params)?;
     let status = sandbox::sandbox_status(&config.state_dir, selector)?;
     if status.status == sandbox::SandboxStatus::Paused {
         sandbox::resume_sandbox(&config.state_dir, selector)?;
     }
     let workspaces = workspace::list_workspaces(&config.state_dir, Some(selector))?;
     let failed = workspace::stop_running_workspaces_in_sandbox(&config.state_dir, selector)?;
-    if !failed.is_empty() {
+    if !failed.is_empty() && !mode.is_force() {
         bail!(
             "sandbox destroy aborted because workspace cleanup did not complete: {}",
             failed.join("; ")
@@ -168,33 +169,52 @@ pub(super) fn dispatch_sandbox_destroy(
     for workspace in workspaces {
         port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
     }
-    let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
-    Ok(json!({ "removed": removed }))
+    let report = sandbox::destroy_sandbox_with_mode(&config.state_dir, selector, mode)?;
+    Ok(json!({
+        "sandbox_id": report.sandbox_id,
+        "mode": report.mode,
+        "retained": report.retained,
+        "workspace_stop_failures": failed,
+    }))
 }
 
 #[derive(Debug, serde::Serialize)]
 pub(super) struct SandboxWipeReport {
     removed: Vec<String>,
     errors: Vec<String>,
+    /// Resources a force wipe could not release, keyed by sandbox id.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    retained: std::collections::BTreeMap<String, Vec<workspace::RetainedResource>>,
 }
 
 pub(super) fn dispatch_sandbox_wipe(
+    params: &Value,
     config: &DaemonConfig,
     port_publisher: &Arc<PortPublisher>,
 ) -> Result<Value> {
+    let mode = parse_cleanup_mode(params)?;
     let sandboxes = sandbox::list_sandbox_items(&config.state_dir)?;
     let mut report = SandboxWipeReport {
         removed: Vec::new(),
         errors: Vec::new(),
+        retained: std::collections::BTreeMap::new(),
     };
     for item in sandboxes {
+        let sandbox_id = item.id;
         match dispatch_sandbox_destroy(
-            &serde_json::json!({"sandbox": item.id}),
+            &serde_json::json!({ "sandbox": sandbox_id, "force": mode.is_force() }),
             config,
             port_publisher,
         ) {
-            Ok(_) => report.removed.push(item.id),
-            Err(error) => report.errors.push(format!("{}: {error:#}", item.id)),
+            Ok(value) => {
+                let retained: Vec<workspace::RetainedResource> =
+                    serde_json::from_value(value.get("retained").cloned().unwrap_or_default())?;
+                if !retained.is_empty() {
+                    report.retained.insert(sandbox_id.clone(), retained);
+                }
+                report.removed.push(sandbox_id);
+            }
+            Err(error) => report.errors.push(format!("{sandbox_id}: {error:#}")),
         }
     }
     Ok(serde_json::to_value(report)?)

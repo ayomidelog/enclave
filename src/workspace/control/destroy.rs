@@ -1,5 +1,26 @@
 use super::*;
 
+/// What a workspace destroy removed and what it had to leave behind.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceDestroyReport {
+    pub workspace_id: String,
+    pub mode: cleanup::CleanupMode,
+    /// Resources that are still held, reported in force mode.
+    #[serde(default)]
+    pub retained: Vec<cleanup::RetainedResource>,
+}
+
+impl WorkspaceDestroyReport {
+    /// One line naming everything that was left behind, for command output.
+    pub fn retained_summary(&self) -> String {
+        self.retained
+            .iter()
+            .map(|item| format!("{}: {}", item.resource, item.detail))
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+}
+
 pub fn remove_workspace(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
@@ -13,6 +34,22 @@ pub fn destroy_workspace(
     sandbox_selector: &str,
     workspace_selector: &str,
 ) -> Result<String> {
+    destroy_workspace_with_mode(
+        state_dir,
+        sandbox_selector,
+        workspace_selector,
+        CleanupMode::Normal,
+    )
+    .map(|report| report.workspace_id)
+}
+
+/// Destroy a workspace and report what was released and what was retained.
+pub fn destroy_workspace_with_mode(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    mode: CleanupMode,
+) -> Result<WorkspaceDestroyReport> {
     let (sandbox, workspace) = with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
         let sandbox = registry
@@ -43,9 +80,22 @@ pub fn destroy_workspace(
         format!("{}/{}", sandbox.id, workspace_id),
     )?;
     journal.phase("cleanup")?;
-    if let Err(error) = cleanup::cleanup_workspace_artifacts(&sandbox, &workspace) {
-        let _ = journal.fail(format!("{error:#}"));
-        return Err(error);
+    let outcome = match cleanup::cleanup_workspace_artifacts(&sandbox, &workspace, mode) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
+    };
+    if !outcome.retained.is_empty() {
+        // Force mode removes the registry record and leaves the host state to
+        // `doctor --repair`, so the journal has to name what was left behind.
+        journal.phase("retain_unreleased_resources")?;
+        tracing::warn!(
+            "workspace '{}' destroy left resources behind: {}",
+            workspace_id,
+            outcome.retained_summary()
+        );
     }
     journal.phase("remove_registry_record")?;
 
@@ -62,16 +112,26 @@ pub fn destroy_workspace(
     }
     journal.succeed()?;
 
-    Ok(workspace_id)
+    Ok(WorkspaceDestroyReport {
+        workspace_id,
+        mode,
+        retained: outcome.retained,
+    })
 }
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct BatchDestroyReport {
     pub removed: Vec<String>,
     pub errors: Vec<String>,
+    /// Resources a force wipe could not release, keyed by workspace id.
+    #[serde(default)]
+    pub retained: std::collections::BTreeMap<String, Vec<cleanup::RetainedResource>>,
 }
 
-pub fn destroy_all_workspaces(state_dir: &std::path::Path) -> Result<BatchDestroyReport> {
+pub fn destroy_all_workspaces(
+    state_dir: &std::path::Path,
+    mode: CleanupMode,
+) -> Result<BatchDestroyReport> {
     let plan = with_registry(state_dir, |registry| {
         let mut plan = Vec::new();
         for sandbox in registry.sandboxes.values() {
@@ -108,14 +168,14 @@ pub fn destroy_all_workspaces(state_dir: &std::path::Path) -> Result<BatchDestro
                     break;
                 };
                 let (sandbox, workspace) = &plan[index];
-                let result =
-                    cleanup::cleanup_workspace_artifacts(sandbox, workspace).and_then(|()| {
+                let result = cleanup::cleanup_workspace_artifacts(sandbox, workspace, mode)
+                    .and_then(|outcome| {
                         let workspace_id = workspace.id.clone();
                         with_registry_mut(state_dir, |registry| {
                             if let Some(sandbox) = registry.sandboxes.get_mut(&sandbox.id) {
                                 sandbox.workspaces.remove(&workspace_id);
                             }
-                            Ok(workspace_id)
+                            Ok((workspace_id, outcome))
                         })
                     });
                 if let Ok(mut results) = results.lock() {
@@ -132,7 +192,14 @@ pub fn destroy_all_workspaces(state_dir: &std::path::Path) -> Result<BatchDestro
     let mut report = BatchDestroyReport::default();
     for result in results.into_iter().flatten() {
         match result {
-            Ok(workspace_id) => report.removed.push(workspace_id),
+            Ok((workspace_id, outcome)) => {
+                if !outcome.is_complete() {
+                    report
+                        .retained
+                        .insert(workspace_id.clone(), outcome.retained);
+                }
+                report.removed.push(workspace_id);
+            }
             Err(error) => report.errors.push(format!("{error:#}")),
         }
     }

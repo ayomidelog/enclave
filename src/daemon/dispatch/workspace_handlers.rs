@@ -246,10 +246,20 @@ pub(super) fn dispatch_workspace_target(
         "destroy" => {
             let metadata_before =
                 workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-            let removed =
-                workspace::destroy_workspace(&config.state_dir, sandbox, workspace_selector)?;
+            let mode = parse_cleanup_mode(params)?;
+            let report = workspace::destroy_workspace_with_mode(
+                &config.state_dir,
+                sandbox,
+                workspace_selector,
+                mode,
+            )?;
             port_publisher.clear_workspace_ports(&metadata_before.sandbox_id, &metadata_before.id);
-            Ok(json!({ "removed": removed, "sandbox": sandbox }))
+            Ok(json!({
+                "workspace_id": report.workspace_id,
+                "mode": report.mode,
+                "retained": report.retained,
+                "sandbox": sandbox,
+            }))
         }
         "status" => {
             let metadata =

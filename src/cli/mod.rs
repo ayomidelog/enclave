@@ -16,18 +16,21 @@ pub use admin::{
     PolicyClearArgs, PolicyDefaultArgs, PolicyRuleArgs, RegistryRepairArgs, RootfsExportArgs,
     RootfsFetchArgs, RootfsImportArgs,
 };
-pub use common::{AuthProviderArgs, CreateArgs, DoctorArgs, PsArgs, RestartArgs, UpArgs};
+pub use common::{
+    AuthProviderArgs, CreateArgs, DestroyArgs, DoctorArgs, PsArgs, RestartArgs, UpArgs, WipeArgs,
+};
 pub use daemon::{RunArgs, StartArgs};
 pub use session::{
     WorkspaceCommandInternalArgs, WorkspaceFileReceiveArgs, WorkspaceSessionBootstrapArgs,
     WorkspaceSessionLaunchArgs, WorkspaceSessionLoopArgs, WorkspaceSessionPersistentHelperArgs,
 };
 pub use workspace::{
-    WorkspaceCpArgs, WorkspaceCreateArgs, WorkspaceEnterArgs, WorkspaceExecArgs, WorkspaceListArgs,
-    WorkspaceLogsArgs, WorkspacePortPublishArgs, WorkspacePortUnpublishArgs, WorkspaceRemoveArgs,
-    WorkspaceResizeArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
-    WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
-    WorkspaceTargetOrLocalArgs,
+    WorkspaceCpArgs, WorkspaceCreateArgs, WorkspaceDestroyArgs, WorkspaceEnterArgs,
+    WorkspaceExecArgs, WorkspaceListArgs, WorkspaceLogsArgs, WorkspacePortPublishArgs,
+    WorkspacePortUnpublishArgs, WorkspaceRemoveArgs, WorkspaceResizeArgs, WorkspaceRestoreArgs,
+    WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs, WorkspaceSnapshotGcArgs,
+    WorkspaceSnapshotImportArgs, WorkspaceTargetArgs, WorkspaceTargetOrLocalArgs,
+    WorkspaceWipeArgs,
 };
 
 #[derive(Parser, Debug)]
@@ -84,10 +87,7 @@ pub enum Commands {
         #[arg(value_parser = parse_entity_name)]
         sandbox: String,
     },
-    Destroy {
-        #[arg(value_parser = parse_entity_name)]
-        sandbox: String,
-    },
+    Destroy(DestroyArgs),
     List,
     Stats,
     Ps(PsArgs),
@@ -99,7 +99,7 @@ pub enum Commands {
         #[arg(value_parser = parse_entity_name)]
         sandbox_id: String,
     },
-    Wipe,
+    Wipe(WipeArgs),
     Workspace {
         #[command(subcommand)]
         command: WorkspaceCommands,
@@ -151,10 +151,10 @@ pub enum WorkspaceCommands {
     Cp(WorkspaceCpArgs),
     List(WorkspaceListArgs),
     Remove(WorkspaceRemoveArgs),
-    Wipe,
+    Wipe(WorkspaceWipeArgs),
     Start(WorkspaceTargetArgs),
     Stop(WorkspaceTargetArgs),
-    Destroy(WorkspaceTargetArgs),
+    Destroy(WorkspaceDestroyArgs),
     Status(WorkspaceTargetArgs),
     Stats(WorkspaceTargetOrLocalArgs),
     Enter(WorkspaceEnterArgs),

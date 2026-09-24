@@ -151,7 +151,7 @@ mod stop;
 mod update;
 
 pub use create::{create_sandbox, create_sandbox_with_options, SandboxCreateOptions};
-pub use destroy::destroy_sandbox;
+pub use destroy::{destroy_sandbox, destroy_sandbox_with_mode, SandboxDestroyReport};
 pub use query::{list_sandbox_items, sandbox_status};
 pub use setup::exec_setup_command;
 pub use start::start_sandbox;

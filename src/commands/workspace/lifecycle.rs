@@ -137,7 +137,10 @@ pub(super) fn run_workspace_remove(
     Ok(())
 }
 
-pub(super) fn run_workspace_wipe(ctx: &WorkspaceCommandContext<'_>) -> Result<()> {
+pub(super) fn run_workspace_wipe(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceWipeArgs,
+) -> Result<()> {
     daemon::ensure_daemon_running_for_action(ctx.socket, "workspace.wipe")?;
     let response = send(ctx.socket, "workspace.list", json!({}))?;
     let workspaces: Vec<WorkspaceMetadata> = serde_json::from_value(response)?;
@@ -148,8 +151,13 @@ pub(super) fn run_workspace_wipe(ctx: &WorkspaceCommandContext<'_>) -> Result<()
 
     if !confirm_destructive_action(
         &format!(
-            "this will permanently delete all {} workspaces across all sandboxes.",
-            workspaces.len()
+            "this will permanently delete all {} workspaces across all sandboxes.{}",
+            workspaces.len(),
+            if args.force {
+                " force mode removes the records even when host resources cannot be released."
+            } else {
+                ""
+            }
         ),
         "delete all workspace",
     )? {
@@ -157,9 +165,14 @@ pub(super) fn run_workspace_wipe(ctx: &WorkspaceCommandContext<'_>) -> Result<()
         return Ok(());
     }
 
-    let response = send_managed(ctx.socket, "workspace.wipe", json!({}))?;
+    let response = send_managed(ctx.socket, "workspace.wipe", json!({ "force": args.force }))?;
     let report: crate::workspace::BatchDestroyReport = serde_json::from_value(response)?;
     println!("deleted {} workspaces", report.removed.len());
+    report_retained_resources(report.retained.iter().flat_map(|(workspace, resources)| {
+        resources
+            .iter()
+            .map(move |item| format!("{workspace}/{}: {}", item.resource, item.detail))
+    }));
     Ok(())
 }
 
@@ -224,22 +237,36 @@ pub(super) fn run_workspace_stop(
 
 pub(super) fn run_workspace_destroy(
     ctx: &WorkspaceCommandContext<'_>,
-    args: WorkspaceTargetArgs,
+    args: WorkspaceDestroyArgs,
 ) -> Result<()> {
+    let WorkspaceDestroyArgs {
+        sandbox,
+        workspace,
+        force,
+    } = args;
     tracing::info!(
-        "destroying workspace '{}' in sandbox '{}'...",
-        args.workspace,
-        args.sandbox
+        "destroying workspace '{}' in sandbox '{}'{}...",
+        workspace,
+        sandbox,
+        if force { " (force)" } else { "" }
     );
-    send_managed(
+    let response = send_managed(
         ctx.socket,
         "workspace.destroy",
         json!({
-            "sandbox": args.sandbox,
-            "workspace": args.workspace,
+            "sandbox": sandbox,
+            "workspace": workspace,
+            "force": force,
         }),
     )?;
-    println!("destroyed workspace");
+    let report: crate::workspace::WorkspaceDestroyReport = serde_json::from_value(response)?;
+    println!("destroyed workspace {}", report.workspace_id);
+    report_retained_resources(
+        report
+            .retained
+            .iter()
+            .map(|item| format!("{}: {}", item.resource, item.detail)),
+    );
     Ok(())
 }
 

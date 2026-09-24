@@ -21,12 +21,14 @@ pub const DEFAULT_WORKSPACE_PATH: &str =
 
 pub use crate::network::publish::PortPublisher;
 pub(crate) use certificate::{verify_workspace_cleanup, WorkspaceCleanupCertificate};
+pub use cleanup::{CleanupMode, RetainedResource};
 pub use control::resize_workspace_disk;
 pub(crate) use control::start_workspace_with_security;
 pub use control::stop_workspace_with_certificate;
 pub use control::{
-    destroy_all_workspaces, destroy_workspace, list_workspace_items, list_workspaces,
-    remove_workspace, start_workspace, stop_workspace, workspace_status, BatchDestroyReport,
+    destroy_all_workspaces, destroy_workspace, destroy_workspace_with_mode, list_workspace_items,
+    list_workspaces, remove_workspace, start_workspace, stop_workspace, workspace_status,
+    BatchDestroyReport, WorkspaceDestroyReport,
 };
 pub(crate) use control::{
     freeze_workspaces_in_sandbox, reconcile_workspace_runtime_state,

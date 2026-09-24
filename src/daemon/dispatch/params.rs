@@ -128,6 +128,18 @@ pub(super) fn parse_optional_bool_field(params: &Value, key: &str) -> Result<Opt
     }
 }
 
+/// How much cleanup a destructive request requires before it reports success.
+///
+/// `force` selects force mode, which removes the registry record even when host
+/// resources could not be released. An absent or `false` value keeps normal
+/// mode, where a retained resource fails the request.
+pub(super) fn parse_cleanup_mode(params: &Value) -> Result<workspace::CleanupMode> {
+    match parse_optional_bool_field(params, "force")? {
+        Some(true) => Ok(workspace::CleanupMode::Force),
+        _ => Ok(workspace::CleanupMode::Normal),
+    }
+}
+
 pub(super) fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::SandboxLimits> {
     let limits = sandbox::SandboxLimits {
         cpu_percent: params.get("cpu_percent").and_then(Value::as_f64),

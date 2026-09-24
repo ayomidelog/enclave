@@ -97,13 +97,13 @@ pub fn run() -> Result<()> {
         Commands::Stop { sandbox } => sandbox::run_stop(&cli.socket, &sandbox),
         Commands::Pause { sandbox } => sandbox::run_pause(&cli.socket, &sandbox),
         Commands::Resume { sandbox } => sandbox::run_resume(&cli.socket, &sandbox),
-        Commands::Destroy { sandbox } => sandbox::run_destroy(&cli.socket, &sandbox),
+        Commands::Destroy(args) => sandbox::run_destroy(&cli.socket, args),
         Commands::List => sandbox::run_list(&cli.socket),
         Commands::Stats => stats::run_stats(&cli.socket),
         Commands::Ps(args) => ps::run_ps(&cli.socket, args),
         Commands::Status { sandbox } => sandbox::run_status(&cli.socket, &sandbox),
         Commands::Remove { sandbox_id } => sandbox::run_remove(&cli.socket, &sandbox_id),
-        Commands::Wipe => sandbox::run_wipe(&cli.socket),
+        Commands::Wipe(args) => sandbox::run_wipe(&cli.socket, args),
         Commands::Workspace { command } => workspace::run_workspace_command(&cli.socket, command),
         Commands::Snapshot { command } => workspace::run_snapshot_command(&cli.socket, command),
         Commands::Registry { command } => registry::run_registry_command(&cli.socket, command),
@@ -360,6 +360,23 @@ pub(crate) fn confirm_destructive_action(summary: &str, final_phrase: &str) -> R
     }
 
     Ok(true)
+}
+
+/// Report the host resources a force teardown could not release.
+///
+/// A force destroy removes the registry record either way, so these lines are
+/// the only remaining description of what is still running. Normal mode never
+/// reaches this with a non-empty list: the daemon fails the request instead.
+pub(crate) fn report_retained_resources(entries: impl IntoIterator<Item = String>) -> usize {
+    let entries = entries.into_iter().collect::<Vec<_>>();
+    if entries.is_empty() {
+        return 0;
+    }
+    eprintln!("retained host resources; finish with `enclave doctor --repair`:");
+    for entry in &entries {
+        eprintln!("  - {entry}");
+    }
+    entries.len()
 }
 
 fn prompt_exact(prompt: &str, expected: &str) -> Result<bool> {

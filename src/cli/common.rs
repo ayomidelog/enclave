@@ -49,6 +49,22 @@ pub struct CreateArgs {
     pub max_procs: Option<u64>,
 }
 
+#[derive(Args, Debug)]
+pub struct DestroyArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    /// Remove the registry record even when host resources could not be released
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct WipeArgs {
+    /// Remove registry records even when host resources could not be released
+    #[arg(long, default_value_t = false)]
+    pub force: bool,
+}
+
 pub(super) fn parse_bootstrap_method(s: &str) -> Result<BootstrapMethod, String> {
     s.parse::<BootstrapMethod>().map_err(|e| e.to_string())
 }

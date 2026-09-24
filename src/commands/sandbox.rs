@@ -9,10 +9,10 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
-use crate::cli::CreateArgs;
+use crate::cli::{CreateArgs, DestroyArgs, WipeArgs};
 use crate::sandbox::{SandboxListItem, SandboxMetadata, SandboxStatusReport};
 
-use super::{confirm_destructive_action, daemon, send, send_managed};
+use super::{confirm_destructive_action, daemon, report_retained_resources, send, send_managed};
 
 pub(crate) fn run_create(socket: &Path, args: CreateArgs) -> Result<()> {
     daemon::ensure_daemon_running(socket)?;
@@ -257,7 +257,18 @@ pub(crate) fn run_remove(socket: &Path, sandbox_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_wipe(socket: &Path) -> Result<()> {
+/// What `sandbox.wipe` removed, failed on, and had to leave behind.
+#[derive(serde::Deserialize)]
+struct SandboxWipeReport {
+    #[serde(default)]
+    removed: Vec<String>,
+    #[serde(default)]
+    errors: Vec<String>,
+    #[serde(default)]
+    retained: std::collections::BTreeMap<String, Vec<crate::workspace::RetainedResource>>,
+}
+
+pub(crate) fn run_wipe(socket: &Path, args: WipeArgs) -> Result<()> {
     daemon::ensure_daemon_running_for_action(socket, "sandbox.wipe")?;
     let response = send(socket, "sandbox.list", json!({}))?;
     let sandboxes: Vec<SandboxListItem> = serde_json::from_value(response)?;
@@ -268,8 +279,13 @@ pub(crate) fn run_wipe(socket: &Path) -> Result<()> {
 
     if !confirm_destructive_action(
         &format!(
-            "this will permanently delete all {} sandboxes and their workspaces.",
-            sandboxes.len()
+            "this will permanently delete all {} sandboxes and their workspaces.{}",
+            sandboxes.len(),
+            if args.force {
+                " force mode removes the records even when host resources cannot be released."
+            } else {
+                ""
+            }
         ),
         "delete all sandboxes",
     )? {
@@ -277,18 +293,23 @@ pub(crate) fn run_wipe(socket: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let response = send_managed(socket, "sandbox.wipe", json!({}))?;
-    let removed = response
-        .get("removed")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    let errors = response
-        .get("errors")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    println!("deleted {removed} sandboxes; {errors} failed");
-    if errors > 0 {
-        bail!("sandbox wipe completed with {errors} error(s)");
+    let response = send_managed(socket, "sandbox.wipe", json!({ "force": args.force }))?;
+    let report: SandboxWipeReport = serde_json::from_value(response)?;
+    println!(
+        "deleted {} sandboxes; {} failed",
+        report.removed.len(),
+        report.errors.len()
+    );
+    report_retained_resources(report.retained.iter().flat_map(|(sandbox, resources)| {
+        resources
+            .iter()
+            .map(move |item| format!("{sandbox}/{}: {}", item.resource, item.detail))
+    }));
+    if !report.errors.is_empty() {
+        bail!(
+            "sandbox wipe completed with {} error(s)",
+            report.errors.len()
+        );
     }
     Ok(())
 }
@@ -321,10 +342,26 @@ pub(crate) fn run_resume(socket: &Path, sandbox: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_destroy(socket: &Path, sandbox: &str) -> Result<()> {
-    tracing::info!("destroying sandbox '{}'...", sandbox);
-    send_managed(socket, "sandbox.destroy", json!({ "sandbox": sandbox }))?;
-    println!("destroyed sandbox '{}'", sandbox);
+pub(crate) fn run_destroy(socket: &Path, args: DestroyArgs) -> Result<()> {
+    let DestroyArgs { sandbox, force } = args;
+    tracing::info!(
+        "destroying sandbox '{}'{}...",
+        sandbox,
+        if force { " (force)" } else { "" }
+    );
+    let response = send_managed(
+        socket,
+        "sandbox.destroy",
+        json!({ "sandbox": sandbox, "force": force }),
+    )?;
+    let report: crate::sandbox::SandboxDestroyReport = serde_json::from_value(response)?;
+    println!("destroyed sandbox '{}'", report.sandbox_id);
+    report_retained_resources(
+        report
+            .retained
+            .iter()
+            .map(|item| format!("{}: {}", item.resource, item.detail)),
+    );
     Ok(())
 }
 
