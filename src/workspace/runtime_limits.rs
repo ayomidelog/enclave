@@ -10,6 +10,13 @@ pub(crate) fn workspace_cgroup_name(sandbox_id: &str, workspace_id: &str) -> Str
     format!("enclave-ws-{sandbox_id}-{workspace_id}")
 }
 
+/// Absolute path of the cgroup that holds a workspace's processes.
+pub(crate) fn workspace_cgroup_path(sandbox_id: &str, workspace_id: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from("/sys/fs/cgroup")
+        .join(crate::sandbox::cgroup::sandbox_cgroup_name(sandbox_id))
+        .join(workspace_cgroup_name(sandbox_id, workspace_id))
+}
+
 pub(crate) fn legacy_workspace_cgroup_name(pid: u32) -> String {
     format!("enclave-ws-{pid}")
 }

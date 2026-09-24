@@ -200,6 +200,30 @@ pub(crate) fn spawn_workspace_file_receiver(
         crate::workspace::session::duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
     let fds = crate::workspace::session::raw_fds(&namespace_fds);
     crate::perf::record_process_spawn();
+    let args = workspace_file_receive_args(
+        runtime_pid,
+        runtime_starttime_ticks,
+        target,
+        existing_workspace_cgroup_path(&workspace.sandbox_id, &workspace.id).as_deref(),
+        fds,
+    );
+    Command::new(current_exe)
+        .args(args)
+        .stdin(stdin)
+        .stdout(Stdio::null())
+        .stderr(stderr)
+        .spawn()
+        .context("failed to execute workspace file receiver")
+}
+
+/// Arguments for the helper that writes transferred data into a workspace.
+fn workspace_file_receive_args(
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    target: &str,
+    cgroup_path: Option<&str>,
+    fds: [std::os::fd::RawFd; 6],
+) -> Vec<String> {
     let mut args = vec![
         "internal".to_string(),
         "workspace-file-receive".to_string(),
@@ -210,14 +234,12 @@ pub(crate) fn spawn_workspace_file_receiver(
         "--target".to_string(),
         target.to_string(),
     ];
+    if let Some(cgroup_path) = cgroup_path {
+        args.push("--cgroup-path".to_string());
+        args.push(cgroup_path.to_string());
+    }
     append_namespace_fd_args(&mut args, fds);
-    Command::new(current_exe)
-        .args(args)
-        .stdin(stdin)
-        .stdout(Stdio::null())
-        .stderr(stderr)
-        .spawn()
-        .context("failed to execute workspace file receiver")
+    args
 }
 
 #[cfg(test)]
@@ -283,11 +305,9 @@ fn runtime_exec_command_args_base(
         "--workspace-id".to_string(),
         workspace_id.to_string(),
         "--cgroup-path".to_string(),
-        format!(
-            "/sys/fs/cgroup/{}/{}",
-            crate::sandbox::cgroup::sandbox_cgroup_name(sandbox_id),
-            crate::workspace::workspace_cgroup_name(sandbox_id, workspace_id)
-        ),
+        super::workspace_cgroup_path(sandbox_id, workspace_id)
+            .to_string_lossy()
+            .into_owned(),
     ];
     if let Some(fds) = fds {
         append_namespace_fd_args(&mut args, fds);
@@ -309,6 +329,15 @@ fn append_namespace_fd_args(args: &mut Vec<String>, fds: [std::os::fd::RawFd; 6]
         args.push(name.to_string());
         args.push(fd.to_string());
     }
+}
+
+/// Path of the workspace cgroup, when it already exists on this host.
+///
+/// A workspace started before the cgroup was introduced has no cgroup to attach
+/// to, so the helper is spawned without one instead of failing the transfer.
+fn existing_workspace_cgroup_path(sandbox_id: &str, workspace_id: &str) -> Option<String> {
+    let path = super::workspace_cgroup_path(sandbox_id, workspace_id);
+    path.is_dir().then(|| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

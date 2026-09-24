@@ -532,6 +532,8 @@ pub struct WorkspaceFileReceiveArgs {
     pub runtime_starttime_ticks: u64,
     #[arg(long)]
     pub target: String,
+    #[arg(long, default_value = "")]
+    pub cgroup_path: String,
     #[arg(long)]
     pub root_fd: Option<i32>,
     #[arg(long)]

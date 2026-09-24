@@ -267,6 +267,11 @@ pub struct WorkspaceRuntimeInfo {
     pub runtime_pid: u32,
     pub runtime_starttime_ticks: u64,
     pub sandbox_rootfs_path: String,
+    /// Cgroup that holds the workspace's processes, when the host enforces
+    /// limits with cgroup v2. Callers that spawn helpers into the workspace
+    /// must attach them here so the workspace limits apply to them.
+    #[serde(default)]
+    pub cgroup_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

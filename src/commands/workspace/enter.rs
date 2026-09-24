@@ -67,19 +67,11 @@ fn run_internal_workspace_command(
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let effective_cwd = sanitize_workspace_cwd(cwd);
     let status = Command::new(exe)
-        .arg("internal")
-        .arg("workspace-command")
-        .arg("--runtime-pid")
-        .arg(runtime.runtime_pid.to_string())
-        .arg("--runtime-starttime-ticks")
-        .arg(runtime.runtime_starttime_ticks.to_string())
-        .arg("--cwd")
-        .arg(&effective_cwd)
-        .arg("--sandbox-id")
-        .arg(&runtime.sandbox_id)
-        .arg("--workspace-id")
-        .arg(&runtime.workspace_id)
-        .args(command)
+        .args(internal_workspace_command_args(
+            &runtime,
+            &effective_cwd,
+            command,
+        ))
         .status()
         .context("failed to start internal workspace command helper")?;
     let code = status
@@ -92,6 +84,39 @@ fn run_internal_workspace_command(
         std::process::exit(code);
     }
     Ok(())
+}
+
+/// Arguments for the helper that runs a command inside a workspace runtime.
+///
+/// The helper attaches itself to the workspace cgroup before it forks, which is
+/// what makes the workspace's declared CPU, memory, and process limits apply to
+/// the command. Without `--cgroup-path` the command would run in whatever cgroup
+/// the caller happens to be in.
+fn internal_workspace_command_args(
+    runtime: &WorkspaceRuntimeInfo,
+    cwd: &str,
+    command: &[String],
+) -> Vec<String> {
+    let mut args = vec![
+        "internal".to_string(),
+        "workspace-command".to_string(),
+        "--runtime-pid".to_string(),
+        runtime.runtime_pid.to_string(),
+        "--runtime-starttime-ticks".to_string(),
+        runtime.runtime_starttime_ticks.to_string(),
+        "--cwd".to_string(),
+        cwd.to_string(),
+        "--sandbox-id".to_string(),
+        runtime.sandbox_id.clone(),
+        "--workspace-id".to_string(),
+        runtime.workspace_id.clone(),
+    ];
+    if let Some(cgroup_path) = runtime.cgroup_path.as_deref() {
+        args.push("--cgroup-path".to_string());
+        args.push(cgroup_path.to_string());
+    }
+    args.extend(command.iter().cloned());
+    args
 }
 
 fn choose_shell_in_rootfs(rootfs: &str, requested_shell: &str) -> Result<String> {

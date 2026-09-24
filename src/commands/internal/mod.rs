@@ -319,13 +319,7 @@ pub(crate) fn run_workspace_command(args: WorkspaceCommandInternalArgs) -> Resul
         );
     }
 
-    if !args.cgroup_path.is_empty() {
-        crate::sandbox::cgroup::add_process_to_cgroup(
-            std::path::Path::new(&args.cgroup_path),
-            std::process::id(),
-        )
-        .context("failed to attach workspace command helper to cgroup")?;
-    }
+    attach_helper_to_workspace_cgroup(&args.cgroup_path)?;
 
     let namespaces = NamespaceHandles::from_optional_fds(
         args.runtime_pid,
@@ -373,6 +367,7 @@ pub(crate) fn run_workspace_file_receive(args: WorkspaceFileReceiveArgs) -> Resu
         );
     }
     validate_workspace_file_target(&args.target)?;
+    attach_helper_to_workspace_cgroup(&args.cgroup_path)?;
     let namespaces = NamespaceHandles::from_optional_fds(
         args.runtime_pid,
         [
@@ -399,6 +394,23 @@ pub(crate) fn run_workspace_file_receive(args: WorkspaceFileReceiveArgs) -> Resu
             std::process::exit(0);
         }
     }
+}
+
+/// Attach this helper process to a workspace cgroup before it forks the process
+/// that will run inside the workspace.
+///
+/// Children inherit the cgroup, which is what makes the workspace's declared
+/// CPU, memory, and process limits apply to work started through the helper. An
+/// empty path means the host has no workspace cgroup to attach to.
+fn attach_helper_to_workspace_cgroup(cgroup_path: &str) -> Result<()> {
+    if cgroup_path.is_empty() {
+        return Ok(());
+    }
+    crate::sandbox::cgroup::add_process_to_cgroup(
+        std::path::Path::new(cgroup_path),
+        std::process::id(),
+    )
+    .context("failed to attach workspace helper to cgroup")
 }
 
 fn receive_workspace_file(root_dir: &File, target: &str) -> Result<()> {
