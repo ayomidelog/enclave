@@ -8,7 +8,7 @@ use enclave::sandbox::{
 };
 use enclave::workspace::{
     create_workspace, destroy_workspace, exec_workspace_command, start_workspace, stop_workspace,
-    WorkspaceLimits,
+    WorkspaceLimits, WorkspaceStatus,
 };
 
 fn root_only() -> bool {
@@ -60,6 +60,102 @@ fn sandbox_lifecycle_create_start_stop_destroy() {
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
+}
+
+/// A sandbox whose rootfs bind mount is missing must not hand a workspace an
+/// empty root.
+///
+/// The bind mount the session receives is host state, and the registry cannot
+/// show whether it is present: a stop/start cycle or an interrupted teardown can
+/// leave the sandbox recorded as running with no rootfs mounted. Before the
+/// pre-flight existed the workspace started against an empty directory and was
+/// still reported as running, which is a silent failure rather than a reported
+/// one.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn workspace_start_repairs_a_missing_sandbox_rootfs_mount() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-rootfs-bind");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-rootfs-bind-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    let running = start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
+        .expect("create workspace");
+
+    // Detach the bind mount the daemon owns, leaving the sandbox recorded as
+    // running with no root filesystem attached.
+    let mounted_rootfs = std::ffi::CString::new(running.mounted_rootfs_path.as_str())
+        .expect("rootfs path has no interior nul");
+    let rc = unsafe { libc::umount2(mounted_rootfs.as_ptr(), 0) };
+    assert_eq!(
+        rc,
+        0,
+        "detaching the sandbox rootfs bind failed: {}",
+        std::io::Error::last_os_error()
+    );
+    assert!(
+        !is_mountpoint(&running.mounted_rootfs_path),
+        "the bind mount must be gone before the workspace start"
+    );
+
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    assert_eq!(started.status, WorkspaceStatus::Running);
+    assert!(
+        is_mountpoint(&running.mounted_rootfs_path),
+        "the pre-flight must restore the sandbox rootfs bind mount"
+    );
+
+    // The workspace must see the sandbox rootfs rather than an empty directory.
+    let result = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "test -x /bin/sh && test -d /usr && echo rootfs-ok".to_string(),
+        ],
+    )
+    .expect("execute the workspace rootfs probe");
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+    assert!(
+        result.stdout.contains("rootfs-ok"),
+        "stdout={}",
+        result.stdout
+    );
+
+    // The sandbox cgroup cannot be removed while a workspace cgroup sits under
+    // it, so the workspace goes first.
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// Whether the mount table currently lists `path` as a mount point.
+fn is_mountpoint(path: &str) -> bool {
+    let Ok(raw) = fs::read_to_string("/proc/self/mountinfo") else {
+        return false;
+    };
+    raw.lines()
+        .any(|line| line.split_whitespace().nth(4) == Some(path))
 }
 
 #[test]

@@ -17,6 +17,7 @@ pub use lifecycle::{
     resume_sandbox, sandbox_status, start_sandbox, stop_sandbox, update_sandbox_limits,
     SandboxCreateOptions, SandboxDestroyReport,
 };
+pub(crate) use mounts::ensure_rootfs_ready_for_workspace;
 pub use types::{
     BootstrapMethod, SandboxLimits, SandboxLimitsUpdate, SandboxListItem, SandboxMetadata,
     SandboxStatus, SandboxStatusReport, DEFAULT_DEBIAN_MIRROR, DEFAULT_DEBIAN_SUITE,

@@ -98,6 +98,16 @@ pub fn start_workspace_with_security(
         "workspace.start",
         format!("{}/{}", sandbox_id, workspace_id),
     )?;
+    // The session mounts the workspace root overlay on top of the sandbox
+    // rootfs, so a sandbox whose rootfs bind is missing would hand the workspace
+    // an empty root. The registry already proved the sandbox is `running`, so
+    // re-establishing the mount is the repair, and the emptiness check turns a
+    // silent wrong-root start into a reported failure.
+    journal.phase("verify_sandbox_rootfs")?;
+    if let Err(error) = crate::sandbox::ensure_rootfs_ready_for_workspace(&sandbox_snapshot) {
+        let _ = journal.fail(format!("{error:#}"));
+        return Err(error);
+    }
     journal.phase("launch_runtime")?;
     // Record the in-flight transition durably so a crash during launch is
     // visible to the next daemon start instead of looking like a stopped

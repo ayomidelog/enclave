@@ -58,6 +58,7 @@ pub fn run_doctor(state_dir: &Path) -> Result<DoctorReport> {
     let checks = vec![
         registry::check_registry_consistency(state_dir),
         mounts::check_orphaned_mounts(state_dir),
+        mounts::check_sandbox_rootfs_mounts(state_dir),
         cgroups::check_stale_workspace_cgroups(state_dir),
         network::check_workspace_network(state_dir),
         network::check_host_subnet(),
@@ -156,3 +157,5 @@ pub(crate) use cgroups::check_stale_workspace_cgroups as check_stale_cgroups;
 pub(crate) use journal::check_operation_journal;
 #[cfg(test)]
 pub(crate) use mounts::check_orphaned_mounts;
+#[cfg(test)]
+pub(crate) use mounts::check_sandbox_rootfs_mounts as check_sandbox_rootfs;

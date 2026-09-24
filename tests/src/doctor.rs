@@ -136,6 +136,80 @@ fn check_orphaned_mounts_does_not_panic() {
 }
 
 #[test]
+fn check_sandbox_rootfs_reports_an_active_sandbox_without_a_rootfs_mount() {
+    use crate::registry::{with_registry_mut, RegistrySandbox};
+    use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
+    use std::collections::BTreeMap;
+
+    let state = std::env::temp_dir().join(format!(
+        "enclave-doctor-rootfs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    let sandbox_dir = state.join("sandboxes").join("sandbox-id");
+    std::fs::create_dir_all(sandbox_dir.join("runtime")).unwrap();
+
+    let metadata = SandboxMetadata {
+        id: "sandbox-id".to_string(),
+        name: "sandbox".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "https://deb.debian.org/debian".to_string(),
+        bootstrap_method: BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
+        mounted_rootfs_path: sandbox_dir
+            .join("runtime")
+            .join("rootfs.mnt")
+            .to_string_lossy()
+            .to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status: SandboxStatus::Stopped,
+    };
+
+    // A stopped sandbox is not expected to serve a root filesystem.
+    crate::registry::ensure_registry(&state).unwrap();
+    with_registry_mut(&state, |registry| {
+        registry.sandboxes.insert(
+            metadata.id.clone(),
+            RegistrySandbox {
+                metadata: metadata.clone(),
+                workspaces: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let check = check_sandbox_rootfs(&state);
+    assert_eq!(check.status, "ok", "stopped sandbox: {}", check.detail);
+
+    // A running sandbox whose bind mount is missing cannot serve a workspace.
+    std::fs::create_dir_all(&metadata.mounted_rootfs_path).unwrap();
+    with_registry_mut(&state, |registry| {
+        registry
+            .sandboxes
+            .get_mut(&metadata.id)
+            .unwrap()
+            .metadata
+            .status = SandboxStatus::Running;
+        Ok(())
+    })
+    .unwrap();
+    let check = check_sandbox_rootfs(&state);
+    assert_eq!(check.status, "warn");
+    assert!(check.detail.contains("is not mounted"), "{}", check.detail);
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
 fn repair_removes_orphaned_sandbox_directories_and_validates_daemon_state() {
     let temp_dir = std::env::temp_dir().join(format!(
         "enclave-doctor-repair-test-{}-{}",

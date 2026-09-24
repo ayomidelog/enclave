@@ -147,6 +147,44 @@ fn overlay_option_path(path: &Path) -> String {
         .replace(':', "\\072")
 }
 
+/// Make sure a running sandbox hands its workspaces a usable rootfs.
+///
+/// The rootfs a workspace session receives is the bind mount the daemon owns at
+/// `mounted_rootfs_path`, not the rootfs directory itself. That mount is host
+/// mount state, so a stop/start cycle or any interrupted teardown can leave the
+/// registry saying `running` while the bind is gone. A workspace started in that
+/// state would see an empty root and still be recorded as running, which is a
+/// silent failure rather than a reported one.
+///
+/// Re-establish the mount, which is idempotent, and then prove the result is a
+/// mount point holding a populated rootfs.
+pub fn ensure_rootfs_ready_for_workspace(metadata: &SandboxMetadata) -> Result<()> {
+    ensure_rootfs_mounted(metadata)?;
+    let mounted_rootfs_path = Path::new(&metadata.mounted_rootfs_path);
+    if !crate::fsutil::is_mountpoint(mounted_rootfs_path)? {
+        bail!(
+            "sandbox '{}' rootfs {} is not mounted; the sandbox cannot hand a root filesystem to a workspace",
+            metadata.id,
+            mounted_rootfs_path.display()
+        );
+    }
+    let mut entries = fs::read_dir(mounted_rootfs_path).with_context(|| {
+        format!(
+            "failed to read sandbox '{}' rootfs {}",
+            metadata.id,
+            mounted_rootfs_path.display()
+        )
+    })?;
+    if entries.next().is_none() {
+        bail!(
+            "sandbox '{}' rootfs {} is empty; the sandbox was not bootstrapped or its rootfs was replaced",
+            metadata.id,
+            mounted_rootfs_path.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn ensure_rootfs_unmounted(metadata: &SandboxMetadata) -> Result<()> {
     let Some(mounted_rootfs_path) = validate_unmount_path(metadata)? else {
         return Ok(());
