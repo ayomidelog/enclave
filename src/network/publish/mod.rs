@@ -3,10 +3,10 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use nix::sched::{setns, CloneFlags};
@@ -17,13 +17,25 @@ mod limiter;
 mod proxy;
 mod publication;
 
-use limiter::ConnectionLimiter;
+use limiter::{ConnectionBudget, ConnectionLimiter};
 use proxy::run_accept_loop;
 use publication::{shutdown_publications, ActivePublication, PublishMode, WorkspacePublishKey};
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How long a proxied connection may move no bytes before it is closed.
+///
+/// Published ports are ordinary TCP services, so a connection that goes quiet
+/// is either an idle keep-alive or an abandoned socket. Ten minutes is long
+/// enough to leave a genuinely idle client alone and short enough that
+/// abandoned sockets cannot hold the connection budgets forever.
+const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+/// Per published port. Kept as the tighter bound so one noisy port cannot
+/// dominate the daemon.
 const MAX_CONNECTIONS_PER_PUBLISHER: usize = 128;
+/// Daemon-wide across every published port, so the total number of proxied
+/// connections is bounded no matter how many ports are published.
+const MAX_PUBLISHED_CONNECTIONS: usize = 1024;
 
 pub struct PortPublisher {
     inner: Mutex<PublisherState>,
@@ -56,7 +68,7 @@ impl PortPublisher {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(PublisherState::default()),
-            connections: Arc::new(ConnectionLimiter::new(MAX_CONNECTIONS_PER_PUBLISHER)),
+            connections: Arc::new(ConnectionLimiter::new(MAX_PUBLISHED_CONNECTIONS)),
         }
     }
 
@@ -248,9 +260,10 @@ fn publish_bind_error(spec: &PublishedPortSpec, err: io::Error) -> anyhow::Error
     )
 }
 
-// The publish tests exercise the connection copier directly.
+// The publish tests exercise the connection copier and activity tracker
+// directly.
 #[cfg(test)]
-use proxy::copy_until_shutdown;
+use proxy::{copy_until_shutdown, ConnectionActivity};
 
 #[cfg(test)]
 #[path = "../../../tests/src/network/publish.rs"]

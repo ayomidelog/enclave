@@ -27,7 +27,7 @@ impl ActivePublication {
         spec: PublishedPortSpec,
         runtime_pid: u32,
         workspace_ip: &str,
-        connections: Arc<ConnectionLimiter>,
+        global_connections: Arc<ConnectionLimiter>,
     ) -> Result<Self> {
         let bind_addr = format!("{}:{}", spec.host_ip, spec.host_port);
         let listener =
@@ -35,6 +35,13 @@ impl ActivePublication {
         listener
             .set_nonblocking(true)
             .with_context(|| format!("failed to configure nonblocking listener at {bind_addr}"))?;
+
+        // One budget per published port, plus a share of the daemon-wide budget
+        // passed in, so a single busy port cannot consume every slot.
+        let connections = ConnectionBudget::new(
+            Arc::new(ConnectionLimiter::new(MAX_CONNECTIONS_PER_PUBLISHER)),
+            global_connections,
+        );
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let accept_shutdown = shutdown.clone();

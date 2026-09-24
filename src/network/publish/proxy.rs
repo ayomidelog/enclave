@@ -1,11 +1,42 @@
 use super::*;
 
+/// When a proxied connection last moved bytes.
+///
+/// Both directions share one tracker, so a connection stays alive while either
+/// direction is busy. A connection that has been quiet for the idle timeout is
+/// closed instead of holding a permit and a worker thread until the port is
+/// unpublished, which is what stops abandoned sockets from starving the
+/// connection budgets.
+pub(crate) struct ConnectionActivity {
+    start: Instant,
+    last_millis: AtomicU64,
+}
+
+impl ConnectionActivity {
+    pub(crate) fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            last_millis: AtomicU64::new(0),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_millis
+            .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    fn idle_for(&self) -> Duration {
+        let elapsed = self.start.elapsed().as_millis() as u64;
+        Duration::from_millis(elapsed.saturating_sub(self.last_millis.load(Ordering::Relaxed)))
+    }
+}
+
 pub(crate) fn run_accept_loop(
     listener: TcpListener,
     shutdown: Arc<AtomicBool>,
     runtime_pid: u32,
     workspace_port: u16,
-    connections: Arc<ConnectionLimiter>,
+    connections: ConnectionBudget,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         // Wait for a connection instead of polling. Sleeping on `WouldBlock`
@@ -19,7 +50,8 @@ pub(crate) fn run_accept_loop(
                 let Some(permit) = connections.try_acquire() else {
                     tracing::debug!(
                         "published port connection limit reached for workspace pid {} port {}; rejecting connection",
-                        runtime_pid, workspace_port
+                        runtime_pid,
+                        workspace_port
                     );
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
@@ -120,31 +152,51 @@ pub(crate) fn handle_connection(
         }
     };
 
+    let activity = Arc::new(ConnectionActivity::new());
     let upstream_shutdown = Arc::clone(&shutdown);
+    let upstream_activity = Arc::clone(&activity);
     let upstream = thread::spawn(move || {
         let _ = copy_until_shutdown(
             &mut client_reader,
             &mut workspace_writer,
             &upstream_shutdown,
+            &upstream_activity,
+            CONNECTION_IDLE_TIMEOUT,
         );
         let _ = workspace_writer.shutdown(Shutdown::Write);
     });
 
-    let _ = copy_until_shutdown(&mut workspace_stream, &mut client_stream, &shutdown);
+    let _ = copy_until_shutdown(
+        &mut workspace_stream,
+        &mut client_stream,
+        &shutdown,
+        &activity,
+        CONNECTION_IDLE_TIMEOUT,
+    );
     let _ = client_stream.shutdown(Shutdown::Write);
     let _ = upstream.join();
 }
 
+/// Copy until the peer closes, the publisher shuts down, or the connection has
+/// been quiet for `idle_timeout`.
 pub(crate) fn copy_until_shutdown(
     reader: &mut impl Read,
     writer: &mut impl Write,
     shutdown: &AtomicBool,
+    activity: &ConnectionActivity,
+    idle_timeout: Duration,
 ) -> io::Result<()> {
     let mut buffer = [0u8; 16 * 1024];
     while !shutdown.load(Ordering::SeqCst) {
+        if activity.idle_for() >= idle_timeout {
+            return Ok(());
+        }
         match reader.read(&mut buffer) {
             Ok(0) => return Ok(()),
-            Ok(read) => writer.write_all(&buffer[..read])?,
+            Ok(read) => {
+                activity.touch();
+                writer.write_all(&buffer[..read])?;
+            }
             Err(err)
                 if matches!(
                     err.kind(),

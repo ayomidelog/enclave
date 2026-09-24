@@ -141,6 +141,94 @@ fn strict_publish_proxies_multiple_http_like_requests() {
     server.join().expect("server thread");
 }
 
+/// Accepts connections and echoes bytes back, holding each connection open until
+/// its peer closes.
+fn spawn_echo_target() -> (u16, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind echo target");
+    let port = listener.local_addr().expect("echo target addr").port();
+    let handle = thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                return;
+            };
+            thread::spawn(move || {
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) | Err(_) => return,
+                        Ok(read) => {
+                            if stream.write_all(&buffer[..read]).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    (port, handle)
+}
+
+/// A port whose own connection budget is exhausted must not consume the budget
+/// every other published port draws from.
+///
+/// Before the two-tier budget, all published ports shared one pool, so a single
+/// port with idle connections could refuse connections to every other port.
+#[test]
+fn a_saturated_published_port_does_not_starve_another() {
+    let (target_a_port, _target_a) = spawn_echo_target();
+    let (target_b_port, _target_b) = spawn_echo_target();
+    let host_a = reserve_port();
+    let host_b = reserve_port();
+
+    let publisher = PortPublisher::new();
+    let spec_a =
+        PublishedPortSpec::parse(&format!("127.0.0.1:{host_a}:{target_a_port}/tcp")).unwrap();
+    let spec_b =
+        PublishedPortSpec::parse(&format!("127.0.0.1:{host_b}:{target_b_port}/tcp")).unwrap();
+    publisher
+        .apply_workspace_ports_strict("sb", "ws-a", std::process::id(), "127.0.0.1", &[spec_a])
+        .expect("publish port a");
+    publisher
+        .apply_workspace_ports_strict("sb", "ws-b", std::process::id(), "127.0.0.1", &[spec_b])
+        .expect("publish port b");
+
+    // Hold connections to port A until the publisher refuses one, which is the
+    // signal that port A has used up its own budget. A held connection stays
+    // silent, so a short read timeout distinguishes it from a refused one.
+    let mut held = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut saturated = false;
+    while Instant::now() < deadline {
+        let mut client = TcpStream::connect(("127.0.0.1", host_a)).expect("connect port a");
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .expect("set read timeout");
+        let mut byte = [0_u8; 1];
+        match client.read(&mut byte) {
+            Ok(0) => {
+                saturated = true;
+                break;
+            }
+            Ok(_) => panic!("port A unexpectedly returned data"),
+            Err(_) => held.push(client),
+        }
+    }
+    assert!(saturated, "port A never reached its connection limit");
+
+    // Port B must still complete a round trip while port A is saturated.
+    let mut client = TcpStream::connect(("127.0.0.1", host_b)).expect("connect port b");
+    client.write_all(b"ping").expect("write port b payload");
+    let mut response = [0_u8; 4];
+    client
+        .read_exact(&mut response)
+        .expect("read port b response");
+    assert_eq!(&response, b"ping");
+
+    publisher.clear_workspace_ports("sb", "ws-a");
+    publisher.clear_workspace_ports("sb", "ws-b");
+}
+
 fn reserve_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve port");
     let port = listener.local_addr().expect("reserved addr").port();
