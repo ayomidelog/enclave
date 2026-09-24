@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use crate::policy;
 use crate::protocol::{Request, Response};
+
+use crate::operation;
 use crate::sandbox;
 use anyhow::{bail, Context, Result};
 use nix::sys::signal::{self, SaFlags, SigAction, SigHandler, SigSet, Signal};
@@ -222,7 +224,9 @@ fn handle_client(
         Ok(Some(request_raw)) => request_raw,
         Ok(None) => return Ok(()),
         Err(err) => {
-            let response = Response::err(err.to_string());
+            // The request never parsed, so it has no id of its own. A fresh one
+            // still lets the caller find the failure in the logs.
+            let response = Response::err(err.to_string(), operation::new_id());
             write_response(&mut stream, &response)?;
             return Ok(());
         }
@@ -231,37 +235,86 @@ fn handle_client(
     let request: Request = match serde_json::from_str(&request_raw) {
         Ok(request) => request,
         Err(err) => {
-            let response = Response::err(format!("invalid request payload: {err}"));
+            let response = Response::err(
+                format!("invalid request payload: {err}"),
+                operation::new_id(),
+            );
             write_response(&mut stream, &response)?;
             return Ok(());
         }
     };
+
+    // One request is one operation. The id is the trace id the caller is told
+    // about, the id the lifecycle journal records, and the id every log line and
+    // phase timing for this request carries.
+    let operation_id = request
+        .operation_id
+        .as_deref()
+        .filter(|id| operation::is_valid_id(id))
+        .map(str::to_string)
+        .unwrap_or_else(operation::new_id);
+    operation::set_current(Some(operation_id.clone()));
+    let _clear = ClearOperationOnDrop;
+
+    // A lifecycle operation is worth one line at the default level: it is how an
+    // operator ties a command to the journal record and the phase timings for the
+    // same operation. A read-only request stays quiet, so the log is not doubled
+    // for status polling.
+    if dispatch::action_is_lifecycle(&request.action) {
+        tracing::info!(
+            operation_id = %operation_id,
+            action = %request.action,
+            "lifecycle operation started"
+        );
+    }
+
     let peer_uid = peer_uid(&stream).context("failed to resolve peer uid")?;
     if !services.rate_limiter.allow(peer_uid) {
-        let response = Response::err(format!(
-            "rate limit exceeded for uid {} (max {} requests per {}s)",
-            peer_uid,
-            RATE_LIMIT_MAX_REQUESTS,
-            RATE_LIMIT_WINDOW.as_secs()
-        ));
+        let response = Response::err(
+            format!(
+                "rate limit exceeded for uid {} (max {} requests per {}s)",
+                peer_uid,
+                RATE_LIMIT_MAX_REQUESTS,
+                RATE_LIMIT_WINDOW.as_secs()
+            ),
+            operation_id,
+        );
         write_response(&mut stream, &response)?;
         return Ok(());
     }
     if let Err(err) = policy::authorize(&config.state_dir, peer_uid, &request.action) {
-        let response = Response::err(err.to_string());
+        let response = Response::err(err.to_string(), operation_id);
         write_response(&mut stream, &response)?;
         return Ok(());
     }
 
     let _dispatch = crate::perf::Timer::new("daemon.dispatch");
     let response = match dispatch::dispatch(request, config, shutdown, services, Some(&stream)) {
-        Ok(result) => Response::ok(result),
-        Err(err) => Response::err(err.to_string()),
+        Ok(result) => Response::ok(result, operation_id),
+        Err(err) => {
+            // A lifecycle failure is the one place the id is worth repeating at
+            // the default log level: it is how an operator finds the journal
+            // record for the operation that failed.
+            tracing::error!(error = %format!("{err:#}"), "request failed");
+            Response::err(err.to_string(), operation_id)
+        }
     };
     drop(_dispatch);
 
     write_response(&mut stream, &response)?;
     Ok(())
+}
+
+/// Clear the thread-local operation id when the request that set it finishes.
+///
+/// A worker thread outlives the request, and a later request that does not set an
+/// id would otherwise inherit this one.
+struct ClearOperationOnDrop;
+
+impl Drop for ClearOperationOnDrop {
+    fn drop(&mut self) {
+        operation::set_current(None);
+    }
 }
 
 fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {

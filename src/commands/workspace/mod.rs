@@ -31,7 +31,10 @@ use crate::workspace::{
     WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo,
 };
 
-use super::{confirm_destructive_action, daemon, report_retained_resources, send, send_managed};
+use super::{
+    confirm_destructive_action, daemon, print_operation_id, report_retained_resources, send,
+    send_managed,
+};
 
 use exec::{resolve_workspace_target_from_optional, run_workspace_exec};
 use lifecycle::{

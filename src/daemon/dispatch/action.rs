@@ -54,6 +54,63 @@ pub(super) enum Action {
 }
 
 impl Action {
+    /// Whether this action changes lifecycle state and so has to be serialized
+    /// against other actions on the same resources.
+    pub(super) fn is_lifecycle(self) -> bool {
+        self.is_sandbox_lifecycle() || self.is_workspace_lifecycle() || self.is_global_lifecycle()
+    }
+
+    /// Actions scoped to one sandbox, or to every workspace it holds.
+    pub(super) fn is_sandbox_lifecycle(self) -> bool {
+        matches!(
+            self,
+            Self::SandboxCreate
+                | Self::SandboxUpdate
+                | Self::SandboxStart
+                | Self::SandboxStop
+                | Self::SandboxPause
+                | Self::SandboxResume
+                | Self::SandboxDestroy
+                | Self::SandboxRemove
+                | Self::SandboxExecSetup
+                // The bulk start touches every workspace it is given, so it is
+                // treated as a sandbox-wide operation rather than one workspace.
+                | Self::WorkspaceStartMany
+        )
+    }
+
+    /// Actions scoped to one workspace.
+    pub(super) fn is_workspace_lifecycle(self) -> bool {
+        matches!(
+            self,
+            Self::WorkspaceCreate
+                | Self::WorkspaceStart
+                | Self::WorkspaceStop
+                | Self::WorkspaceDestroy
+                | Self::WorkspaceRemove
+                | Self::WorkspaceUpdate
+                | Self::WorkspaceResize
+                | Self::WorkspaceRestore
+                | Self::WorkspaceSnapshot
+                | Self::WorkspaceSnapshotGc
+                | Self::WorkspaceSnapshotExport
+                | Self::WorkspaceSnapshotImport
+                | Self::WorkspacePortPublish
+                | Self::WorkspacePortUnpublish
+        )
+    }
+
+    /// Actions that touch every sandbox, or the registry itself.
+    pub(super) fn is_global_lifecycle(self) -> bool {
+        matches!(
+            self,
+            Self::SandboxWipe
+                | Self::WorkspaceWipe
+                | Self::RegistryRepair
+                | Self::DaemonDoctorRepair
+        )
+    }
+
     pub(super) fn parse(raw: &str) -> Result<Self> {
         let action = match raw {
             "ping" => Self::Ping,

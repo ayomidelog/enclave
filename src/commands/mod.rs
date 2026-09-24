@@ -329,6 +329,18 @@ fn arg_is_unset_opt(matches: Option<&ArgMatches>, arg_name: &str) -> bool {
     matches.and_then(|m| m.value_source(arg_name)).is_none()
 }
 
+/// Report the operation id the daemon ran the last request as.
+///
+/// The id is what ties a command to its journal record, its log lines, and its
+/// phase timings, so a mutating command prints it after it succeeds. A command
+/// that issues several requests prints only the last, which is the one that
+/// carried the user's intent.
+pub(crate) fn print_operation_id() {
+    if let Some(id) = crate::client::last_operation_id() {
+        println!("operation {id}");
+    }
+}
+
 pub(crate) fn send(
     socket: &Path,
     action: &str,

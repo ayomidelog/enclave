@@ -8,7 +8,7 @@ use crate::cli::{RestartArgs, UpArgs};
 use crate::enclavefile::{self, Enclavefile, ENCLAVEFILE_NAME};
 use crate::sandbox::{SandboxListItem, SandboxStatus, DEFAULT_DEBIAN_MIRROR};
 
-use super::{daemon, send, send_managed};
+use super::{daemon, print_operation_id, send, send_managed};
 
 pub(crate) fn run_init() -> Result<()> {
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
@@ -60,6 +60,7 @@ pub(crate) fn run_up(socket: &Path, args: UpArgs) -> Result<()> {
     }
 
     println!("environment is up");
+    print_operation_id();
     Ok(())
 }
 
@@ -85,6 +86,7 @@ pub(crate) fn run_down(socket: &Path) -> Result<()> {
 
     teardown_sandbox(socket, &ef.sandbox.name)?;
     println!("environment is down");
+    print_operation_id();
     Ok(())
 }
 
@@ -129,6 +131,7 @@ pub(crate) fn run_restart(socket: &Path, args: RestartArgs) -> Result<()> {
     }
 
     println!("environment restarted");
+    print_operation_id();
     Ok(())
 }
 

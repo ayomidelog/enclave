@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 use crate::cli::{CreateArgs, DestroyArgs, WipeArgs};
 use crate::sandbox::{SandboxListItem, SandboxMetadata, SandboxStatusReport};
 
-use super::{confirm_destructive_action, daemon, report_retained_resources, send, send_managed};
+use super::{
+    confirm_destructive_action, daemon, print_operation_id, report_retained_resources, send,
+    send_managed,
+};
 
 pub(crate) fn run_create(socket: &Path, args: CreateArgs) -> Result<()> {
     daemon::ensure_daemon_running(socket)?;
@@ -63,6 +66,7 @@ pub(crate) fn run_create(socket: &Path, args: CreateArgs) -> Result<()> {
     let metadata: SandboxMetadata = serde_json::from_value(response)?;
 
     println!("created and started sandbox {}", metadata.id);
+    print_operation_id();
     println!("rootfs {}", metadata.rootfs_path);
     Ok(())
 }
@@ -254,6 +258,7 @@ pub(crate) fn run_remove(socket: &Path, sandbox_id: &str) -> Result<()> {
         json!({ "sandbox_id": sandbox_id }),
     )?;
     println!("removed sandbox '{}'", sandbox_id);
+    print_operation_id();
     Ok(())
 }
 
@@ -318,6 +323,7 @@ pub(crate) fn run_start(socket: &Path, sandbox: &str) -> Result<()> {
     tracing::info!("starting sandbox '{}'...", sandbox);
     send_managed(socket, "sandbox.start", json!({ "sandbox": sandbox }))?;
     println!("started sandbox '{}'", sandbox);
+    print_operation_id();
     Ok(())
 }
 
@@ -325,6 +331,7 @@ pub(crate) fn run_stop(socket: &Path, sandbox: &str) -> Result<()> {
     tracing::info!("stopping sandbox '{}'...", sandbox);
     send_managed(socket, "sandbox.stop", json!({ "sandbox": sandbox }))?;
     println!("stopped sandbox '{}'", sandbox);
+    print_operation_id();
     Ok(())
 }
 
@@ -332,6 +339,7 @@ pub(crate) fn run_pause(socket: &Path, sandbox: &str) -> Result<()> {
     tracing::info!("pausing sandbox '{}'...", sandbox);
     send_managed(socket, "sandbox.pause", json!({ "sandbox": sandbox }))?;
     println!("paused sandbox '{}'", sandbox);
+    print_operation_id();
     Ok(())
 }
 
@@ -339,6 +347,7 @@ pub(crate) fn run_resume(socket: &Path, sandbox: &str) -> Result<()> {
     tracing::info!("resuming sandbox '{}'...", sandbox);
     send_managed(socket, "sandbox.resume", json!({ "sandbox": sandbox }))?;
     println!("resumed sandbox '{}'", sandbox);
+    print_operation_id();
     Ok(())
 }
 
@@ -356,6 +365,7 @@ pub(crate) fn run_destroy(socket: &Path, args: DestroyArgs) -> Result<()> {
     )?;
     let report: crate::sandbox::SandboxDestroyReport = serde_json::from_value(response)?;
     println!("destroyed sandbox '{}'", report.sandbox_id);
+    print_operation_id();
     report_retained_resources(
         report
             .retained

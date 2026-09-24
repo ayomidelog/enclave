@@ -23,6 +23,14 @@ mod workspace_definition;
 mod workspace_handlers;
 
 use action::Action;
+
+/// Whether `action` names a lifecycle operation.
+///
+/// The caller needs this before dispatch, for the request log line, so the
+/// classification is exposed here rather than reached through `Action` directly.
+pub(super) fn action_is_lifecycle(action: &str) -> bool {
+    Action::parse(action).is_ok_and(Action::is_lifecycle)
+}
 use params::{
     parse_cleanup_mode, parse_optional_bool_field, parse_required_disk_bytes,
     parse_sandbox_limits_create, parse_sandbox_limits_update, parse_string_array,

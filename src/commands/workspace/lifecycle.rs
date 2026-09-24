@@ -75,6 +75,7 @@ pub(super) fn run_workspace_resize(
     if result.restarted {
         println!("workspace restarted");
     }
+    print_operation_id();
     Ok(())
 }
 
@@ -134,6 +135,7 @@ pub(super) fn run_workspace_remove(
         }),
     )?;
     println!("removed workspace");
+    print_operation_id();
     Ok(())
 }
 
@@ -194,6 +196,7 @@ pub(super) fn run_workspace_start(
         }),
     )?;
     println!("started workspace");
+    print_operation_id();
     Ok(())
 }
 
@@ -215,6 +218,7 @@ pub(super) fn run_workspace_stop(
         }),
     )?;
     println!("stopped workspace");
+    print_operation_id();
     // The daemon only reports a stop as successful once every mandatory host
     // resource has been verified released, so the certificate is the evidence
     // behind that success rather than a restatement of it.
@@ -261,6 +265,7 @@ pub(super) fn run_workspace_destroy(
     )?;
     let report: crate::workspace::WorkspaceDestroyReport = serde_json::from_value(response)?;
     println!("destroyed workspace {}", report.workspace_id);
+    print_operation_id();
     report_retained_resources(
         report
             .retained

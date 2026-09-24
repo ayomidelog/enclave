@@ -26,3 +26,38 @@ fn journal_retains_failure_details() {
     assert_eq!(record.error.as_deref(), Some("veth still exists"));
     fs::remove_dir_all(state).expect("remove journal fixture");
 }
+
+#[test]
+fn a_journal_uses_the_current_operation_id() {
+    let state = std::env::temp_dir().join(format!("enclave-operation-id-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state);
+    std::fs::create_dir_all(&state).unwrap();
+
+    // A request that carries an id makes every journal it opens part of that one
+    // operation, so the CLI, the logs, and the journal record agree.
+    set_current(Some("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".to_string()));
+    let journal = Journal::begin(&state, "workspace.start", "sandbox/workspace").expect("begin");
+    assert_eq!(journal.id(), "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0");
+    assert_eq!(current().as_deref(), Some(journal.id()));
+    let record = journal.succeed().expect("succeed");
+    assert_eq!(record.kind, "workspace.start");
+    assert_eq!(load(&state, &record.id).expect("load").id, record.id);
+
+    // Without one, each journal gets its own id.
+    set_current(None);
+    let first = Journal::begin(&state, "workspace.stop", "sandbox/workspace").expect("begin");
+    let second = Journal::begin(&state, "workspace.stop", "sandbox/workspace").expect("begin");
+    assert_ne!(first.id(), second.id());
+    assert!(current().is_none());
+
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn only_a_uuid_shaped_id_is_accepted() {
+    assert!(is_valid_id("0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"));
+    // The id is used as a file name, so a caller cannot supply a path.
+    assert!(!is_valid_id("../../etc/passwd"));
+    assert!(!is_valid_id("not-an-id"));
+    assert!(!is_valid_id(""));
+}

@@ -15,6 +15,24 @@ struct ResponsePayload {
     ok: bool,
     result: Option<Value>,
     error: Option<String>,
+    #[serde(default)]
+    operation_id: Option<String>,
+}
+
+thread_local! {
+    /// The operation id of the last response this thread read.
+    ///
+    /// The daemon names one operation per request and reports it in the
+    /// response. A command prints it after a lifecycle call, and a CLI process
+    /// serves one command on one thread, so remembering it here keeps every
+    /// existing call site unchanged.
+    static LAST_OPERATION_ID: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The operation id the daemon reported for the last response on this thread.
+pub fn last_operation_id() -> Option<String> {
+    LAST_OPERATION_ID.with(|id| id.borrow().clone())
 }
 
 pub fn send_request(socket_path: &Path, action: &str, params: Value) -> Result<Value> {
@@ -84,13 +102,15 @@ fn read_response_line(stream: UnixStream) -> Result<String> {
 fn parse_response_payload(line: &str) -> Result<Value> {
     let response: ResponsePayload =
         serde_json::from_str(line).context("invalid daemon response payload")?;
+    LAST_OPERATION_ID.with(|id| *id.borrow_mut() = response.operation_id.clone());
     if response.ok {
         return Ok(response.result.unwrap_or(Value::Null));
     }
-    bail!(
-        "{}",
-        response
-            .error
-            .unwrap_or_else(|| "daemon returned an unknown error".to_string())
-    )
+    let message = response
+        .error
+        .unwrap_or_else(|| "daemon returned an unknown error".to_string());
+    match response.operation_id {
+        Some(id) => bail!("{message} (operation {id})"),
+        None => bail!("{message}"),
+    }
 }

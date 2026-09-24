@@ -22,45 +22,11 @@ pub(super) fn scope_for(
     action: Action,
     params: &serde_json::Value,
 ) -> Result<Option<LeaseScope>> {
-    let sandbox_scoped = matches!(
-        action,
-        Action::SandboxCreate
-            | Action::SandboxUpdate
-            | Action::SandboxStart
-            | Action::SandboxStop
-            | Action::SandboxPause
-            | Action::SandboxResume
-            | Action::SandboxDestroy
-            | Action::SandboxRemove
-            | Action::SandboxExecSetup
-            // The bulk start touches every workspace it is given, so it is
-            // treated as a sandbox-wide operation rather than one workspace.
-            | Action::WorkspaceStartMany
-    );
-    let workspace_scoped = matches!(
-        action,
-        Action::WorkspaceCreate
-            | Action::WorkspaceStart
-            | Action::WorkspaceStop
-            | Action::WorkspaceDestroy
-            | Action::WorkspaceRemove
-            | Action::WorkspaceUpdate
-            | Action::WorkspaceResize
-            | Action::WorkspaceRestore
-            | Action::WorkspaceSnapshot
-            | Action::WorkspaceSnapshotGc
-            | Action::WorkspaceSnapshotExport
-            | Action::WorkspaceSnapshotImport
-            | Action::WorkspacePortPublish
-            | Action::WorkspacePortUnpublish
-    );
-    let global_scoped = matches!(
-        action,
-        Action::SandboxWipe
-            | Action::WorkspaceWipe
-            | Action::RegistryRepair
-            | Action::DaemonDoctorRepair
-    );
+    // The classification lives on `Action` so the lease, the logging, and any
+    // other reader of "is this a lifecycle action" cannot drift apart.
+    let sandbox_scoped = action.is_sandbox_lifecycle();
+    let workspace_scoped = action.is_workspace_lifecycle();
+    let global_scoped = action.is_global_lifecycle();
 
     if global_scoped {
         return Ok(Some(LeaseScope::Global));

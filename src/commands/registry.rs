@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::cli::{RegistryCommands, RegistryRepairArgs};
 use crate::registry::RepairReport;
 
-use super::send_managed;
+use super::{print_operation_id, send_managed};
 
 pub(crate) fn run_registry_command(socket: &Path, command: RegistryCommands) -> Result<()> {
     match command {
@@ -32,5 +32,6 @@ fn run_registry_repair(socket: &Path, args: RegistryRepairArgs) -> Result<()> {
         report.removed_workspaces,
         report.reconciled_runtime_records
     );
+    print_operation_id();
     Ok(())
 }
