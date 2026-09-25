@@ -98,5 +98,5 @@ pub(crate) use unmount::{
 };
 
 #[cfg(test)]
-#[path = "../../../tests/src/workspace/storage.rs"]
+#[path = "../../../tests/src/workspace/storage/mod.rs"]
 mod tests;
