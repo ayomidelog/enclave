@@ -1,0 +1,86 @@
+use super::*;
+
+pub fn update_workspace_definition(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    auth_providers: Option<Vec<String>>,
+    env_tokens: Option<Vec<String>>,
+    published_ports: Option<Vec<PublishedPortSpec>>,
+    limits_update: WorkspaceLimitsUpdate,
+) -> Result<WorkspaceMetadata> {
+    let auth_providers = auth_providers
+        .map(crate::workspace::create::normalize_auth_providers)
+        .transpose()?;
+    let env_tokens = env_tokens
+        .map(crate::workspace::create::normalize_env_tokens)
+        .transpose()?;
+    let published_ports = published_ports
+        .map(|ports| {
+            crate::workspace::validate_published_ports(&ports)?;
+            Ok::<Vec<PublishedPortSpec>, anyhow::Error>(ports)
+        })
+        .transpose()?;
+
+    with_registry_mut(state_dir, |registry| {
+        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get_mut(&sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
+        let workspace = sandbox
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+
+        if limits_update.disk_bytes.is_some() {
+            bail!(
+                "workspace disk allocation changes require `workspace resize`; metadata updates cannot resize fs.img"
+            );
+        }
+
+        let mut changed = false;
+        if let Some(auth_providers) = auth_providers {
+            if workspace.auth_providers != auth_providers {
+                workspace.auth_providers = auth_providers;
+                changed = true;
+            }
+        }
+        if let Some(env_tokens) = env_tokens {
+            if workspace.env_tokens != env_tokens {
+                workspace.env_tokens = env_tokens;
+                changed = true;
+            }
+        }
+        if let Some(published_ports) = published_ports {
+            if workspace.published_ports != published_ports {
+                workspace.published_ports = published_ports;
+                changed = true;
+            }
+        }
+        if let Some(clear_tmp_on_restart) = limits_update.clear_tmp_on_restart {
+            if workspace.clear_tmp_on_restart != clear_tmp_on_restart {
+                workspace.clear_tmp_on_restart = clear_tmp_on_restart;
+                changed = true;
+            }
+        }
+        changed |= workspace.limits.apply_update(&limits_update)?;
+        crate::workspace::validate_workspace_storage_limits(
+            workspace.home_mount_source_path.as_deref(),
+            workspace.limits.disk_bytes,
+        )?;
+
+        if changed {
+            crate::workspace::create_workspace_storage(workspace)?;
+            persist_workspace_metadata(workspace)?;
+        }
+
+        Ok(workspace.clone())
+    })
+}
+
+mod resize;
+
+pub use resize::resize_workspace_disk;
+pub(crate) use resize::resize_workspace_disk_with_security;

@@ -50,9 +50,9 @@ pub(crate) use stop::{
     freeze_workspaces_in_sandbox, mark_workspace_stopping, stop_running_workspaces_in_sandbox,
 };
 pub use stop::{stop_workspace, stop_workspace_with_certificate};
-pub use update::{
-    resize_workspace_disk, resize_workspace_disk_with_security, update_workspace_definition,
-};
+pub use update::resize_workspace_disk;
+pub(crate) use update::resize_workspace_disk_with_security;
+pub use update::update_workspace_definition;
 
 // Helpers shared between the lifecycle modules above.
 pub(crate) use query::collect_all_used_ip_octets;
