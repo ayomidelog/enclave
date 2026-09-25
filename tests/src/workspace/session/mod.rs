@@ -1,8 +1,64 @@
 use super::{
     infer_workspace_helper_from_current_exe, launch_userns_args, resolve_session_helper_source,
-    session_helper_path, setgroups_args, stop_sessions_batch,
+    session_helper_load_failure, session_helper_path, setgroups_args, stop_sessions_batch,
     userns::{IdMapRange, UserNamespaceMode, UserNamespacePlan},
 };
+
+/// Write a session log and return its path.
+fn session_log(tag: &str, contents: &str) -> std::path::PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("enclave-session-log-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("create log dir");
+    let path = dir.join("session.log");
+    std::fs::write(&path, contents).expect("write log");
+    path
+}
+
+#[test]
+fn a_helper_that_cannot_load_names_the_library_and_the_memory_limit() {
+    // A workspace memory limit smaller than the helper needs makes the dynamic
+    // loader fail with a message that names neither the limit nor the fact that
+    // the limit is the cause, which is what the operator has to change.
+    let log = session_log(
+        "loader-limit",
+        "workspace session bootstrap complete; switching to hardened runtime helper\n\
+         /tmp/enclave/session-helper: error while loading shared libraries: libc.so.6: \
+         failed to map segment from shared object\n",
+    );
+    let message = session_helper_load_failure(&log, Some(20 * 1024 * 1024))
+        .expect("the loader failure is recognized");
+    assert!(message.contains("libc.so.6"), "{message}");
+    assert!(message.contains("memory_mb = 20"), "{message}");
+    assert!(message.contains("raise the limit"), "{message}");
+    let _ = std::fs::remove_dir_all(log.parent().expect("log parent"));
+}
+
+#[test]
+fn a_helper_that_cannot_load_without_a_limit_names_the_host_library() {
+    let log = session_log(
+        "loader-no-limit",
+        "/usr/local/bin/enclave: error while loading shared libraries: \
+         libc.so.6: version `GLIBC_2.39' not found\n",
+    );
+    let message = session_helper_load_failure(&log, None).expect("recognized");
+    assert!(message.contains("libc.so.6"), "{message}");
+    assert!(message.contains("missing a shared library"), "{message}");
+    assert!(!message.contains("memory_mb"), "{message}");
+    let _ = std::fs::remove_dir_all(log.parent().expect("log parent"));
+}
+
+#[test]
+fn a_healthy_session_log_is_not_a_load_failure() {
+    let log = session_log(
+        "healthy",
+        "workspace session bootstrap starting\nworkspace session ready\n",
+    );
+    assert!(session_helper_load_failure(&log, Some(64 * 1024 * 1024)).is_none());
+    // A log that does not exist yet is the normal state before the helper writes
+    // anything, so it must not be reported as a failure either.
+    assert!(session_helper_load_failure(&log.with_extension("absent"), None).is_none());
+    let _ = std::fs::remove_dir_all(log.parent().expect("log parent"));
+}
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 

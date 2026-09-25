@@ -152,6 +152,7 @@ pub fn start_session(
         &ready_file,
         &pid_file,
         &log_file,
+        workspace.limits.memory_bytes,
         crate::deadlines::session_ready(),
     )?;
     drop(ready);
@@ -185,6 +186,7 @@ pub(crate) fn wait_for_session_ready(
     ready_file: &Path,
     pid_file: &Path,
     log_file: &Path,
+    memory_limit: Option<u64>,
     deadline: crate::deadlines::Deadline,
 ) -> Result<()> {
     let timeout = deadline.get();
@@ -219,6 +221,17 @@ pub(crate) fn wait_for_session_ready(
                 libc::close(inotify_fd);
             }
             return Ok(());
+        }
+        // The helper is a dynamically linked binary, so it can fail before it
+        // runs any of its own code. Reporting that here rather than waiting out
+        // the deadline is the difference between a failure that names the
+        // library and the limit, and one that only says "did not become ready".
+        if let Some(failure) = session_helper_load_failure(log_file, memory_limit) {
+            unsafe {
+                libc::inotify_rm_watch(inotify_fd, watch);
+                libc::close(inotify_fd);
+            }
+            bail!("{failure}");
         }
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
@@ -264,6 +277,35 @@ pub(crate) fn wait_for_session_ready(
             let _ = unsafe { libc::read(inotify_fd, events.as_mut_ptr().cast(), events.len()) };
         }
     }
+}
+
+/// Recognize a runtime helper that could not be loaded at all.
+///
+/// The loader reports the same message for a host whose libc is older than the
+/// one the helper was built against and for a workspace memory limit too small to
+/// map the shared objects the helper needs. Both leave a log line and no ready
+/// file, so this turns the readiness deadline into a failure that names the
+/// library, and the limit when one is configured.
+pub(crate) fn session_helper_load_failure(
+    log_file: &Path,
+    memory_limit: Option<u64>,
+) -> Option<String> {
+    let tail = process::read_log_tail(log_file, 20).ok()?;
+    let detail = tail.lines().find(|line| {
+        line.contains("error while loading shared libraries")
+            || line.contains("failed to map segment from shared object")
+    })?;
+    let mut message = format!("workspace runtime helper failed to load: {}", detail.trim());
+    match memory_limit {
+        Some(bytes) => message.push_str(&format!(
+            ". The helper is dynamically linked, so this is either a missing or incompatible host library or a workspace memory limit too small to map it (memory_mb = {}); raise the limit and try again",
+            bytes / (1024 * 1024)
+        )),
+        None => message.push_str(
+            ". The helper is dynamically linked, so the host is missing a shared library it needs, or one is incompatible with the version it was built against",
+        ),
+    }
+    Some(message)
 }
 
 pub(crate) fn setgroups_args(userns: &userns::UserNamespacePlan) -> Vec<&'static str> {

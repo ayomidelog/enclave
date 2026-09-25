@@ -80,7 +80,7 @@ pub(crate) use helper::{infer_workspace_helper_from_current_exe, session_helper_
 pub(crate) use helper::{prepare_session_helper, resolve_session_helper_source};
 pub(crate) use paths::{ensure_runtime_layout, sandbox_runtime_dir};
 #[cfg(test)]
-pub(crate) use start::{launch_userns_args, setgroups_args};
+pub(crate) use start::{launch_userns_args, session_helper_load_failure, setgroups_args};
 
 #[cfg(test)]
 #[path = "../../../tests/src/workspace/session/mod.rs"]
