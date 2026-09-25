@@ -49,18 +49,26 @@ pub fn load_policy(state_dir: &Path) -> Result<Policy> {
     with_policy(state_dir, |policy| Ok(policy.clone()))
 }
 
+/// The actions that are not authorized.
+///
+/// An action belongs here only if it reads state or decides the policy itself.
+/// Everything that changes host state goes through [`authorize`]. The list is an
+/// array rather than a `matches!` so that adding to it is a visible edit with a
+/// test that fails until the new entry is justified, because the failure mode of a
+/// name arriving here by accident is an action that any local user can run.
+const POLICY_EXEMPT_ACTIONS: &[&str] = &[
+    "ping",
+    "shutdown",
+    "daemon.health",
+    "policy.get",
+    "policy.set_default",
+    "policy.allow",
+    "policy.deny",
+    "policy.clear",
+];
+
 fn is_policy_exempt(action: &str) -> bool {
-    matches!(
-        action,
-        "ping"
-            | "shutdown"
-            | "daemon.health"
-            | "policy.get"
-            | "policy.set_default"
-            | "policy.allow"
-            | "policy.deny"
-            | "policy.clear"
-    )
+    POLICY_EXEMPT_ACTIONS.contains(&action)
 }
 
 pub fn authorize(state_dir: &Path, uid: u32, action: &str) -> Result<()> {
