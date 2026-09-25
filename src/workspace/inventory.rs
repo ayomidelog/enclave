@@ -14,6 +14,7 @@
 //! resources are gone", which is the difference between a cleanup that looks
 //! right and one that is right.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -299,9 +300,41 @@ impl ResourceInventory {
     /// every resource the workspace owned is gone, and a non-empty one names
     /// exactly what survived rather than reporting that "something" failed.
     pub fn surviving(&self) -> Vec<&ResourceIdentity> {
+        // Answering for one firewall rule asks iptables for the whole filter
+        // table, and a workspace has one rule per chain. Both chains are in the
+        // same dump, so the answer is computed once per interface and address
+        // rather than once per rule: on a host where a dump costs about eight
+        // milliseconds, the second rule otherwise doubles that check.
+        let mut chains_by_target: BTreeMap<(String, String), Option<Vec<&'static str>>> =
+            BTreeMap::new();
+        for resource in &self.resources {
+            if let ResourceIdentity::FirewallRule {
+                interface, address, ..
+            } = resource
+            {
+                chains_by_target
+                    .entry((interface.clone(), address.clone()))
+                    .or_insert_with(|| {
+                        crate::network::nat::anti_spoof_chains_for(interface, address).ok()
+                    });
+            }
+        }
         self.resources
             .iter()
-            .filter(|resource| resource.still_present())
+            .filter(|resource| match resource {
+                ResourceIdentity::FirewallRule {
+                    chain,
+                    interface,
+                    address,
+                } => match chains_by_target.get(&(interface.clone(), address.clone())) {
+                    Some(Some(chains)) => chains.contains(&chain.as_str()),
+                    // A dump that failed is not evidence the rule is gone, so the
+                    // resource is reported as surviving rather than silently
+                    // counted as released.
+                    _ => true,
+                },
+                other => other.still_present(),
+            })
             .collect()
     }
 

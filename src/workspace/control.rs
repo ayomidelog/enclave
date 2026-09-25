@@ -58,9 +58,9 @@ pub use update::{
 // Helpers shared between the lifecycle modules above.
 pub(crate) use query::collect_all_used_ip_octets;
 pub(crate) use state::{
-    mark_workspace_stopped, normalize_namespace_ref_paths, persist_workspace_metadata,
-    reconcile_workspace_runtime_state, remove_sandbox_cgroup, remove_sandbox_cgroup_if_idle,
-    resolve_workspace_id, set_workspace_stopped,
+    commit_workspace_stopped, mark_workspace_stopped, normalize_namespace_ref_paths,
+    persist_workspace_metadata, reconcile_workspace_runtime_state, remove_sandbox_cgroup,
+    remove_sandbox_cgroup_if_idle, resolve_workspace_id, set_workspace_stopped,
 };
 
 /// Result of bringing a workspace runtime up, before it is recorded.

@@ -18,6 +18,30 @@ pub(crate) fn set_workspace_stopped(
         false,
         false,
     )?;
+    commit_workspace_stopped(sandbox, workspace_id, network.as_ref())
+}
+
+/// Record a workspace as stopped once its host resources have been released.
+///
+/// The host work is deliberately not part of this: unmounting storage and
+/// tearing down a network is tens of milliseconds of work that neither reads nor
+/// writes the registry, and the caller runs it before taking the registry lock
+/// so one workspace's teardown does not stall every other lifecycle request.
+/// This half is registry-only apart from the verification, which is what makes
+/// the recorded state trustworthy rather than merely written.
+pub(crate) fn commit_workspace_stopped(
+    sandbox: &mut RegistrySandbox,
+    workspace_id: &str,
+    network: Option<&crate::network::NetworkCleanupReport>,
+) -> Result<WorkspaceCleanupCertificate> {
+    // The record as it was before the stop, which is what verification has to
+    // answer for: it names the runtime, the address, and the storage this
+    // workspace owned.
+    let workspace = sandbox
+        .workspaces
+        .get(workspace_id)
+        .cloned()
+        .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
     mark_workspace_stopped(sandbox, workspace_id)?;
     remove_sandbox_cgroup_if_idle(sandbox);
     // Verify the host state the cleanup claimed to release. A registry mutation
@@ -25,7 +49,7 @@ pub(crate) fn set_workspace_stopped(
     // loop device are gone, so the certificate is what makes the stop trustworthy.
     // It runs after the runtime markers are removed because those markers are one
     // of the things it verifies.
-    let certificate = crate::workspace::verify_workspace_cleanup(&workspace, network.as_ref());
+    let certificate = crate::workspace::verify_workspace_cleanup(&workspace, network);
     if !certificate.is_complete() {
         bail!(
             "workspace '{}' cleanup is incomplete: {}",

@@ -20,20 +20,23 @@ pub fn stop_workspace_with_certificate(
     sandbox_selector: &str,
     workspace_selector: &str,
 ) -> Result<(WorkspaceMetadata, WorkspaceCleanupCertificate)> {
-    let (sandbox_id, workspace_id, current) = with_registry(state_dir, |registry| {
-        let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
-        let sandbox = registry
-            .sandboxes
-            .get(&sandbox_id)
-            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
-        let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
-        let current = sandbox
-            .workspaces
-            .get(&workspace_id)
-            .cloned()
-            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
-        Ok((sandbox_id, workspace_id, current))
-    })?;
+    let (sandbox_id, workspace_id, current, sandbox_metadata) =
+        with_registry(state_dir, |registry| {
+            let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
+            let sandbox = registry
+                .sandboxes
+                .get(&sandbox_id)
+                .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+            let workspace_id = resolve_workspace_id(sandbox, workspace_selector)?;
+            let current = sandbox
+                .workspaces
+                .get(&workspace_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+            // The sandbox record is needed by the host cleanup, which runs outside
+            // the lock, so it is captured here rather than read again later.
+            Ok((sandbox_id, workspace_id, current, sandbox.metadata.clone()))
+        })?;
 
     let mut journal = crate::operation::Journal::begin(
         state_dir,
@@ -61,6 +64,26 @@ pub fn stop_workspace_with_certificate(
 
     journal.phase("cleanup_resources")?;
     let cleanup_phase = crate::perf::Timer::new("workspace.stop.cleanup");
+    // The host cleanup runs before the registry lock is taken. It unmounts
+    // storage, tears down the network, and removes cgroups: none of that reads or
+    // writes the registry, and on a host where each call costs milliseconds it is
+    // the dominant part of a stop. Holding the registry lock across it would
+    // stall every other lifecycle request for its duration.
+    let network = match cleanup::run_workspace_stop_cleanup(
+        cleanup::WorkspaceStopCleanup {
+            sandbox: sandbox_metadata,
+            workspace: current.clone(),
+        },
+        false,
+        false,
+    ) {
+        Ok(network) => network,
+        Err(error) => {
+            drop(cleanup_phase);
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
+    };
     let result = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
@@ -79,7 +102,8 @@ pub fn stop_workspace_with_certificate(
                 workspace_id
             );
         }
-        let certificate = set_workspace_stopped(sandbox, &workspace_id)?.with_inventory(inventory);
+        let certificate = commit_workspace_stopped(sandbox, &workspace_id, network.as_ref())?
+            .with_inventory(inventory);
         let result = sandbox
             .workspaces
             .get(&workspace_id)
