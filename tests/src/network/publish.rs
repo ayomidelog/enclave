@@ -118,8 +118,23 @@ fn withdrawing_a_port_ends_an_idle_connection() {
 /// it. The publisher binds by number rather than by handing back the socket, so
 /// the test has to name a port up front.
 fn free_host_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-    listener.local_addr().expect("read the bound port").port()
+    free_host_ports(1)[0]
+}
+
+/// Distinct free host ports.
+///
+/// Asking for one port at a time returns a port the kernel has just been told to
+/// release, so a second call can be handed the same number. Holding every listener
+/// until they have all been read is what makes the ports distinct, which a test
+/// that publishes several needs.
+fn free_host_ports(count: usize) -> Vec<u16> {
+    let listeners = (0..count)
+        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port"))
+        .collect::<Vec<_>>();
+    listeners
+        .iter()
+        .map(|listener| listener.local_addr().expect("read the bound port").port())
+        .collect()
 }
 
 fn publish_loopback_port(publisher: &PortPublisher, host_port: u16, service_port: u16) {
@@ -197,6 +212,92 @@ fn clearing_published_ports_releases_the_host_port() {
         rebind.is_ok(),
         "the published port is still held: {rebind:?}"
     );
+}
+
+/// One workspace can hold several published ports, and one publisher can serve
+/// several workspaces at once.
+///
+/// The ports a workspace publishes are replaced as a set on every reconcile, so
+/// the failure worth guarding against is a reconcile that drops or takes over a
+/// binding that belongs to another workspace: the maps are keyed by workspace, and
+/// two workspaces publishing the same host port would be a silent conflict.
+#[test]
+fn several_published_ports_coexist_across_workspaces() {
+    let first_service = TcpListener::bind("127.0.0.1:0").expect("bind the first service");
+    let first_service_port = first_service.local_addr().expect("service addr").port();
+    let second_service = TcpListener::bind("127.0.0.1:0").expect("bind the second service");
+    let second_service_port = second_service.local_addr().expect("service addr").port();
+
+    let publisher = PortPublisher::new();
+    let [first_host_port, second_host_port, third_host_port, other_host_port] =
+        free_host_ports(4)[..]
+    else {
+        unreachable!("asked for four ports")
+    };
+    publish_loopback_port(&publisher, first_host_port, first_service_port);
+
+    // A second port on the same workspace, and a port on a second workspace.
+    let specs = [
+        PublishedPortSpec {
+            host_ip: "127.0.0.1".to_string(),
+            host_port: second_host_port,
+            workspace_port: first_service_port,
+            protocol: "tcp".to_string(),
+        },
+        PublishedPortSpec {
+            host_ip: "127.0.0.1".to_string(),
+            host_port: third_host_port,
+            workspace_port: first_service_port,
+            protocol: "tcp".to_string(),
+        },
+    ];
+    let statuses = publisher
+        .apply_workspace_ports_strict(
+            "sb-publish",
+            "ws-publish",
+            std::process::id(),
+            "127.0.0.1",
+            &specs,
+        )
+        .expect("publish both ports of the first workspace");
+    assert_eq!(statuses.len(), 2);
+
+    let other = PublishedPortSpec {
+        host_ip: "127.0.0.1".to_string(),
+        host_port: other_host_port,
+        workspace_port: second_service_port,
+        protocol: "tcp".to_string(),
+    };
+    let other_statuses = publisher
+        .apply_workspace_ports_strict(
+            "sb-publish",
+            "ws-other",
+            std::process::id(),
+            "127.0.0.1",
+            std::slice::from_ref(&other),
+        )
+        .expect("publish the second workspace's port");
+    assert_eq!(other_statuses.len(), 1);
+
+    // Every binding answers on its own host port, which is what proves they were
+    // not collapsed into one another.
+    for host_port in [second_host_port, third_host_port, other.host_port] {
+        TcpStream::connect(("127.0.0.1", host_port))
+            .unwrap_or_else(|error| panic!("connect to {host_port}: {error}"));
+    }
+
+    // Releasing one workspace leaves the other's ports held and the released host
+    // ports free to bind.
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+    assert!(publisher.has_active_workspace_ports("sb-publish", "ws-other"));
+    for host_port in [first_host_port, second_host_port, third_host_port] {
+        let rebind = TcpListener::bind(("127.0.0.1", host_port));
+        assert!(rebind.is_ok(), "port {host_port} is still held: {rebind:?}");
+    }
+    TcpStream::connect(("127.0.0.1", other.host_port))
+        .expect("the other workspace's port must still answer");
+
+    publisher.clear_workspace_ports("sb-publish", "ws-other");
 }
 
 #[test]
