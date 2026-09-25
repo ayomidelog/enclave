@@ -147,9 +147,11 @@ warm_shutdown=("${shutdown_samples[@]:1}")
 if ((${#warm_boot[@]})); then
   printf 'WORKSPACE_BOOT_WARM_SECONDS=%s\n' "$(sample_percentile 50 "${warm_boot[@]}")"
   printf 'WORKSPACE_BOOT_WARM_P95_SECONDS=%s\n' "$(sample_percentile 95 "${warm_boot[@]}")"
+  printf 'WORKSPACE_BOOT_WARM_P99_SECONDS=%s\n' "$(sample_percentile 99 "${warm_boot[@]}")"
   printf 'WORKSPACE_BOOT_WARM_MAX_SECONDS=%s\n' "$(sample_percentile 100 "${warm_boot[@]}")"
   printf 'SHUTDOWN_WARM_SECONDS=%s\n' "$(sample_percentile 50 "${warm_shutdown[@]}")"
   printf 'SHUTDOWN_WARM_P95_SECONDS=%s\n' "$(sample_percentile 95 "${warm_shutdown[@]}")"
+  printf 'SHUTDOWN_WARM_P99_SECONDS=%s\n' "$(sample_percentile 99 "${warm_shutdown[@]}")"
   printf 'SHUTDOWN_WARM_MAX_SECONDS=%s\n' "$(sample_percentile 100 "${warm_shutdown[@]}")"
 fi
 # Every sample, so a saved run can be re-analyzed rather than only read. A

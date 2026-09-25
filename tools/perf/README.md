@@ -67,7 +67,7 @@ distribution:
 ENCLAVE_LIVE_ITERATIONS=20 ./tools/perf/live-lifecycle.sh
 ```
 
-That prints a median, p95, and maximum for the warm tier alongside every raw
+That prints a median, p95, p99, and maximum for the warm tier alongside every raw
 sample. The samples are printed so a saved run can be re-analyzed rather than only
 read; a percentile of a run that was not kept cannot be checked later. The raw
 samples are also what a regression gate should compare, because a single sample
@@ -107,6 +107,19 @@ port can be bound at every step:
 It is a correctness check rather than a measurement, and it is a live run for the same
 reason the port publisher belongs to the daemon: the workspace layer never binds a
 listener, so the daemon has to be in the loop for the ports to exist at all.
+
+To see where a lifecycle request spends its time rather than only how long it took,
+run the daemon with `ENCLAVE_PERF=1` and read its log:
+
+```bash
+ENCLAVE_PERF=1 enclave daemon start ...
+tools/perf/phases.sh "$daemon_log" workspace.start
+```
+
+It reports the request p50, p95, and p99, and each phase median with its share of the
+request, ordered by the share. The share is the part a total cannot give: two phases
+that each cost a third of a request are worth different work than one that costs two
+thirds. The optional argument limits the report to the phases of one operation.
 
 Generate deterministic transfer fixtures with:
 
