@@ -17,8 +17,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use enclave::sandbox::{
-    create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, update_sandbox_limits,
-    BootstrapMethod, SandboxLimitsUpdate,
+    create_sandbox, start_sandbox, stop_sandbox, update_sandbox_limits, BootstrapMethod,
+    SandboxLimitsUpdate,
 };
 use enclave::workspace::{
     create_workspace, destroy_workspace, list_workspaces, start_workspace, WorkspaceLimits,
@@ -26,6 +26,7 @@ use enclave::workspace::{
 
 use super::support::{
     enclave_rules_by_interface, prepare_cached_rootfs, root_only, session_processes_for, state_dir,
+    SandboxCleanup,
 };
 
 fn sandbox_cgroup_path(sandbox_id: &str) -> PathBuf {
@@ -54,6 +55,9 @@ fn a_start_whose_cgroup_setup_fails_stops_the_session_it_launched() {
     };
 
     let state = state_dir("enclave-int-cgroup-failure");
+    // A test that fails part way through leaves a sandbox cgroup and a state directory
+    // behind unless something removes them, and this test fails a start on purpose.
+    let mut cleanup = SandboxCleanup::new(state.clone());
     prepare_cached_rootfs(&state, "bookworm");
     let sandbox = create_sandbox(
         &state,
@@ -65,6 +69,7 @@ fn a_start_whose_cgroup_setup_fails_stops_the_session_it_launched() {
     )
     .expect("create sandbox");
     start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    cleanup.record(&sandbox.id);
     // The sandbox declares a memory limit so that it has a cgroup of its own. Without
     // one, the failed start would remove the sandbox cgroup as well, and the check that
     // the failed start left no workspace cgroup would have nothing to look at.
@@ -188,6 +193,5 @@ fn a_start_whose_cgroup_setup_fails_stops_the_session_it_launched() {
 
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
-    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
-    let _ = fs::remove_dir_all(state);
+    drop(cleanup);
 }

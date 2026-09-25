@@ -25,7 +25,7 @@ use enclave::workspace::{
     create_workspace, destroy_workspace, start_workspace, stop_workspace, WorkspaceLimits,
 };
 
-use super::support::{prepare_cached_rootfs, root_only, state_dir};
+use super::support::{prepare_cached_rootfs, root_only, state_dir, SandboxCleanup};
 
 fn sandbox_cgroup_path(sandbox_id: &str) -> PathBuf {
     Path::new("/sys/fs/cgroup").join(format!("enclave-sb-{sandbox_id}"))
@@ -88,7 +88,16 @@ fn latest_journal(state: &Path, kind: &str) -> enclave::operation::OperationReco
 
 /// A sandbox with one running workspace, which is what a pause needs to have
 /// anything to freeze.
-fn running_sandbox(state: &Path, name: &str) -> (enclave::sandbox::SandboxMetadata, String) {
+/// The sandbox cleanup the caller has to keep alive for the length of the test.
+///
+/// A test that fails part way through leaves a sandbox cgroup and a state directory
+/// behind unless something removes them, and the failure this test injects is exactly
+/// the case where the sandbox cannot be torn down by the normal path.
+fn running_sandbox(
+    state: &Path,
+    name: &str,
+    cleanup: &mut SandboxCleanup,
+) -> (enclave::sandbox::SandboxMetadata, String) {
     prepare_cached_rootfs(state, "bookworm");
     let sandbox = create_sandbox(
         state,
@@ -100,6 +109,7 @@ fn running_sandbox(state: &Path, name: &str) -> (enclave::sandbox::SandboxMetada
     )
     .expect("create sandbox");
     start_sandbox(state, &sandbox.id).expect("start sandbox");
+    cleanup.record(&sandbox.id);
     let workspace = create_workspace(state, &sandbox.id, "dev", WorkspaceLimits::default())
         .expect("create workspace");
     start_workspace(state, &sandbox.id, &workspace.id).expect("start workspace");
@@ -111,7 +121,6 @@ fn stop_workspace_and_destroy(state: &Path, sandbox_id: &str, workspace_id: &str
     destroy_workspace(state, sandbox_id, workspace_id).expect("destroy workspace");
     stop_sandbox(state, sandbox_id).expect("stop sandbox");
     destroy_sandbox(state, sandbox_id).expect("destroy sandbox");
-    let _ = fs::remove_dir_all(state);
 }
 
 /// A pause whose status write fails must thaw the cgroup it just froze.
@@ -123,7 +132,9 @@ fn a_pause_whose_commit_fails_thaws_the_cgroup_it_froze() {
     }
 
     let state = state_dir("enclave-int-pause-commit");
-    let (sandbox, workspace_id) = running_sandbox(&state, "itest-pause-commit-sandbox");
+    let mut cleanup = SandboxCleanup::new(state.clone());
+    let (sandbox, workspace_id) =
+        running_sandbox(&state, "itest-pause-commit-sandbox", &mut cleanup);
     let cgroup = sandbox_cgroup_path(&sandbox.id);
     assert_eq!(
         cgroup_is_frozen(&cgroup),
@@ -184,7 +195,9 @@ fn a_resume_whose_commit_fails_refreezes_the_cgroup_it_thawed() {
     }
 
     let state = state_dir("enclave-int-resume-commit");
-    let (sandbox, workspace_id) = running_sandbox(&state, "itest-resume-commit-sandbox");
+    let mut cleanup = SandboxCleanup::new(state.clone());
+    let (sandbox, workspace_id) =
+        running_sandbox(&state, "itest-resume-commit-sandbox", &mut cleanup);
     let cgroup = sandbox_cgroup_path(&sandbox.id);
     pause_sandbox(&state, &sandbox.id).expect("pause sandbox");
     assert_eq!(cgroup_is_frozen(&cgroup), Some(true));
