@@ -74,6 +74,19 @@ fn bridge_members() -> Result<Vec<String>> {
     Ok(members)
 }
 
+/// Whether an interface is enslaved to the Enclave bridge right now.
+///
+/// A bridge exposes one directory per member under its brif sysfs entry, which is the
+/// same list a link listing prints for the master and costs one stat rather than a
+/// process. This is how a teardown decides an interface is Enclave's before removing it
+/// by name.
+pub(crate) fn is_bridge_member(interface: &str) -> bool {
+    interface_path(BRIDGE_NAME)
+        .join("brif")
+        .join(interface)
+        .exists()
+}
+
 fn interface_path(interface: &str) -> PathBuf {
     Path::new("/sys/class/net").join(interface)
 }

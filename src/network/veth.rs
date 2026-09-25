@@ -4,6 +4,7 @@ use crate::hostcmd::{HostCommand, HostOutput};
 
 use super::bridge::BRIDGE_NAME;
 use super::ipam;
+use super::teardown;
 
 pub fn setup_workspace_networking(
     pid: u32,
@@ -11,6 +12,29 @@ pub fn setup_workspace_networking(
     veth_host: &str,
     veth_peer: &str,
 ) -> Result<()> {
+    // The host interface name is derived from the workspace id and the address it was
+    // given, so it is predictable, and the failure path below removes the interface by
+    // name. Two things follow from that, and this is where both are handled.
+    //
+    // An interface with our name that is not ours must not be deleted by that cleanup, so
+    // the name is checked before anything is created. And an interface with our name that
+    // *is* ours is a leftover from a teardown that did not finish, which is the state a
+    // crash leaves: removing it is what makes a plain start self-healing rather than a
+    // command that fails until an operator removes the interface by hand. Ownership is
+    // the same proof the teardown uses, so there is one rule rather than two.
+    if interface_exists(veth_host)? {
+        if !teardown::interface_is_workspace_veth(veth_host) {
+            bail!(
+                "interface {veth_host} already exists on the host and is not a workspace interface; refusing to build the workspace network under a name it does not own"
+            );
+        }
+        tracing::warn!(
+            "removing leftover workspace interface {veth_host} before building the workspace network"
+        );
+        run_ip(&["link", "del", veth_host]).with_context(|| {
+            format!("failed to remove the leftover workspace interface {veth_host}")
+        })?;
+    }
     let result: Result<()> = (|| {
         let host_timer = crate::perf::Timer::new("network.veth.host");
         configure_host_veth(veth_host, veth_peer, pid)?;
@@ -62,6 +86,21 @@ fn workspace_id_hash(workspace_id: &str) -> u32 {
     workspace_id.bytes().fold(0x811c9dc5u32, |hash, byte| {
         hash.wrapping_mul(0x01000193) ^ u32::from(byte)
     }) & 0x00ff_ffff
+}
+
+/// Whether an interface with this name exists on the host right now.
+///
+/// The kernel exposes one directory per interface, which is the same information a link
+/// listing prints and costs one stat rather than a process.
+pub(crate) fn interface_exists(interface: &str) -> Result<bool> {
+    let path = std::path::Path::new(crate::network::NET_CLASS_DIR).join(interface);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect interface {interface}"))
+        }
+    }
 }
 
 fn configure_host_veth(host: &str, peer: &str, pid: u32) -> Result<()> {

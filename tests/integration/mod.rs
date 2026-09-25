@@ -18,5 +18,6 @@ mod start_intent;
 mod stop_intent;
 mod support;
 mod tmp_isolation;
+mod veth_collision;
 mod workspace_cp;
 mod workspace_host_mount;

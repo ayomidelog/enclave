@@ -7,8 +7,35 @@ use crate::hostcmd::HostCommand;
 
 use super::NET_CLASS_DIR;
 
+/// Whether an interface is one Enclave created for a workspace.
+///
+/// The name alone is not ownership: it is derived from a workspace id and an address, so
+/// anything on the host could hold it. Two things together are the proof, and both are
+/// readable from sysfs rather than remembered by Enclave: the name matches the scheme
+/// Enclave generates, and the interface is enslaved to the Enclave bridge. A workspace host
+/// end is created as a veth and attached to the bridge in the same batch, so an interface
+/// with our name that is a dummy, or that is attached to something else, is not ours.
+///
+/// This is what makes removal safe to attempt by name. Without it, a teardown for a
+/// workspace whose network was never built deletes an interface that merely happens to have
+/// the name.
+pub(crate) fn interface_is_workspace_veth(veth_host: &str) -> bool {
+    super::veth::is_enclave_veth_name(veth_host) && super::bridge::is_bridge_member(veth_host)
+}
+
 pub fn remove_veth(veth_host: &str) -> Result<()> {
     const MAX_ATTEMPTS: usize = 3;
+    // An interface with this name that Enclave did not create is left alone rather than
+    // deleted: the name is derivable, so holding it is not evidence of ownership.
+    if !interface_is_workspace_veth(veth_host) {
+        if veth_is_present(veth_host) {
+            tracing::warn!(
+                "refusing to delete interface {veth_host}: it is not a workspace veth attached to {}",
+                super::bridge::BRIDGE_NAME
+            );
+        }
+        return Ok(());
+    }
     // The interface's presence is the thing that matters, and it is readable
     // directly, so the already-gone case is decided by looking rather than by
     // matching the wording of whatever ip happened to print.
