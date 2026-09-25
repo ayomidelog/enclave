@@ -462,3 +462,194 @@ fn stopping_a_workspace_reaps_its_descendant_processes() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+
+/// A stop must remove the whole workspace tree even when a process in it refuses
+/// to die on TERM.
+///
+/// The runtime exits on TERM, so the signal alone is enough for it, but the
+/// processes a workspace left behind are not required to be polite. A descendant
+/// that ignores TERM survives the signal, and only the fallback that follows it —
+/// the cgroup kill, and the verified SIGKILL after that — removes it. Without that
+/// fallback a stop could report success while a process kept the workspace's
+/// cgroup, mounts, and network namespace alive.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn stopping_a_workspace_removes_a_descendant_that_ignores_term() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-term-ignoring-descendant");
+    prepare_cached_rootfs(&state, "bookworm");
+    // A backgrounded command redirects its standard input from /dev/null, so the
+    // minimal rootfs needs one before it can leave work running behind it.
+    let dev = state.join("sandboxes/rootfs-cache/bookworm/dev");
+    fs::create_dir_all(&dev).expect("create dev");
+    let _ = fs::remove_file(dev.join("null"));
+    assert!(
+        Command::new("mknod")
+            .arg(dev.join("null"))
+            .args(["c", "1", "3"])
+            .status()
+            .expect("run mknod")
+            .success(),
+        "failed to create /dev/null in the test rootfs"
+    );
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-term-ignoring-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    // A memory limit is what makes the workspace own a cgroup, and the cgroup is
+    // how the test finds the processes the workspace owns.
+    let limits = WorkspaceLimits {
+        memory_bytes: Some(256 * 1024 * 1024),
+        ..WorkspaceLimits::default()
+    };
+    let workspace = create_workspace(&state, &sandbox.id, "dev", limits).expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+
+    // `trap "" TERM` sets the disposition to ignore, and an ignored disposition
+    // survives exec, so the sleep that replaces the shell ignores TERM as well.
+    let launched = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".into(),
+            "-c".into(),
+            "/bin/busybox sh -c 'trap \"\" TERM; exec /bin/busybox sleep 300' \
+             >/home/stuck.log 2>&1 & echo launched"
+                .into(),
+        ],
+    )
+    .expect("launch a TERM-ignoring process in the workspace");
+    assert_eq!(launched.exit_code, 0, "stderr={}", launched.stderr);
+
+    let cgroup = workspace_cgroup_path(&sandbox.id, &workspace.id);
+    let before = cgroup_processes(&cgroup);
+    let runtime_pid = started.runtime_pid.expect("runtime pid");
+    let descendant = before
+        .iter()
+        .find(|(pid, _)| *pid != runtime_pid)
+        .copied()
+        .expect("the TERM-ignoring descendant must be in the workspace cgroup");
+
+    // Prove the premise before asserting on the outcome. If the descendant did
+    // not ignore TERM the stop would pass for the wrong reason and this test would
+    // stop covering the fallback it exists to cover.
+    unsafe { libc::kill(descendant.0 as i32, libc::SIGTERM) };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        process_starttime(descendant.0),
+        Some(descendant.1),
+        "pid {} was expected to ignore TERM; the stop below would not reach the fallback",
+        descendant.0
+    );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+
+    let survivors = before
+        .iter()
+        .filter(|(pid, starttime)| process_starttime(*pid) == Some(*starttime))
+        .collect::<Vec<_>>();
+    assert!(
+        survivors.is_empty(),
+        "stop left process(es) {survivors:?} from the workspace tree alive, including pid {} which ignores TERM",
+        descendant.0
+    );
+    assert!(
+        !cgroup.exists(),
+        "stop left the workspace cgroup {} behind",
+        cgroup.display()
+    );
+
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// A workspace record whose runtime identity is stale must never signal whatever
+/// process holds that pid now.
+///
+/// A pid is not an identity: the kernel reuses pids, so a record that kept only
+/// the number would let a stop kill an unrelated process that happened to inherit
+/// it. The record carries the process start time as well, and this test points the
+/// record at a live process whose start time does not match, then proves the stop
+/// leaves that process untouched.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn stopping_a_workspace_never_signals_a_pid_it_does_not_own() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-pid-reuse");
+    prepare_cached_rootfs(&state, "bookworm");
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-pid-reuse-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
+        .expect("create workspace");
+    // The workspace is deliberately never started. The record written below is the
+    // shape an interrupted start leaves behind: it claims a running runtime, and
+    // the pid it names has since been handed to an unrelated process.
+
+    // An unrelated process, standing in for whatever holds the pid after reuse.
+    let mut victim = Command::new("sleep")
+        .arg("300")
+        .spawn()
+        .expect("spawn the unrelated process");
+    let victim_pid = victim.id();
+    let victim_starttime = process_starttime(victim_pid).expect("victim start time");
+
+    // Point the record at the victim with a start time that is not its own. A pid
+    // on its own cannot tell the process the record meant apart from whatever holds
+    // the number now, which is why the start time is part of the identity.
+    enclave::registry::with_registry_mut(&state, |registry| {
+        let sandbox = registry
+            .sandboxes
+            .get_mut(&sandbox.id)
+            .expect("sandbox record");
+        let workspace = sandbox
+            .workspaces
+            .get_mut(&workspace.id)
+            .expect("workspace record");
+        workspace.status = WorkspaceStatus::Running;
+        workspace.runtime_pid = Some(victim_pid);
+        workspace.runtime_starttime_ticks = Some(victim_starttime.wrapping_add(1));
+        Ok(())
+    })
+    .expect("record the stale runtime identity");
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+
+    assert_eq!(
+        process_starttime(victim_pid),
+        Some(victim_starttime),
+        "the stop signalled pid {victim_pid}, which it does not own"
+    );
+
+    let _ = victim.kill();
+    let _ = victim.wait();
+
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
