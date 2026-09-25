@@ -34,8 +34,17 @@ pub(crate) const WORKSPACE_TMP_DIR: &str = ".enclave-tmp";
 pub(crate) const LEGACY_WORKSPACE_TMP_DIR: &str = "tmp";
 /// How long to wait between checks that the kernel released a loop device.
 ///
-/// The check is a sysfs directory read rather than a `losetup` fork, so a short
-/// interval costs little and keeps a stop from paying a fixed 50 ms penalty.
+/// The wait is the kernel's, not this interval's: an autoclear device is released
+/// 22 to 48 ms after the unmount on this host, and detaching it explicitly with
+/// `losetup -d` is not faster (45 ms median against 35 ms). The interval only
+/// decides how late the release is noticed.
+///
+/// Ten milliseconds is the right granularity because the check is not free: finding
+/// the device that backs one image means reading `backing_file` for every loop device
+/// on the host, and with 53 of them that is 1.1 ms a scan. A shorter interval would
+/// spend more time scanning than it saves in latency, and a longer one would add its
+/// own delay to every stop. Ten milliseconds still costs far less than the `losetup`
+/// fork this replaced, which was about 10 ms for the same answer.
 const LOOP_DETACH_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static DISK_BACKEND_CHECK: OnceLock<Result<(), String>> = OnceLock::new();
 
