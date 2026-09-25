@@ -1,4 +1,4 @@
-//! Registry repair: reconcile `registry.json` with what is on disk.
+//! Reading the sandboxes tree and describing what is actually on disk.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -6,132 +6,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::sandbox::{ensure_sandbox_layout, normalize_sandbox_metadata};
-use crate::workspace::{OrphanRuntime, WorkspaceMetadata};
+use crate::sandbox::{ensure_sandbox_layout, normalize_sandbox_metadata, SandboxMetadata};
+use crate::workspace::WorkspaceMetadata;
 
-use crate::sandbox::SandboxMetadata;
+use super::super::storage::{persist_metadata, read_json};
+use super::super::RegistrySandbox;
+use super::orphan::remove_orphan_directory;
+use super::{DiskScan, RetainedOrphan};
 
-use super::storage::{
-    load_registry_with_migrations, persist_metadata, read_json, registry_lock_path,
-    save_registry_unlocked, update_cache,
-};
-use super::{ensure_registry, Registry, RegistrySandbox, RepairReport};
-
-/// A workspace directory repair refused to remove because a live runtime owns it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct RetainedOrphan {
-    pub sandbox_id: String,
-    pub workspace_id: String,
-    pub workspace_dir: PathBuf,
-    pub runtime: OrphanRuntime,
-}
-
-impl RetainedOrphan {
-    /// One line naming the directory and what still owns it.
-    pub fn describe(&self) -> String {
-        format!(
-            "{}/{} at {} ({})",
-            self.sandbox_id,
-            self.workspace_id,
-            self.workspace_dir.display(),
-            self.runtime.describe()
-        )
-    }
-}
-
-/// What one scan of the sandboxes tree found.
-#[derive(Default)]
-struct DiskScan {
-    sandboxes: BTreeMap<String, RegistrySandbox>,
-    /// Workspace directories retained because a live runtime still owns them.
-    retained_orphans: Vec<RetainedOrphan>,
-}
-
-pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
-    ensure_registry(state_dir)?;
-    let lock_path = registry_lock_path(state_dir);
-    crate::fsutil::with_file_lock(&lock_path, || {
-        let (mut registry, migrations) = match load_registry_with_migrations(state_dir) {
-            Ok(loaded) => loaded,
-            Err(err) => {
-                tracing::warn!(
-                    "registry repair is rebuilding in-memory state after registry load failure: {err:#}"
-                );
-                (Registry::default(), Vec::new())
-            }
-        };
-        let mut report = RepairReport {
-            // The version the record was written with, so an operator can see
-            // that repair understood an older schema rather than overwriting it.
-            migrated_registry_from_version: migrations.first().map(|step| step.from),
-            ..RepairReport::default()
-        };
-
-        let sandboxes_root = state_dir.join("sandboxes");
-        fs::create_dir_all(&sandboxes_root)
-            .with_context(|| format!("failed to create {}", sandboxes_root.display()))?;
-
-        let DiskScan {
-            sandboxes: discovered,
-            retained_orphans,
-        } = scan_on_disk(state_dir, strict)?;
-        report.retained_orphans = retained_orphans;
-
-        for (sandbox_id, discovered_sandbox) in &discovered {
-            match registry.sandboxes.get_mut(sandbox_id) {
-                Some(existing) => {
-                    existing.metadata = discovered_sandbox.metadata.clone();
-
-                    for (workspace_id, workspace) in &discovered_sandbox.workspaces {
-                        if !existing.workspaces.contains_key(workspace_id) {
-                            report.added_workspaces += 1;
-                        }
-                        existing
-                            .workspaces
-                            .insert(workspace_id.clone(), workspace.clone());
-                    }
-
-                    let stale_ids: Vec<String> = existing
-                        .workspaces
-                        .keys()
-                        .filter(|id| !discovered_sandbox.workspaces.contains_key(*id))
-                        .cloned()
-                        .collect();
-                    for workspace_id in stale_ids {
-                        existing.workspaces.remove(&workspace_id);
-                        report.removed_workspaces += 1;
-                    }
-                }
-                None => {
-                    report.added_sandboxes += 1;
-                    report.added_workspaces += discovered_sandbox.workspaces.len();
-                    registry
-                        .sandboxes
-                        .insert(sandbox_id.clone(), discovered_sandbox.clone());
-                }
-            }
-        }
-
-        let stale_sandbox_ids: Vec<String> = registry
-            .sandboxes
-            .keys()
-            .filter(|id| !discovered.contains_key(*id))
-            .cloned()
-            .collect();
-        for sandbox_id in stale_sandbox_ids {
-            if let Some(removed) = registry.sandboxes.remove(&sandbox_id) {
-                report.removed_sandboxes += 1;
-                report.removed_workspaces += removed.workspaces.len();
-            }
-        }
-
-        save_registry_unlocked(state_dir, &registry)?;
-        update_cache(state_dir, registry);
-        Ok(report)
-    })
-}
-
-fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<DiskScan> {
+pub(super) fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<DiskScan> {
     let sandboxes_root = state_dir.join("sandboxes");
     let mut scan = DiskScan::default();
 
@@ -419,51 +302,4 @@ fn scan_workspaces(
     }
 
     Ok(result)
-}
-
-fn remove_orphan_directory(path: &Path) -> Result<()> {
-    if path_contains_mount(path)? {
-        bail!(
-            "refusing to remove orphaned directory {} while it or a descendant is still mounted",
-            path.display()
-        );
-    }
-    fs::remove_dir_all(path)
-        .with_context(|| format!("failed to remove orphaned directory {}", path.display()))
-}
-
-fn path_contains_mount(path: &Path) -> Result<bool> {
-    let mountinfo = fs::read_to_string("/proc/self/mountinfo")
-        .context("failed to read /proc/self/mountinfo")?;
-    Ok(mountinfo
-        .lines()
-        .filter_map(mountinfo_path)
-        .any(|mountpoint| mountpoint == path || mountpoint.starts_with(path)))
-}
-
-fn mountinfo_path(line: &str) -> Option<PathBuf> {
-    let raw = line.split_whitespace().nth(4)?;
-    Some(PathBuf::from(unescape_mountinfo_path(raw)))
-}
-
-fn unescape_mountinfo_path(path: &str) -> String {
-    let mut result = String::with_capacity(path.len());
-    let bytes = path.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\'
-            && index + 3 < bytes.len()
-            && bytes[index + 1..=index + 3].iter().all(u8::is_ascii_digit)
-        {
-            let value = (bytes[index + 1] - b'0') * 64
-                + (bytes[index + 2] - b'0') * 8
-                + (bytes[index + 3] - b'0');
-            result.push(value as char);
-            index += 4;
-        } else {
-            result.push(bytes[index] as char);
-            index += 1;
-        }
-    }
-    result
 }
