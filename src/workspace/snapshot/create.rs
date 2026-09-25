@@ -60,7 +60,12 @@ pub fn create_workspace_snapshot(
 
         let metadata = SnapshotMetadata {
             name: snapshot_name.clone(),
-            created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+            // Millisecond precision, not seconds: two snapshots taken in the
+            // same second would otherwise record the same creation time, and
+            // garbage collection orders by that time. With seconds, keeping the
+            // newest N could keep the older of two snapshots and delete the one
+            // just taken. RFC3339 with milliseconds still sorts lexicographically.
+            created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
         };
         let metadata_path = snapshot_dir.join("snapshot.json");
         crate::fsutil::write_file_atomic(

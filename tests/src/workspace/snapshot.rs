@@ -64,6 +64,55 @@ fn default_snapshot_name_is_valid() {
     );
 }
 
+fn snapshot(name: &str, created_at: &str) -> WorkspaceSnapshotInfo {
+    WorkspaceSnapshotInfo {
+        name: name.to_string(),
+        created_at: created_at.to_string(),
+        path: format!("/snapshots/{name}"),
+    }
+}
+
+#[test]
+fn garbage_collection_orders_snapshots_newest_first() {
+    let mut snapshots = vec![
+        snapshot("snap-20260101000000", "2026-01-01T00:00:00.000Z"),
+        snapshot("snap-20260301000000", "2026-03-01T00:00:00.000Z"),
+        snapshot("snap-20260201000000", "2026-02-01T00:00:00.000Z"),
+    ];
+    newest_first(&mut snapshots);
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "snap-20260301000000",
+            "snap-20260201000000",
+            "snap-20260101000000"
+        ]
+    );
+}
+
+#[test]
+fn garbage_collection_breaks_a_creation_time_tie_by_name() {
+    // An imported archive keeps the creation time it was exported with, so two
+    // snapshots can record the same instant. The order still has to be total, or
+    // which one survives a keep-N run depends on the directory read order.
+    let mut snapshots = vec![
+        snapshot("imported-b", "2026-01-01T00:00:00.000Z"),
+        snapshot("imported-a", "2026-01-01T00:00:00.000Z"),
+        snapshot("imported-c", "2026-01-01T00:00:00.000Z"),
+    ];
+    newest_first(&mut snapshots);
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["imported-c", "imported-b", "imported-a"]
+    );
+}
+
 #[test]
 fn copy_dir_recursive_handles_empty_src() {
     let dir = std::env::temp_dir().join(format!("enclave-snap-test-{}", std::process::id()));

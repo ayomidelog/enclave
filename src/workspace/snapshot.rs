@@ -54,3 +54,7 @@ pub(crate) use paths::{
 #[cfg(test)]
 #[path = "../../tests/src/workspace/snapshot.rs"]
 mod tests;
+
+// The garbage-collection order is exercised directly by the snapshot tests.
+#[cfg(test)]
+pub(crate) use list::newest_first;

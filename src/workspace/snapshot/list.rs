@@ -78,7 +78,7 @@ pub fn gc_workspace_snapshots(
     }
 
     let mut sorted = all;
-    sorted.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    newest_first(&mut sorted);
 
     let to_remove = sorted.split_off(keep);
     let worker_count = to_remove.len().min(4);
@@ -118,4 +118,19 @@ pub fn gc_workspace_snapshots(
             .collect::<Result<Vec<_>>>()
     })?;
     Ok(results.into_iter().flatten().collect())
+}
+
+/// Order snapshots newest first.
+///
+/// The name breaks a tie on creation time so the choice is deterministic for two
+/// snapshots that record the same time, which an imported archive can: it keeps
+/// the creation time it was exported with rather than the time it was imported. A
+/// default name embeds the creation time, so the name order agrees with the time
+/// order for everything Enclave creates itself.
+pub(crate) fn newest_first(snapshots: &mut [WorkspaceSnapshotInfo]) {
+    snapshots.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.name.cmp(&a.name))
+    });
 }
