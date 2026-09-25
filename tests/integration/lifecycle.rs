@@ -327,3 +327,138 @@ fn starting_a_workspace_releases_its_dead_runtime_rules() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+/// Absolute path of the cgroup that holds a workspace's processes.
+///
+/// The naming is a contract the daemon and doctor both rely on, so the test
+/// builds it from the ids rather than reaching into the crate.
+fn workspace_cgroup_path(sandbox_id: &str, workspace_id: &str) -> std::path::PathBuf {
+    Path::new("/sys/fs/cgroup")
+        .join(format!("enclave-sb-{sandbox_id}"))
+        .join(format!("enclave-ws-{sandbox_id}-{workspace_id}"))
+}
+
+/// Field 22 of /proc/<pid>/stat: the process start time in clock ticks.
+///
+/// The command name can contain spaces and parentheses, so the fields are counted
+/// from the last closing parenthesis rather than from the start of the line.
+fn process_starttime(pid: u32) -> Option<u64> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    raw.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
+/// The host PIDs in a cgroup, each with the start time that identifies it across
+/// PID reuse.
+fn cgroup_processes(cgroup: &Path) -> Vec<(u32, u64)> {
+    let Ok(raw) = fs::read_to_string(cgroup.join("cgroup.procs")) else {
+        return Vec::new();
+    };
+    raw.lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .filter_map(|pid| process_starttime(pid).map(|starttime| (pid, starttime)))
+        .collect()
+}
+
+/// A workspace owns more than its runtime. A command that backgrounds work leaves
+/// descendants in the workspace cgroup, and a stop has to take the whole tree: a
+/// survivor keeps the workspace's cgroup, mounts, and network namespace alive
+/// after the registry already says the workspace is stopped.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn stopping_a_workspace_reaps_its_descendant_processes() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-descendants");
+    prepare_cached_rootfs(&state, "bookworm");
+    // A backgrounded command redirects its standard input from /dev/null, so the
+    // minimal rootfs needs one before it can leave work running behind it.
+    let dev = state.join("sandboxes/rootfs-cache/bookworm/dev");
+    fs::create_dir_all(&dev).expect("create dev");
+    let _ = fs::remove_file(dev.join("null"));
+    assert!(
+        Command::new("mknod")
+            .arg(dev.join("null"))
+            .args(["c", "1", "3"])
+            .status()
+            .expect("run mknod")
+            .success(),
+        "failed to create /dev/null in the test rootfs"
+    );
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-descendant-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    // A memory limit is what makes the workspace own a cgroup, and the cgroup is
+    // how the test finds the processes the workspace owns.
+    let limits = WorkspaceLimits {
+        memory_bytes: Some(256 * 1024 * 1024),
+        ..WorkspaceLimits::default()
+    };
+    let workspace = create_workspace(&state, &sandbox.id, "dev", limits).expect("create workspace");
+    start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+
+    // The command that starts the work exits immediately, so the only processes
+    // left behind are the ones it backgrounded. The rootfs is a busybox shell, so
+    // the sleeping processes are started through busybox itself. Each one sends
+    // its output to a file rather than inheriting the command's pipe: a
+    // background process that keeps the pipe open would hold the exec until it
+    // exits, which is what the workspace's own output collection is waiting on.
+    let launched = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".into(),
+            "-c".into(),
+            "/bin/busybox sleep 300 >/home/one.log 2>&1 & \
+             /bin/busybox sleep 300 >/home/two.log 2>&1 & \
+             echo launched"
+                .into(),
+        ],
+    )
+    .expect("launch background work in the workspace");
+    assert_eq!(launched.exit_code, 0, "stderr={}", launched.stderr);
+
+    let cgroup = workspace_cgroup_path(&sandbox.id, &workspace.id);
+    let before = cgroup_processes(&cgroup);
+    assert!(
+        before.len() >= 3,
+        "expected the runtime and two background descendants in {}, got {before:?}",
+        cgroup.display()
+    );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+
+    let survivors = before
+        .iter()
+        .filter(|(pid, starttime)| process_starttime(*pid) == Some(*starttime))
+        .collect::<Vec<_>>();
+    assert!(
+        survivors.is_empty(),
+        "stop left process(es) {survivors:?} from the workspace tree alive"
+    );
+    assert!(
+        !cgroup.exists(),
+        "stop left the workspace cgroup {} behind",
+        cgroup.display()
+    );
+
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
