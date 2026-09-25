@@ -224,6 +224,74 @@ pub fn close_unfinished_records(state_dir: &Path, reason: &str) -> Result<Vec<St
     Ok(closed)
 }
 
+/// How many terminal journal records are kept.
+///
+/// The journal is the audit trail of what the daemon did and why, so it is worth
+/// keeping. It is also one file per lifecycle operation, and a host that starts and
+/// stops workspaces for months accumulates them without bound. Terminal records are
+/// therefore trimmed to the newest [`JOURNAL_TERMINAL_LIMIT`]. A record that is not
+/// terminal is never removed, because recovery reads those.
+///
+/// The trim runs at daemon startup rather than on the write path, so no lifecycle
+/// operation pays for it, and it returns without reading anything when the journal
+/// is already inside the limit, which is the usual case.
+const JOURNAL_TERMINAL_LIMIT: usize = 1000;
+
+/// Trim terminal records beyond the retention limit, keeping the newest.
+///
+/// Returns how many were removed, so the caller can say what it did rather than
+/// deleting part of the audit trail silently. A record that cannot be read is left
+/// in place: doctor reports it, and removing a file this function does not
+/// understand is not its job.
+pub fn prune_terminal_records(state_dir: &Path) -> Result<usize> {
+    let root = state_dir.join("operations");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read operation journal {}", root.display()))
+        }
+    };
+
+    let mut terminal: Vec<(String, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(raw) = fs::read(&path) else { continue };
+        let Ok(record) = serde_json::from_slice::<OperationRecord>(&raw) else {
+            continue;
+        };
+        if matches!(
+            record.status,
+            OperationStatus::Planned | OperationStatus::Running
+        ) {
+            continue;
+        }
+        terminal.push((record.updated_at, path));
+    }
+
+    if terminal.len() <= JOURNAL_TERMINAL_LIMIT {
+        return Ok(0);
+    }
+    // Newest first, so everything past the limit is the oldest.
+    terminal.sort_by(|left, right| right.0.cmp(&left.0));
+    let mut removed = 0;
+    for (_, path) in terminal.into_iter().skip(JOURNAL_TERMINAL_LIMIT) {
+        match fs::remove_file(&path) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to remove journal record {}", path.display()))
+            }
+        }
+    }
+    Ok(removed)
+}
+
 pub fn load(state_dir: &Path, id: &str) -> Result<OperationRecord> {
     let path = state_dir.join("operations").join(format!("{id}.json"));
     let data = fs::read(&path)

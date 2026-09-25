@@ -97,6 +97,18 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         // name the records that stayed open.
         Err(error) => tracing::warn!("failed to close unfinished operation records: {error:#}"),
     }
+    // The journal is one file per lifecycle operation and nothing else trims it, so
+    // a host that starts and stops workspaces for months would accumulate them
+    // without bound. This runs after the close above, so every record left is
+    // terminal and the newest are the operations a reader is most likely to ask
+    // about.
+    match crate::operation::prune_terminal_records(&config.state_dir) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(
+            "trimmed {removed} terminal operation journal record(s) beyond the retention limit"
+        ),
+        Err(error) => tracing::warn!("failed to trim the operation journal: {error:#}"),
+    }
     policy::ensure_policy(&config.state_dir)?;
     socket::prepare_runtime_paths(&config.socket_path, &config.pid_file)?;
     let services = services::DaemonServices {
