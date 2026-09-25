@@ -8,11 +8,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::registry::{with_registry, with_registry_mut};
+use crate::registry::with_registry;
 use crate::sandbox::resolve_sandbox_id;
 
-use super::control::{resolve_workspace_id, set_workspace_stopped};
-use super::session;
+use super::control::resolve_workspace_id;
 use super::types::{WorkspaceMetadata, WorkspaceSnapshotArchiveInfo, WorkspaceSnapshotInfo};
 
 pub const DEFAULT_SNAPSHOT_KEEP: usize = 5;
@@ -47,8 +46,7 @@ pub use restore::restore_workspace_snapshot;
 // Shared between the snapshot modules above.
 pub(crate) use paths::{
     copy_dir_recursive, default_snapshot_name, ensure_snapshot_layout, read_snapshot_metadata,
-    reset_path, snapshot_directory, snapshot_path, snapshots_root, temporary_workspace,
-    validate_snapshot_name,
+    snapshot_directory, snapshot_path, snapshots_root, temporary_workspace, validate_snapshot_name,
 };
 
 #[cfg(test)]

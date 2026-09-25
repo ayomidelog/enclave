@@ -1,5 +1,10 @@
 use super::*;
 
+// The two restore paths are reached through the snapshot module, and the helper that
+// clears a directory is shared with them, so the tests name it directly rather than
+// relying on the parent module to re-export every internal it happens to use.
+use crate::workspace::snapshot::paths::reset_path;
+
 #[test]
 fn snapshot_name_validation_blocks_traversal() {
     assert!(validate_snapshot_name("snap_123").is_ok());
