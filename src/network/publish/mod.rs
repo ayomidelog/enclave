@@ -13,6 +13,7 @@ use nix::sched::{setns, CloneFlags};
 
 use crate::workspace::{validate_published_ports, PublishedPortSpec, PublishedPortStatus};
 
+mod connection;
 mod limiter;
 mod proxy;
 mod publication;
