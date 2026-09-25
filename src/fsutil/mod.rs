@@ -185,5 +185,5 @@ pub fn write_file_atomic_with(
 }
 
 #[cfg(test)]
-#[path = "../../tests/src/fsutil.rs"]
+#[path = "../../tests/src/fsutil/mod.rs"]
 mod tests;
