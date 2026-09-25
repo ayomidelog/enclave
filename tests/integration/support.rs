@@ -232,3 +232,44 @@ pub(super) fn loop_devices_backing(image: &Path) -> Vec<String> {
     }
     devices
 }
+
+/// PIDs whose command line is a workspace session belonging to this sandbox directory.
+///
+/// A session helper carries the sandbox path in its arguments, so a process started for a
+/// test's sandbox can be told apart from one serving another sandbox or a real one. A
+/// zombie is skipped because it has already released its namespaces and holds nothing.
+pub(super) fn session_processes_for(sandbox_path: &Path) -> Vec<u32> {
+    let marker = sandbox_path.to_string_lossy().into_owned();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .filter(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let cmdline = String::from_utf8_lossy(&cmdline);
+        if !cmdline.contains("workspace-session") || !cmdline.contains(&marker) {
+            continue;
+        }
+        // A zombie holds no resources, so it is not an orphan.
+        let state = fs::read_to_string(entry.path().join("stat"))
+            .ok()
+            .and_then(|stat| stat.rsplit_once(") ").map(|(_, rest)| rest.to_string()))
+            .and_then(|rest| rest.chars().next());
+        if matches!(state, Some('Z') | Some('X')) {
+            continue;
+        }
+        found.push(pid);
+    }
+    found.sort_unstable();
+    found
+}
