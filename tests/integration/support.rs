@@ -49,6 +49,29 @@ pub(super) fn state_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Every mount point at or below a directory, as the host mount table lists them.
+///
+/// A workspace owns more than one mount: a quota-backed one has its disk image mounted
+/// and its root overlay merged, and a stop has to release all of them. Asking for the
+/// whole subtree is what makes a check for "no mount left" a statement about every mount
+/// rather than about the one the test happened to know the name of.
+pub(super) fn mounts_at_or_below(prefix: &Path) -> Vec<String> {
+    let Ok(raw) = fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
+    let prefix = prefix.to_string_lossy();
+    raw.lines()
+        .filter_map(|line| line.split_whitespace().nth(4))
+        .filter(|mount| {
+            *mount == prefix.as_ref()
+                || mount
+                    .strip_prefix(prefix.as_ref())
+                    .is_some_and(|rest| rest.starts_with("/"))
+        })
+        .map(str::to_string)
+        .collect()
+}
+
 /// Whether the mount table currently lists `path` as a mount point.
 pub(super) fn is_mountpoint(path: &str) -> bool {
     let Ok(raw) = fs::read_to_string("/proc/self/mountinfo") else {

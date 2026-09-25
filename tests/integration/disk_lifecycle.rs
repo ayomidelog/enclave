@@ -17,7 +17,8 @@ use enclave::workspace::{
 };
 
 use super::support::{
-    ext4_filesystem_size, loop_devices_backing, prepare_cached_rootfs, root_only, state_dir,
+    ext4_filesystem_size, loop_devices_backing, mounts_at_or_below, prepare_cached_rootfs,
+    root_only, state_dir,
 };
 
 #[test]
@@ -151,6 +152,18 @@ fn stopping_a_quota_workspace_releases_its_loop_device() {
     start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
 
     let image = Path::new(&workspace.workspace_path).join("fs.img");
+    // The mounts are the other half of what a quota-backed workspace owns: the image is
+    // mounted, and the root overlay on top of it is merged. A stop that released the loop
+    // device but left a mount would leave the image reachable through the host tree, and
+    // the loop device check below would not notice because the device is still there for
+    // the mount to hold.
+    let workspace_path = Path::new(&workspace.workspace_path);
+    let mounted = mounts_at_or_below(workspace_path);
+    assert!(
+        !mounted.is_empty(),
+        "a running quota-backed workspace must have its storage mounted: {}",
+        workspace_path.display()
+    );
     let attached = loop_devices_backing(&image);
     assert!(
         !attached.is_empty(),
@@ -165,6 +178,12 @@ fn stopping_a_quota_workspace_releases_its_loop_device() {
         "stop left loop device(s) {survivors:?} attached to {}",
         image.display()
     );
+    let surviving_mounts = mounts_at_or_below(workspace_path);
+    assert!(
+        surviving_mounts.is_empty(),
+        "stop left mount(s) {surviving_mounts:?} below {}",
+        workspace_path.display()
+    );
 
     // A second cycle proves the device was released rather than reused, which is
     // what a device left attached would look like from the outside.
@@ -178,6 +197,11 @@ fn stopping_a_quota_workspace_releases_its_loop_device() {
         loop_devices_backing(&image).is_empty(),
         "the second stop left a loop device attached to {}",
         image.display()
+    );
+    assert!(
+        mounts_at_or_below(workspace_path).is_empty(),
+        "the second stop left a mount below {}",
+        workspace_path.display()
     );
 
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
