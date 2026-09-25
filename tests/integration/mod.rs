@@ -7,6 +7,7 @@ mod destroy_contract;
 mod detached_commands;
 mod disk_lifecycle;
 mod lifecycle;
+mod network_collision;
 mod network_rules;
 mod pid_identity;
 mod process_tree;
