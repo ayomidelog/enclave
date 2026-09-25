@@ -143,6 +143,19 @@ It is a correctness check rather than a measurement, and it is a live run for th
 reason the port publisher belongs to the daemon: the workspace layer never binds a
 listener, so the daemon has to be in the loop for the ports to exist at all.
 
+It also drives the rollback a failed publication owes the caller. A start whose host
+port is already held by something else must undo the start rather than leave a
+running workspace with no listeners, so the run holds one of the declared ports,
+requires the start to fail, and then requires the workspace to be stopped and the
+kernel to hold none of the three ports. Two of the checks are on kernel state rather
+than on the registry record the request itself wrote: a workspace cgroup cannot exist
+without a live process in it, and a veth cannot exist without the start having made
+it. Both are also required to have been seen to exist while the failing start ran, so
+a start that failed before reaching either of them cannot pass the checks that they
+were released. The port is then released and the same start is required to succeed,
+which is what keeps the assertions from passing on a workspace that can no longer
+start at all.
+
 To see where a lifecycle request spends its time rather than only how long it took,
 run the daemon with `ENCLAVE_PERF=1` and read its log:
 
