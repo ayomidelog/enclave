@@ -29,6 +29,12 @@ if [[ -n "$stale_source" ]]; then
 fi
 workers=${ENCLAVE_UP_WORKERS:-1}
 cleanup_workers=${ENCLAVE_CLEANUP_WORKERS:-4}
+# One cycle is an up followed by a down. The first cycle is the cold tier and
+# every cycle after it is the warm tier, so the default of two is the published
+# cold and warm pair. More cycles publish a distribution, which is what a
+# regression gate needs: one sample cannot show a tail, and the tail is where a
+# lifecycle regression appears first.
+iterations=${ENCLAVE_LIVE_ITERATIONS:-2}
 rootfs_source=${ENCLAVE_LIVE_ROOTFS:-/root/.local/state/enclave/sandboxes/rootfs-cache/bookworm}
 # The eight-workspace fixture is the default, and it is the one whose numbers are
 # published. A caller who wants a different number of workspaces points this at
@@ -87,17 +93,67 @@ printf 'binary=%s workers=%s cleanup_workers=%s fixture=%s rootfs_source=%s\n' \
 # The host the numbers came from, so a saved result can be compared with
 # another one rather than only read.
 host_metadata
-ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
-  /usr/bin/time -f 'WORKSPACE_BOOT_COLD_SECONDS=%e' \
-  "${runner[@]}" "$binary" --socket "$socket_path" up --cache-setup
+printf 'binary=%s workers=%s cleanup_workers=%s fixture=%s iterations=%s rootfs_source=%s\n' \
+  "$binary" "$workers" "$cleanup_workers" "$fixture" "$iterations" "$rootfs_source"
+# The host the numbers came from, so a saved result can be compared with
+# another one rather than only read.
+host_metadata
+
+# The p-th percentile of the samples given, by the nearest-rank method.
+sample_percentile() {
+  local p=$1
+  shift
+  printf '%s\n' "$@" | sort -n | awk -v p="$p" '
+    { values[++count] = $1 }
+    END {
+      if (count == 0) exit 1
+      # `index` is an awk builtin and cannot be assigned to, so the rank is not
+      # named that.
+      rank = int((p / 100) * (count - 1)) + 1
+      printf "%.3f", values[rank]
+    }'
+}
+
+# The elapsed seconds of the command, which is the only thing on stdout. The
+# command's own output goes to stderr so it stays visible without being captured.
+measure_seconds() {
+  local started finished
+  started=$(date +%s%N)
+  "$@" >&2
+  finished=$(date +%s%N)
+  awk -v s="$started" -v f="$finished" 'BEGIN { printf "%.3f", (f - s) / 1000000000 }'
+}
+
+boot_samples=()
+shutdown_samples=()
+for _ in $(seq 1 "$iterations"); do
+  boot_samples+=("$(measure_seconds "${runner[@]}" env \
+    ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
+    "$binary" --socket "$socket_path" up --cache-setup)")
+  shutdown_samples+=("$(measure_seconds "${runner[@]}" env \
+    ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
+    "$binary" --socket "$socket_path" down)")
+done
+
 "${runner[@]}" "$binary" --socket "$socket_path" stats
-ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
-  /usr/bin/time -f 'SHUTDOWN_COLD_SECONDS=%e' \
-  "${runner[@]}" "$binary" --socket "$socket_path" down
-ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
-  /usr/bin/time -f 'WORKSPACE_BOOT_WARM_SECONDS=%e' \
-  "${runner[@]}" "$binary" --socket "$socket_path" up --cache-setup
-ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
-  /usr/bin/time -f 'SHUTDOWN_WARM_SECONDS=%e' \
-  "${runner[@]}" "$binary" --socket "$socket_path" down
+
+# The first start of a run pays for the setup commands and for filling the page
+# cache; every start after it is the warm tier. They are reported separately
+# because one number covering both describes neither.
+printf 'WORKSPACE_BOOT_COLD_SECONDS=%s\n' "${boot_samples[0]}"
+printf 'SHUTDOWN_COLD_SECONDS=%s\n' "${shutdown_samples[0]}"
+warm_boot=("${boot_samples[@]:1}")
+warm_shutdown=("${shutdown_samples[@]:1}")
+if ((${#warm_boot[@]})); then
+  printf 'WORKSPACE_BOOT_WARM_SECONDS=%s\n' "$(sample_percentile 50 "${warm_boot[@]}")"
+  printf 'WORKSPACE_BOOT_WARM_P95_SECONDS=%s\n' "$(sample_percentile 95 "${warm_boot[@]}")"
+  printf 'WORKSPACE_BOOT_WARM_MAX_SECONDS=%s\n' "$(sample_percentile 100 "${warm_boot[@]}")"
+  printf 'SHUTDOWN_WARM_SECONDS=%s\n' "$(sample_percentile 50 "${warm_shutdown[@]}")"
+  printf 'SHUTDOWN_WARM_P95_SECONDS=%s\n' "$(sample_percentile 95 "${warm_shutdown[@]}")"
+  printf 'SHUTDOWN_WARM_MAX_SECONDS=%s\n' "$(sample_percentile 100 "${warm_shutdown[@]}")"
+fi
+# Every sample, so a saved run can be re-analyzed rather than only read. A
+# percentile of a run that was not kept cannot be checked later.
+printf 'RAW_BOOT_SECONDS=%s\n' "${boot_samples[*]}"
+printf 'RAW_SHUTDOWN_SECONDS=%s\n' "${shutdown_samples[*]}"
 printf 'LIVE_LIFECYCLE_TEST=passed\n'

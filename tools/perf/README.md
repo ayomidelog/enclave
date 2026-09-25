@@ -58,6 +58,21 @@ ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 \
 The benchmark copies the local cached rootfs into temporary state and never
 downloads bootstrap packages. Set `ENCLAVE_LIVE_ROOTFS` to use another cache.
 
+Each cycle is an `up` followed by a `down`. The first cycle is the cold tier and
+every cycle after it is the warm tier, so the default of two cycles is the
+published cold and warm pair. Set `ENCLAVE_LIVE_ITERATIONS` higher to publish a
+distribution:
+
+```bash
+ENCLAVE_LIVE_ITERATIONS=20 ./tools/perf/live-lifecycle.sh
+```
+
+That prints a median, p95, and maximum for the warm tier alongside every raw
+sample. The samples are printed so a saved run can be re-analyzed rather than only
+read; a percentile of a run that was not kept cannot be checked later. The raw
+samples are also what a regression gate should compare, because a single sample
+cannot show a tail and the tail is where a lifecycle regression appears first.
+
 Run the quota-backed lifecycle benchmark, which measures the tier whose storage
 is an ext4 image on a loop device rather than a directory:
 
