@@ -159,5 +159,5 @@ where
 }
 
 #[cfg(test)]
-#[path = "../../tests/src/registry.rs"]
+#[path = "../../tests/src/registry/mod.rs"]
 mod tests;
