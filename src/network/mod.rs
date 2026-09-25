@@ -96,7 +96,12 @@ pub fn setup_reserved_workspace_network(
     workspace_rootfs: &Path,
     workspace_id: &str,
 ) -> Result<String> {
+    // The bridge and the NAT rules are shared by every workspace, so this is a
+    // no-op after the first start. It is timed because it is on the critical path
+    // of every start and a regression here would look like a slow veth setup.
+    let host_ready = crate::perf::Timer::new("network.host_ready");
     ensure_host_networking()?;
+    drop(host_ready);
     if ipam::parse_host_octet(reserved_ip).is_none() {
         bail!(
             "reserved workspace address {reserved_ip} is not inside the Enclave subnet {}",

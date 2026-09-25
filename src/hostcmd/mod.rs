@@ -145,7 +145,18 @@ impl HostCommand {
     ///
     /// The child is placed in its own process group so a timeout stops the whole
     /// tree rather than only the process that was started.
-    pub(crate) fn run(mut self) -> Result<HostOutput> {
+    pub(crate) fn run(self) -> Result<HostOutput> {
+        // Every host command is a fork and an exec, and on a loaded host that is
+        // where a lifecycle operation's time goes. Timing the whole call is what
+        // makes that attributable, and it is gated on the perf switch so a normal
+        // daemon pays nothing for it.
+        let timing = crate::perf::enabled().then(|| crate::perf::Timer::new("hostcmd.run"));
+        let result = self.run_timed();
+        drop(timing);
+        result
+    }
+
+    fn run_timed(mut self) -> Result<HostOutput> {
         let program = self.program.to_string_lossy().into_owned();
         let args = self
             .args

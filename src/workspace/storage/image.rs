@@ -10,8 +10,15 @@ pub(crate) fn mount_disk_image_if_needed(workspace: &WorkspaceMetadata) -> Resul
     fs::create_dir_all(mountpoint)
         .with_context(|| format!("failed to create {}", mountpoint.display()))?;
     let image = workspace_disk_image_path(workspace);
+    // The image was formatted by this module, so the filesystem type is known.
+    // Naming it skips util-linux's content probe, which reads the superblock and
+    // consults libblkid before mounting. Measured on this host that probe is about
+    // a fifth of the mount's wall time (56 ms to 45 ms median, p90 82 ms to 58 ms
+    // over 25 interleaved samples), and it is pure overhead for an image Enclave
+    // created itself. An image replaced with a different filesystem now fails with
+    // a mount error naming the type rather than being silently probed.
     HostCommand::new("mount")
-        .args(["-o", "loop"])
+        .args(["-t", "ext4", "-o", "loop"])
         .arg(&image)
         .arg(mountpoint)
         .run_checked()

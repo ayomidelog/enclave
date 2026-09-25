@@ -13,8 +13,12 @@ pub fn setup_workspace_networking(
 ) -> Result<()> {
     let tmp_peer = temporary_peer_name(veth_host);
     let result: Result<()> = (|| {
+        let host_timer = crate::perf::Timer::new("network.veth.host");
         configure_host_veth(veth_host, &tmp_peer, pid)?;
+        drop(host_timer);
+        let netns_timer = crate::perf::Timer::new("network.veth.netns");
         configure_workspace_netns(pid, &tmp_peer, veth_peer, workspace_ip)?;
+        drop(netns_timer);
         Ok(())
     })();
     if let Err(err) = result {
