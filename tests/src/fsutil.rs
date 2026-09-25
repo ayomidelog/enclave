@@ -337,3 +337,69 @@ fn copy_file_range_file_preserves_content_or_reports_unsupported_filesystem() {
     assert_eq!(fs::read(&destination).unwrap(), b"copy file range fixture");
     let _ = fs::remove_dir_all(dir);
 }
+
+fn marker_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "enclave-creation-marker-{name}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create marker dir");
+    dir
+}
+
+#[test]
+fn a_directory_without_a_marker_is_not_being_created() {
+    let dir = marker_dir("absent");
+    assert!(!creation_in_progress(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn this_process_marks_a_directory_it_is_creating() {
+    // The marker names the creating process, so a live process protects the
+    // directory and repair leaves it alone while the create runs.
+    let dir = marker_dir("live");
+    write_creation_marker(&dir).expect("write the marker");
+    assert!(creation_in_progress(&dir));
+    remove_creation_marker(&dir);
+    assert!(!creation_in_progress(&dir));
+    // Removing an already-removed marker is not an error.
+    remove_creation_marker(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_marker_from_a_dead_process_is_stale() {
+    // A create that died leaves its marker behind. The recorded start time no
+    // longer matches anything, so the directory is treated as an orphan again
+    // rather than being protected forever.
+    let dir = marker_dir("stale");
+    std::fs::write(
+        dir.join(CREATION_MARKER_NAME),
+        format!("pid={}\nstarttime=1\n", u32::MAX),
+    )
+    .expect("write a stale marker");
+    assert!(!creation_in_progress(&dir));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_malformed_marker_cannot_protect_a_directory() {
+    let dir = marker_dir("malformed");
+    for content in [
+        "",
+        "pid=",
+        "pid=1",
+        "starttime=1",
+        "pid=abc\nstarttime=def\n",
+    ] {
+        std::fs::write(dir.join(CREATION_MARKER_NAME), content).expect("write a marker");
+        assert!(
+            !creation_in_progress(&dir),
+            "a marker it cannot parse must not claim a live owner: {content:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

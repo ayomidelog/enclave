@@ -115,6 +115,10 @@ pub fn create_workspace_with_options(
     let create_result = (|| {
         fs::create_dir(&workspace_dir)
             .with_context(|| format!("failed to create {}", workspace_dir.display()))?;
+        // Claim the directory before filling it. `workspace.json` is written a few
+        // steps later, and until it exists the directory looks like a leftover to
+        // a concurrent repair, which would delete it mid-create.
+        crate::fsutil::write_creation_marker(&workspace_dir)?;
         fs::create_dir(&filesystem_dir)
             .with_context(|| format!("failed to create {}", filesystem_dir.display()))?;
         ensure_traversable_directory_permissions(&filesystem_dir)?;
@@ -245,6 +249,7 @@ pub fn create_workspace_with_options(
         let _ = fs::remove_dir_all(&workspace_dir);
         return Err(err).context("failed to commit workspace metadata");
     }
+    crate::fsutil::remove_creation_marker(&workspace_dir);
     commit_result
 }
 

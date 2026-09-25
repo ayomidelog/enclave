@@ -72,3 +72,42 @@ fn migrating_a_registry_keeps_every_record() {
     migrate(&mut registry).expect("migrate");
     assert!(registry.sandboxes.contains_key("sb"));
 }
+
+#[test]
+fn repair_leaves_a_sandbox_that_a_live_process_is_creating() {
+    // The registry record for a sandbox only appears once its rootfs is in place,
+    // so during a bootstrap the directory exists with no `sandbox.json`. Repair
+    // must not read that as a leftover while the create is still running, or two
+    // concurrent creates would delete each other's work.
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-registry-creating-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = fs::remove_dir_all(&state_dir);
+    let sandbox_dir = state_dir.join("sandboxes").join("in-progress-abc123");
+    fs::create_dir_all(sandbox_dir.join("rootfs")).expect("create the in-progress sandbox");
+    crate::fsutil::write_creation_marker(&sandbox_dir).expect("mark the directory");
+
+    let report = repair_registry(&state_dir, false).expect("repair should succeed");
+    assert_eq!(report.removed_sandboxes, 0);
+    assert_eq!(
+        report.added_sandboxes, 0,
+        "an uncommitted create is not a record"
+    );
+    assert!(
+        sandbox_dir.exists(),
+        "repair deleted a sandbox directory a live process is still creating"
+    );
+
+    // With the marker gone and the process still alive, the same directory is a
+    // leftover again and repair removes it as before.
+    crate::fsutil::remove_creation_marker(&sandbox_dir);
+    let report = repair_registry(&state_dir, false).expect("repair should succeed");
+    assert_eq!(report.removed_sandboxes, 0);
+    assert!(
+        !sandbox_dir.exists(),
+        "a directory with no marker and no metadata is a leftover"
+    );
+    let _ = fs::remove_dir_all(&state_dir);
+}

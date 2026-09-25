@@ -135,6 +135,15 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
         }
         let metadata_path = sandbox_dir.join("sandbox.json");
         if !metadata_path.exists() {
+            // A sandbox being created has no `sandbox.json` yet, because the
+            // record is only written once the rootfs is in place. Removing it
+            // would delete a sibling create's work in progress, so a directory a
+            // live process has claimed is left alone. A marker left behind by a
+            // create that died names a process that is gone, so it does not
+            // protect the directory from being cleaned up.
+            if crate::fsutil::creation_in_progress(&sandbox_dir) {
+                continue;
+            }
             if strict {
                 bail!(
                     "strict repair failed: missing sandbox metadata {}",
@@ -268,6 +277,12 @@ fn scan_workspaces(
         };
         let metadata_path = workspace_dir.join("workspace.json");
         if !metadata_path.exists() {
+            // Same as a sandbox: a workspace being created has no metadata yet, so
+            // a live create marker is what keeps a concurrent repair from deleting
+            // it. A marker from a create that died does not protect the directory.
+            if crate::fsutil::creation_in_progress(&workspace_dir) {
+                continue;
+            }
             if strict {
                 bail!(
                     "strict repair failed: missing workspace metadata {}",

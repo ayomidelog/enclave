@@ -2,11 +2,15 @@
 //! raw mount syscalls, copy acceleration, ownership checks, and path containment.
 
 mod copies;
+mod creation;
 mod mounts;
 mod paths;
 mod permissions;
 
 pub use copies::{copy_file_range_file, reflink_copy_file};
+#[cfg(test)]
+pub(crate) use creation::CREATION_MARKER_NAME;
+pub(crate) use creation::{creation_in_progress, remove_creation_marker, write_creation_marker};
 pub use mounts::{bind_mount, is_mountpoint, make_mount_private};
 pub(crate) use mounts::{enclave_state_root, MountInfoEntry, MountInfoSnapshot};
 pub use paths::{canonicalize_within, ensure_path_within, slugify};

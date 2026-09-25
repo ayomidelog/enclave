@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::fsutil::{remove_creation_marker, write_creation_marker};
+
 pub fn create_sandbox(
     state_dir: &Path,
     debootstrap_binary: &str,
@@ -66,6 +68,11 @@ pub fn create_sandbox_with_options(
                 sandbox_dir.to_string_lossy()
             )
         })?;
+        // Claim the directory before anything is written into it. The registry
+        // record only appears at the end, after the bootstrap, so without this a
+        // concurrent repair would see a directory with no `sandbox.json` and
+        // remove it as an orphan while this create is still filling it.
+        write_creation_marker(&sandbox_dir)?;
         fs::create_dir(&rootfs_dir).with_context(|| {
             format!(
                 "failed to create rootfs directory {}",
@@ -205,6 +212,8 @@ pub fn create_sandbox_with_options(
         );
         Ok(())
     })?;
+
+    remove_creation_marker(&sandbox_dir);
 
     Ok(metadata)
 }
