@@ -6,7 +6,6 @@
 //! transitions they share.
 
 use std::collections::{BTreeSet, VecDeque};
-use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,7 +13,7 @@ use std::thread;
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::network;
-use crate::registry::{with_registry, with_registry_mut, RegistrySandbox};
+use crate::registry::{with_registry, with_registry_mut};
 use crate::sandbox::{effective_rootfs_path, resolve_sandbox_id, SandboxMetadata, SandboxStatus};
 
 use crate::workspace::cleanup::{self, CleanupMode, WorkspaceStopCleanup};
