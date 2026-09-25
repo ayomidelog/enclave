@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
 
+use crate::error::ErrorCode;
 use crate::operation;
 use crate::policy;
 use crate::protocol::{Request, Response};
@@ -38,7 +39,11 @@ pub(super) fn handle_client(
         Err(err) => {
             // The request never parsed, so it has no id of its own. A fresh one
             // still lets the caller find the failure in the logs.
-            let response = Response::err(err.to_string(), operation::new_id());
+            let response = Response::err_code(
+                ErrorCode::InvalidRequest,
+                err.to_string(),
+                operation::new_id(),
+            );
             write_response(&mut stream, &response)?;
             return Ok(());
         }
@@ -47,7 +52,8 @@ pub(super) fn handle_client(
     let request: Request = match serde_json::from_str(&request_raw) {
         Ok(request) => request,
         Err(err) => {
-            let response = Response::err(
+            let response = Response::err_code(
+                ErrorCode::InvalidRequest,
                 format!("invalid request payload: {err}"),
                 operation::new_id(),
             );
@@ -94,7 +100,8 @@ pub(super) fn handle_client(
 
     let peer_uid = peer_uid(&stream).context("failed to resolve peer uid")?;
     if !services.rate_limiter.allow(peer_uid) {
-        let response = Response::err(
+        let response = Response::err_code(
+            ErrorCode::RateLimited,
             format!(
                 "rate limit exceeded for uid {} (max {} requests per {}s)",
                 peer_uid,
@@ -107,7 +114,7 @@ pub(super) fn handle_client(
         return Ok(());
     }
     if let Err(err) = policy::authorize(&config.state_dir, peer_uid, &request.action) {
-        let response = Response::err(err.to_string(), operation_id);
+        let response = Response::err_code(ErrorCode::PolicyDenied, err.to_string(), operation_id);
         write_response(&mut stream, &response)?;
         return Ok(());
     }
@@ -120,7 +127,7 @@ pub(super) fn handle_client(
             // the default log level: it is how an operator finds the journal
             // record for the operation that failed.
             tracing::error!(error = %format!("{err:#}"), "request failed");
-            Response::err(err.to_string(), operation_id)
+            Response::err_code(crate::error::code_of(&err), err.to_string(), operation_id)
         }
     };
     drop(_dispatch);

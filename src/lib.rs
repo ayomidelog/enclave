@@ -15,6 +15,7 @@ mod config;
 mod daemon;
 mod deadlines;
 mod doctor;
+pub mod error;
 mod network;
 pub mod operation;
 mod paths;

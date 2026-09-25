@@ -231,7 +231,12 @@ pub(crate) fn wait_for_session_ready(
                 libc::inotify_rm_watch(inotify_fd, watch);
                 libc::close(inotify_fd);
             }
-            bail!("{failure}");
+            // The helper could not start at all, so this is the host not
+            // providing what it needs rather than a wait that ran long.
+            return Err(crate::error::coded(
+                crate::error::ErrorCode::Unsupported,
+                failure,
+            ));
         }
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
@@ -245,14 +250,17 @@ pub(crate) fn wait_for_session_ready(
             } else {
                 tail
             };
-            bail!(
-                "workspace session did not become ready within {} (expected files: {}, {}). log file: {}. recent log:\n{}",
-                deadline.describe_timeout(),
-                pid_file.display(),
-                ready_file.display(),
-                log_file.display(),
-                rendered_tail
-            );
+            return Err(crate::error::coded(
+                crate::error::ErrorCode::Timeout,
+                format!(
+                    "workspace session did not become ready within {} (expected files: {}, {}). log file: {}. recent log:\n{}",
+                    deadline.describe_timeout(),
+                    pid_file.display(),
+                    ready_file.display(),
+                    log_file.display(),
+                    rendered_tail
+                ),
+            ));
         }
 
         let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as i32;

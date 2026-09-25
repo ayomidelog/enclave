@@ -143,18 +143,23 @@ pub(crate) fn resolve_workspace_id(sandbox: &RegistrySandbox, selector: &str) ->
     }
 
     match matches.len() {
-        0 => bail!(
-            "workspace '{}' not found in sandbox '{}'",
-            selector,
-            sandbox.metadata.id
-        ),
+        0 => Err(crate::error::coded(
+            crate::error::ErrorCode::NotFound,
+            format!(
+                "workspace '{}' not found in sandbox '{}'",
+                selector, sandbox.metadata.id
+            ),
+        )),
         1 => Ok(matches.remove(0)),
-        _ => bail!(
-            "workspace name '{}' is ambiguous in sandbox '{}'; use id instead (matches: {})",
-            selector,
-            sandbox.metadata.id,
-            matches.join(", ")
-        ),
+        _ => Err(crate::error::coded(
+            crate::error::ErrorCode::Conflict,
+            format!(
+                "workspace name '{}' is ambiguous in sandbox '{}'; use id instead (matches: {})",
+                selector,
+                sandbox.metadata.id,
+                matches.join(", ")
+            ),
+        )),
     }
 }
 

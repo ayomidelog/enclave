@@ -164,9 +164,14 @@ impl Action {
             "policy.deny" => Self::PolicyDeny,
             "policy.clear" => Self::PolicyClear,
             "shutdown" => Self::Shutdown,
-            _ => bail!("unknown action '{}'", raw),
+            _ => {
+                return Err(crate::error::coded(
+                    crate::error::ErrorCode::InvalidRequest,
+                    format!("unknown action '{}'", raw),
+                ))
+            }
         };
         Ok(action)
     }
 }
-use anyhow::{bail, Result};
+use anyhow::Result;

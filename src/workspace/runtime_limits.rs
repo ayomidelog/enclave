@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 
 use crate::registry::with_registry;
 use crate::sandbox::{resolve_sandbox_id, SandboxMetadata, SandboxStatus};
@@ -132,16 +132,22 @@ fn ensure_workspace_cgroup_hierarchy(
     let cgroup_v2_available = crate::sandbox::cgroup::is_cgroup_v2_available();
 
     if sandbox.limits.has_limits() && !cgroup_v2_available {
-        bail!(
-            "sandbox '{}' declares resource limits but cgroup v2 is unavailable on this host",
-            sandbox.id
-        );
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::Unsupported,
+            format!(
+                "sandbox '{}' declares resource limits but cgroup v2 is unavailable on this host",
+                sandbox.id
+            ),
+        ));
     }
     if workspace.limits.cpu_percent_requires_cgroup() && !cgroup_v2_available {
-        bail!(
-            "workspace '{}' declares cpu_percent but cgroup v2 is unavailable on this host",
-            workspace.id
-        );
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::Unsupported,
+            format!(
+                "workspace '{}' declares cpu_percent but cgroup v2 is unavailable on this host",
+                workspace.id
+            ),
+        ));
     }
     // Keep a cgroup hierarchy even for unlimited workspaces. It provides the
     // process boundary required by warm pause/resume and fast cgroup.kill

@@ -127,11 +127,14 @@ pub fn destroy_workspace_with_mode(
             "destroy verification failed: {}",
             certificate.failure_summary()
         ));
-        bail!(
-            "workspace '{}' destroy left resources behind, retaining its registry record: {}",
-            workspace_id,
-            certificate.failure_summary()
-        );
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::CleanupIncomplete,
+            format!(
+                "workspace '{}' destroy left resources behind, retaining its registry record: {}",
+                workspace_id,
+                certificate.failure_summary()
+            ),
+        ));
     }
     journal.phase("remove_registry_record")?;
 

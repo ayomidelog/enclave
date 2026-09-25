@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::json;
 
+use crate::error::ErrorCode;
+
 #[test]
 fn request_deserializes_with_action_and_params() {
     let raw = r#"{"action":"sandbox.create","params":{"name":"test"}}"#;
@@ -31,11 +33,33 @@ fn response_ok_serializes_correctly() {
     assert_eq!(serialized["ok"], true);
     assert_eq!(serialized["result"]["status"], "pong");
     assert!(serialized.get("error").is_none());
+    // A success carries no failure code.
+    assert!(serialized.get("code").is_none());
+}
+
+#[test]
+fn a_coded_failure_names_its_category_on_the_wire() {
+    let response = Response::err_code(
+        crate::error::ErrorCode::NotFound,
+        "workspace 'w' not found",
+        "op-3",
+    );
+    let serialized = serde_json::to_value(&response).unwrap();
+    assert_eq!(serialized["ok"], false);
+    assert_eq!(serialized["error"], "workspace 'w' not found");
+    assert_eq!(serialized["code"], "not_found");
+}
+
+#[test]
+fn an_uncategorized_failure_is_reported_as_internal() {
+    let response = Response::err_code(ErrorCode::Internal, "something went wrong", "op-4");
+    let serialized = serde_json::to_value(&response).unwrap();
+    assert_eq!(serialized["code"], "internal");
 }
 
 #[test]
 fn response_err_serializes_correctly() {
-    let response = Response::err("something went wrong", "op-2");
+    let response = Response::err_code(ErrorCode::Internal, "something went wrong", "op-2");
     let serialized = serde_json::to_value(&response).unwrap();
     assert_eq!(serialized["ok"], false);
     assert!(serialized.get("result").is_none());
@@ -51,7 +75,7 @@ fn response_ok_omits_error_field() {
 
 #[test]
 fn response_err_omits_result_field() {
-    let response = Response::err("fail", "op-4");
+    let response = Response::err_code(ErrorCode::Internal, "fail", "op-4");
     let json_str = serde_json::to_string(&response).unwrap();
     assert!(!json_str.contains("result"));
 }
@@ -60,7 +84,8 @@ fn response_err_omits_result_field() {
 fn response_carries_the_operation_id() {
     let serialized = serde_json::to_value(Response::ok(json!(null), "op-5")).unwrap();
     assert_eq!(serialized["operation_id"], "op-5");
-    let serialized = serde_json::to_value(Response::err("boom", "op-6")).unwrap();
+    let serialized =
+        serde_json::to_value(Response::err_code(ErrorCode::Internal, "boom", "op-6")).unwrap();
     assert_eq!(serialized["operation_id"], "op-6");
 }
 

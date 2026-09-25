@@ -86,15 +86,18 @@ pub(crate) fn cleanup_workspace_artifacts(
     }
 
     if !retained.is_empty() && !mode.is_force() {
-        bail!(
-            "workspace '{}' cleanup incomplete, retaining workspace files and registry record: {}",
-            workspace.id,
-            CleanupOutcome {
-                files_removed: false,
-                retained: retained.clone(),
-            }
-            .retained_summary()
-        );
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::CleanupIncomplete,
+            format!(
+                "workspace '{}' cleanup incomplete, retaining workspace files and registry record: {}",
+                workspace.id,
+                CleanupOutcome {
+                    files_removed: false,
+                    retained: retained.clone(),
+                }
+                .retained_summary()
+            ),
+        ));
     }
 
     if !retained.is_empty() {

@@ -78,7 +78,7 @@ pub(crate) fn ensure_disk_backend_available() -> Result<()> {
     });
     result
         .as_ref()
-        .map_err(|error| anyhow::anyhow!(error))
+        .map_err(|error| crate::error::coded(crate::error::ErrorCode::Unsupported, error.clone()))
         .copied()
 }
 

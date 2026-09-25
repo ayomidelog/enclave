@@ -1,25 +1,34 @@
 use super::*;
 
+/// A malformed request.
+///
+/// Everything this module rejects is a parameter the caller got wrong, so the
+/// category is attached here rather than at each of the many call sites. The
+/// client then sees `invalid_request` instead of having to match on the wording.
+fn invalid(message: impl Into<String>) -> anyhow::Error {
+    crate::error::coded(crate::error::ErrorCode::InvalidRequest, message)
+}
+
 pub(super) fn require_param_str<'a>(params: &'a Value, keys: &[&str]) -> Result<&'a str> {
     for key in keys {
         if let Some(value) = params.get(key).and_then(Value::as_str) {
             return Ok(value);
         }
     }
-    bail!("missing '{}'", keys[0])
+    Err(invalid(format!("missing '{}'", keys[0])))
 }
 
 pub(super) fn parse_string_array(params: &Value, key: &str) -> Result<Vec<String>> {
     let values = params
         .get(key)
         .and_then(Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("missing '{}' array", key))?;
+        .ok_or_else(|| invalid(format!("missing '{}' array", key)))?;
 
     let mut out = Vec::with_capacity(values.len());
     for (idx, value) in values.iter().enumerate() {
         let item = value
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("'{}[{}]' must be a string", key, idx))?;
+            .ok_or_else(|| invalid(format!("'{}[{}]' must be a string", key, idx)))?;
         out.push(item.to_string());
     }
 
@@ -35,7 +44,7 @@ pub(super) fn parse_optional_u64_field(params: &Value, key: &str) -> Result<Opti
     }
     let parsed = value
         .as_u64()
-        .ok_or_else(|| anyhow::anyhow!("'{}' must be an unsigned integer", key))?;
+        .ok_or_else(|| invalid(format!("'{}' must be an unsigned integer", key)))?;
     Ok(Some(Some(parsed)))
 }
 
@@ -48,7 +57,7 @@ pub(super) fn parse_optional_f64_field(params: &Value, key: &str) -> Result<Opti
     }
     let parsed = value
         .as_f64()
-        .ok_or_else(|| anyhow::anyhow!("'{}' must be a number", key))?;
+        .ok_or_else(|| invalid(format!("'{}' must be a number", key)))?;
     Ok(Some(Some(parsed)))
 }
 
@@ -69,7 +78,9 @@ pub(super) fn parse_workspace_limits_create(params: &Value) -> Result<workspace:
         max_open_files,
         disk_bytes,
     };
-    limits.validate()?;
+    limits
+        .validate()
+        .map_err(|error| invalid(format!("{error:#}")))?;
     Ok(limits)
 }
 
@@ -77,10 +88,10 @@ pub(super) fn parse_required_disk_bytes(params: &Value) -> Result<u64> {
     let disk_mb = params
         .get("disk_mb")
         .and_then(Value::as_u64)
-        .ok_or_else(|| anyhow::anyhow!("missing 'disk_mb' unsigned integer"))?;
+        .ok_or_else(|| invalid("missing 'disk_mb' unsigned integer"))?;
     disk_mb
         .checked_mul(1024 * 1024)
-        .ok_or_else(|| anyhow::anyhow!("'disk_mb' is too large"))
+        .ok_or_else(|| invalid("'disk_mb' is too large"))
 }
 
 pub(super) fn parse_workspace_limits_update(
@@ -106,7 +117,7 @@ pub(super) fn checked_megabytes(value: Option<u64>, key: &str) -> Result<Option<
         .map(|value| {
             value
                 .checked_mul(1024 * 1024)
-                .ok_or_else(|| anyhow::anyhow!("'{key}' is too large"))
+                .ok_or_else(|| invalid(format!("'{key}' is too large")))
         })
         .transpose()
 }
@@ -124,7 +135,7 @@ pub(super) fn parse_optional_bool_field(params: &Value, key: &str) -> Result<Opt
         Some(value) => value
             .as_bool()
             .map(Some)
-            .ok_or_else(|| anyhow::anyhow!("'{key}' must be a boolean")),
+            .ok_or_else(|| invalid(format!("'{key}' must be a boolean"))),
     }
 }
 

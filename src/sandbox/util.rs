@@ -293,13 +293,19 @@ pub fn resolve_sandbox_id(registry: &Registry, selector: &str) -> Result<String>
     }
 
     match matches.len() {
-        0 => bail!("sandbox '{}' not found (by id or name)", selector),
+        0 => Err(crate::error::coded(
+            crate::error::ErrorCode::NotFound,
+            format!("sandbox '{}' not found (by id or name)", selector),
+        )),
         1 => Ok(matches.remove(0)),
-        _ => bail!(
-            "sandbox name '{}' is ambiguous; use id instead (matches: {})",
-            selector,
-            matches.join(", ")
-        ),
+        _ => Err(crate::error::coded(
+            crate::error::ErrorCode::Conflict,
+            format!(
+                "sandbox name '{}' is ambiguous; use id instead (matches: {})",
+                selector,
+                matches.join(", ")
+            ),
+        )),
     }
 }
 

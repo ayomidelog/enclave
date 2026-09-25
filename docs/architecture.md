@@ -15,7 +15,8 @@ graph LR
 ```
 
 - **CLI** serializes commands as JSON requests: `{ "action": "...", "params": { ... } }`
-- **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "..." }`
+- **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "...", "code"?: "...", "operation_id": "..." }`
+- Every failure carries a stable machine-readable `code` beside the human `error` message, so a client can tell a missing sandbox from a conflict, an unsupported host, a timeout, or a cleanup that could not release every resource without matching on wording. The code is attached where the failure is raised and carried through the error chain; a failure nobody categorized is `internal`. Successful responses omit it.
 - The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
 - Worker counts are bounded and benchmark-configurable with `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`; default production values remain 6 and 2.
 - For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly. Daemon-managed `workspace exec` uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. Stdout/stderr remain outside the daemon JSON control response.

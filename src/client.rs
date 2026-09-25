@@ -16,6 +16,8 @@ struct ResponsePayload {
     result: Option<Value>,
     error: Option<String>,
     #[serde(default)]
+    code: Option<crate::error::ErrorCode>,
+    #[serde(default)]
     operation_id: Option<String>,
 }
 
@@ -162,9 +164,15 @@ fn parse_response_payload(line: &str) -> Result<Value> {
     let message = response
         .error
         .unwrap_or_else(|| "daemon returned an unknown error".to_string());
-    match response.operation_id {
-        Some(id) => bail!("{message} (operation {id})"),
-        None => bail!("{message}"),
+    let rendered = match response.operation_id {
+        Some(id) => format!("{message} (operation {id})"),
+        None => message,
+    };
+    // Carry the daemon's category into the caller's error, so a caller can act
+    // on the kind of failure without reading the message it is written in.
+    match response.code {
+        Some(code) => Err(crate::error::coded(code, rendered)),
+        None => bail!("{rendered}"),
     }
 }
 
