@@ -169,5 +169,5 @@ pub use update::update_sandbox_limits;
 pub(crate) use update::persist_sandbox_metadata;
 
 #[cfg(test)]
-#[path = "../../tests/src/sandbox/lifecycle.rs"]
+#[path = "../../tests/src/sandbox/lifecycle/mod.rs"]
 mod tests;
