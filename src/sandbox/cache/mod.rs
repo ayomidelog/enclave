@@ -1,52 +1,24 @@
+//! The rootfs cache index.
+//!
+//! A cached rootfs is a directory of tens of thousands of small files, so
+//! copying it per sandbox is metadata bound. The cache lets a sandbox mount the
+//! directory as an immutable lower layer instead, which means the index has to
+//! answer two questions: is this directory still the rootfs that was registered,
+//! and is it safe to reuse. The record and its storage live in the index module,
+//! the answers in the fingerprint module, and this module is the API over both.
+
+mod fingerprint;
+mod index;
+
 use std::fs;
-use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
-use crate::fsutil::write_file_atomic;
+use fingerprint::{content_digest, fingerprint, has_required_dirs};
+use index::{persist, read, CacheEntry, CacheIndex};
 
-const INDEX_NAME: &str = "index.json";
-const REQUIRED_ROOTFS_DIRS: [&str; 3] = ["bin", "etc", "usr"];
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct CacheIndex {
-    version: u32,
-    entries: Vec<CacheEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CacheEntry {
-    key: String,
-    path: String,
-    fingerprint: CacheFingerprint,
-    #[serde(default)]
-    suite: String,
-    #[serde(default)]
-    architecture: String,
-    #[serde(default)]
-    source: String,
-    #[serde(default)]
-    created_at: String,
-    #[serde(default)]
-    content_digest: String,
-    #[serde(default)]
-    tool_version: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CacheFingerprint {
-    device: u64,
-    inode: u64,
-    size: u64,
-    modified_seconds: i64,
-    modified_nanos: i64,
-}
-
-pub(crate) fn index_path(cache_root: &Path) -> PathBuf {
-    cache_root.join(INDEX_NAME)
-}
+pub(crate) use index::index_path;
 
 pub(crate) fn rebuild(cache_root: &Path) -> Result<()> {
     let mut index = CacheIndex {
@@ -203,104 +175,6 @@ pub(crate) fn content_identity(cache_root: &Path, path: &Path) -> Option<String>
         .find(|entry| Path::new(&entry.path) == path)
         .map(|entry| entry.content_digest.clone())
         .filter(|digest| !digest.is_empty())
-}
-
-fn read(cache_root: &Path) -> Result<CacheIndex> {
-    let raw = fs::read(index_path(cache_root))?;
-    Ok(serde_json::from_slice(&raw)?)
-}
-
-fn persist(cache_root: &Path, index: &CacheIndex) -> Result<()> {
-    let raw = serde_json::to_vec(index).context("failed to serialize rootfs cache index")?;
-    write_file_atomic(&index_path(cache_root), &raw, 0o600).with_context(|| {
-        format!(
-            "failed to write rootfs cache index {}",
-            index_path(cache_root).display()
-        )
-    })
-}
-
-fn has_required_dirs(path: &Path) -> bool {
-    REQUIRED_ROOTFS_DIRS
-        .iter()
-        .all(|name| path.join(name).is_dir())
-}
-
-fn fingerprint(path: &Path) -> Result<CacheFingerprint> {
-    let mut values = Vec::with_capacity(REQUIRED_ROOTFS_DIRS.len());
-    for name in REQUIRED_ROOTFS_DIRS {
-        let metadata = fs::metadata(path.join(name))?;
-        values.push((
-            metadata.dev(),
-            metadata.ino(),
-            metadata.len(),
-            metadata.mtime(),
-            metadata.mtime_nsec(),
-        ));
-    }
-    let (device, inode, size, modified_seconds, modified_nanos) = values.into_iter().fold(
-        (0u64, 0u64, 0u64, 0i64, 0i64),
-        |(device, inode, size, seconds, nanos),
-         (next_device, next_inode, next_size, next_seconds, next_nanos)| {
-            (
-                device ^ next_device,
-                inode ^ next_inode,
-                size.saturating_add(next_size),
-                seconds ^ next_seconds,
-                nanos ^ next_nanos,
-            )
-        },
-    );
-    Ok(CacheFingerprint {
-        device,
-        inode,
-        size,
-        modified_seconds,
-        modified_nanos,
-    })
-}
-
-fn content_digest(path: &Path) -> Result<String> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let mut paths = Vec::new();
-    collect_paths(path, &mut paths)?;
-    paths.sort();
-    for child in paths {
-        let relative = child
-            .strip_prefix(path)
-            .unwrap_or(&child)
-            .to_string_lossy()
-            .into_owned();
-        relative.hash(&mut hasher);
-        let metadata = fs::symlink_metadata(&child)?;
-        metadata.len().hash(&mut hasher);
-        metadata.mode().hash(&mut hasher);
-        if metadata.file_type().is_file() {
-            let mut file = fs::File::open(&child)?;
-            let mut buffer = [0u8; 1024 * 1024];
-            loop {
-                let read = std::io::Read::read(&mut file, &mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                buffer[..read].hash(&mut hasher);
-            }
-        }
-    }
-    Ok(format!("{:016x}", hasher.finish()))
-}
-
-fn collect_paths(path: &Path, paths: &mut Vec<PathBuf>) -> Result<()> {
-    paths.push(path.to_path_buf());
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(path)? {
-        collect_paths(&entry?.path(), paths)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
