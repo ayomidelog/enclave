@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::hostcmd::HostCommand;
 use crate::network::{ipam, nat, veth, NET_CLASS_DIR};
 
 use super::DoctorCheck;
@@ -257,39 +256,10 @@ fn expected_disk_images(state_dir: &Path) -> Result<BTreeMap<PathBuf, (String, b
 }
 
 fn list_loop_devices() -> Result<Vec<(String, PathBuf)>> {
-    let output = HostCommand::new("losetup")
-        .arg("-a")
-        .run_checked()
-        .map_err(|err| anyhow::anyhow!("failed to run losetup: {err:#}"))?;
-    Ok(parse_loop_devices(&output.stdout_text()))
-}
-
-fn parse_loop_devices(output: &str) -> Vec<(String, PathBuf)> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let (device, rest) = line.split_once(':')?;
-            let device = device.trim();
-            if !device.starts_with("/dev/loop") {
-                return None;
-            }
-            // The backing path is the parenthesised group that follows the
-            // device numbers; a deleted backing adds a nested marker.
-            let start = rest.find('(')?;
-            let end = rest.rfind(')')?;
-            if end <= start {
-                return None;
-            }
-            let backing = rest[start + 1..end].trim();
-            // The kernel appends this marker when the backing file was
-            // removed while the loop device stayed attached.
-            let backing = backing.strip_suffix(" (deleted)").unwrap_or(backing);
-            if backing.is_empty() {
-                return None;
-            }
-            Some((device.to_string(), PathBuf::from(backing)))
-        })
-        .collect()
+    Ok(crate::fsutil::attached_loop_devices()?
+        .into_iter()
+        .map(|device| (device.device, device.backing))
+        .collect())
 }
 
 fn leaked_loop_devices(

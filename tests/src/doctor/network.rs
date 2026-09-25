@@ -52,15 +52,15 @@ fn loop_device_parser_reads_backing_files() {
     let output = "/dev/loop0: [2049]:12345 (/var/lib/enclave/sandboxes/sb/workspaces/ws/fs.img)\n\
 /dev/loop1: [2049]:54321 (/var/lib/enclave/sandboxes/sb/workspaces/other/fs.img (deleted))\n\
 not a loop line\n";
-    let devices = parse_loop_devices(output);
+    let devices = crate::fsutil::parse_losetup_attached(output);
     assert_eq!(devices.len(), 2);
-    assert_eq!(devices[0].0, "/dev/loop0");
+    assert_eq!(devices[0].device, "/dev/loop0");
     assert_eq!(
-        devices[0].1,
+        devices[0].backing,
         PathBuf::from("/var/lib/enclave/sandboxes/sb/workspaces/ws/fs.img")
     );
     assert_eq!(
-        devices[1].1,
+        devices[1].backing,
         PathBuf::from("/var/lib/enclave/sandboxes/sb/workspaces/other/fs.img")
     );
 }

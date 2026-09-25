@@ -253,14 +253,30 @@ pub(crate) fn verify_disk_image_loop_detached(workspace: &WorkspaceMetadata) -> 
     )
 }
 
+/// Loop devices backing `image`.
+///
+/// This reads sysfs instead of spawning `losetup`, which matters because the
+/// stop path polls it until the kernel releases an autoclear device.
 pub(crate) fn loop_devices_for_image(image: &Path) -> Result<Vec<String>> {
-    let output = HostCommand::new("losetup")
-        .args(["-j"])
-        .arg(image)
-        .run_checked()
-        .with_context(|| format!("failed to inspect loop devices for {}", image.display()))?;
-    Ok(parse_loop_devices(&output.stdout_text()))
+    crate::fsutil::loop_devices_for_image(image)
 }
+
+/// Whether some mount namespace still mounts `device`.
+///
+/// This is the question `verify_disk_image_loop_detached` asks before it decides
+/// that an attached device is Enclave's failure, and the resource inventory asks
+/// it too. Sharing the predicate keeps a certificate's `loop_device_absent` flag
+/// and its inventory diff from disagreeing about the same device.
+///
+/// An attached device that no namespace mounts is not a failure either can act
+/// on: the kernel detaches an autoclear device once its last holder closes, and
+/// that holder can be a process outside Enclave.
+pub(crate) fn loop_device_is_mounted(device: &str) -> bool {
+    !namespaces_mounting_devices(&[device.to_string()]).is_empty()
+}
+
+#[cfg(test)]
+pub(crate) use crate::fsutil::parse_losetup_for_image;
 
 /// Find mount namespaces that still mount one of the given devices. This turns
 /// an opaque busy loop device into an actionable holder.
@@ -292,21 +308,6 @@ pub(crate) fn namespaces_mounting_devices(devices: &[String]) -> Vec<String> {
         }
     }
     holders
-}
-
-pub(crate) fn parse_loop_devices(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .filter_map(|line| {
-            line.split_once(":")
-                .map(|(device, _)| device.trim().to_string())
-        })
-        .filter(|device| {
-            device.strip_prefix("/dev/loop").is_some_and(|suffix| {
-                !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

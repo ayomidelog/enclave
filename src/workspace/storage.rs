@@ -28,7 +28,11 @@ pub(crate) const WORKSPACE_TMP_DIR: &str = ".enclave-tmp";
 
 /// Backing directory that older workspaces used for the `/tmp` mount.
 pub(crate) const LEGACY_WORKSPACE_TMP_DIR: &str = "tmp";
-const LOOP_DETACH_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to wait between checks that the kernel released a loop device.
+///
+/// The check is a sysfs directory read rather than a `losetup` fork, so a short
+/// interval costs little and keeps a stop from paying a fixed 50 ms penalty.
+const LOOP_DETACH_POLL_INTERVAL: Duration = Duration::from_millis(10);
 static DISK_BACKEND_CHECK: OnceLock<Result<(), String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +78,7 @@ pub(crate) use tmp::ensure_workspace_tmp_layout;
 pub(crate) use tmp::reset_workspace_tmp;
 pub(crate) use tmp::workspace_tmp_path;
 pub(crate) use unmount::ensure_workspace_storage_unmounted_many;
+pub(crate) use unmount::loop_device_is_mounted;
 pub(crate) use unmount::loop_devices_for_image;
 #[cfg(test)]
 pub(crate) use unmount::mounts_below;
@@ -90,7 +95,7 @@ pub(crate) use mount::root_overlay_paths;
 pub(crate) use tmp::{clear_workspace_tmp_contents, reset_mounted_workspace_tmp};
 #[cfg(test)]
 pub(crate) use unmount::{
-    parse_loop_devices, parse_mountinfo_mountpoints, unmount_error, workspace_owner_is_dead,
+    parse_losetup_for_image, parse_mountinfo_mountpoints, unmount_error, workspace_owner_is_dead,
 };
 
 /// Verify that the workspace source the session will bind into `/home` is usable.

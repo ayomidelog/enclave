@@ -110,9 +110,20 @@ impl ResourceIdentity {
             Self::LoopDevice {
                 device,
                 backing_image,
-            } => super::storage::loop_devices_for_image(backing_image)
-                .map(|devices| devices.iter().any(|present| present == device))
-                .unwrap_or(true),
+            } => {
+                // An attached device is released when its last holder closes, so
+                // the kernel can detach it after this check; a device with no
+                // mount in any namespace is exactly the state a stop treats as
+                // not-a-failure. Counting it here would contradict the
+                // certificate's own `loop_device_absent` flag for the same
+                // device, which asks this same question.
+                super::storage::loop_devices_for_image(backing_image)
+                    .map(|devices| {
+                        devices.iter().any(|present| present == device)
+                            && super::storage::loop_device_is_mounted(device)
+                    })
+                    .unwrap_or(true)
+            }
             Self::Veth { interface } => crate::network::teardown::veth_is_present(interface),
             Self::FirewallRule {
                 chain,
