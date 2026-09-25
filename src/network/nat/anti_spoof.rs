@@ -61,12 +61,14 @@ const REMOVE_ATTEMPTS: usize = 3;
 /// The rules are deleted from the listing the firewall returns rather than from a
 /// shape this release reconstructs, because that is the only way to delete both
 /// the tagged shape this release installs and the untagged one older releases
-/// left. Batching the guess is not an option either: a delete-then-insert script
-/// fed to iptables-restore --noflush is rejected whole when one delete matches
-/// nothing, so the insert that follows never runs. The listing is therefore read
-/// once to learn what to delete and once to prove the deletion, and both reads
-/// are counted in the metrics because they dominate a stop on a host where a
-/// table dump costs tens of milliseconds.
+/// left. The listing is read once to learn what to delete and once to prove the
+/// deletion; both reads are counted in the metrics because they dominate a stop
+/// on a host where a table dump costs tens of milliseconds.
+///
+/// The deletes themselves go in one process. A rule that vanishes between the
+/// listing and the batch is not a problem: the batch is rejected as a whole, and
+/// the per-rule fallback then finds nothing left to delete for it and removes the
+/// others.
 pub fn remove_workspace_anti_spoofing(veth_host: &str, assigned_ip: &str) -> Result<()> {
     let iptables = detect_iptables()?;
     // One `iptables -S` lists the whole filter table, and the rules it prints are
@@ -78,15 +80,60 @@ pub fn remove_workspace_anti_spoofing(veth_host: &str, assigned_ip: &str) -> Res
     let dump_timer = crate::perf::Timer::new("network.rules.dump");
     let dump = run_iptables_dump(&iptables)?;
     drop(dump_timer);
-    for (chain, rule) in anti_spoof_rules(&dump, veth_host, assigned_ip) {
-        let args = split_rule_args(&rule);
-        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        remove_filter_rule_with_retry(&iptables, chain, &args)?;
-    }
+    remove_listed_anti_spoof_rules(&iptables, &dump, veth_host, assigned_ip)?;
     let verify_timer = crate::perf::Timer::new("network.rules.verify");
     let verified = verify_anti_spoofing_absent(&iptables, veth_host, assigned_ip);
     drop(verify_timer);
     verified
+}
+
+/// Delete the listed rules in one process, falling back to one at a time.
+///
+/// The batch is the common case: the listing proved every rule exists, so the
+/// script has nothing to reject. The fallback exists because a delete can be
+/// rejected for a rule that disappeared between the listing and the batch, and a
+/// rejected batch abandons the lines after it, so one vanished rule would
+/// otherwise leave the others in place.
+fn remove_listed_anti_spoof_rules(
+    iptables: &str,
+    dump: &str,
+    veth_host: &str,
+    assigned_ip: &str,
+) -> Result<()> {
+    let listed = anti_spoof_rules(dump, veth_host, assigned_ip);
+    if listed.is_empty() {
+        return Ok(());
+    }
+    let owned = listed
+        .iter()
+        .map(|(chain, rule)| {
+            let args = split_rule_args(rule);
+            (*chain, args)
+        })
+        .collect::<Vec<_>>();
+    let batch = owned
+        .iter()
+        .map(|(chain, args)| {
+            let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+            (*chain, refs)
+        })
+        .collect::<Vec<_>>();
+    let batch_refs = batch
+        .iter()
+        .map(|(chain, args)| (*chain, args.as_slice()))
+        .collect::<Vec<_>>();
+    if super::primitives::delete_filter_rules(iptables, &batch_refs).is_ok() {
+        return Ok(());
+    }
+
+    tracing::debug!(
+        "batched anti-spoofing rule deletion for {veth_host} was rejected; deleting rule by rule"
+    );
+    for (chain, args) in &owned {
+        let refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+        remove_filter_rule_with_retry(iptables, chain, &refs)?;
+    }
+    Ok(())
 }
 
 /// Delete one rule, retrying a bounded number of times with backoff.

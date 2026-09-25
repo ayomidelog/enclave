@@ -99,6 +99,58 @@ pub(in crate::network) fn insert_filter_rules_first(
     Ok(())
 }
 
+/// Delete several filter rules in one process.
+///
+/// iptables has no batch mode, so removing the anti-spoofing rules from two
+/// chains took two processes on the workspace stop path. iptables-restore with
+/// --noflush applies a whole table's worth of rules in one process, which is the
+/// same work for half the spawns.
+///
+/// Unlike an insert, a delete is rejected when the rule is not there, and the
+/// whole script is abandoned at the first rejected line: the lines after it never
+/// run. That makes this safe only for rules a listing has just proved exist, and
+/// the caller falls back to one delete per rule when the batch is rejected, which
+/// is what covers a rule that disappeared between the listing and the delete.
+pub(in crate::network) fn delete_filter_rules(
+    iptables: &str,
+    rules: &[(&str, &[&str])],
+) -> Result<()> {
+    if rules.is_empty() {
+        return Ok(());
+    }
+
+    let mut script = String::from("*filter\n");
+    for (chain, rule_args) in rules {
+        script.push_str("-D ");
+        script.push_str(chain);
+        for argument in rule_args.iter() {
+            script.push(' ');
+            script.push_str(&quote_restore_argument(argument));
+        }
+        script.push('\n');
+    }
+    script.push_str("COMMIT\n");
+
+    let restore = restore_binary_for(iptables);
+    let descriptions = rules
+        .iter()
+        .map(|(chain, _)| *chain)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let output = HostCommand::new(&restore)
+        .arg("--noflush")
+        .stdin(script.into_bytes())
+        .run()
+        .with_context(|| format!("failed to delete {descriptions} rules via {restore}"))?;
+    if !output.success() {
+        bail!(
+            "failed to delete {descriptions} rules: {}",
+            output.stderr_text()
+        );
+    }
+    Ok(())
+}
+
 /// Quote one argument for iptables-restore input.
 ///
 /// The restore input is the format iptables-save writes, where a value containing
