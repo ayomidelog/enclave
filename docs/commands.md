@@ -147,6 +147,35 @@ torn down or recreated. `stop` releases every host resource the workspace owned
 and reports a verified cleanup certificate, so it is the right choice when a
 workspace must not keep holding memory, mounts, or a loop device.
 
+### Measured latencies
+
+Medians of eight runs of each command against a cached 127 MB Debian bookworm
+rootfs (5237 files), one sandbox and one workspace, on the validation host:
+
+| Command | Median | Range |
+|---------|--------|-------|
+| `create` (sandbox, cached rootfs) | `0.11s` | 0.08–0.17s |
+| `workspace create` | `0.23s` | 0.20–0.76s |
+| `workspace start` | `0.19s` | 0.17–0.25s |
+| `workspace stop` | `0.12s` | 0.10–0.14s |
+| `workspace destroy` | `0.04s` | 0.03–0.06s |
+| `pause` | `0.12s` | 0.10–0.17s |
+| `resume` | `0.11s` | 0.10–0.13s |
+| `stop` (sandbox) | `0.21s` | 0.19–0.30s |
+| `start` (sandbox) | `0.22s` | 0.20–0.24s |
+
+Two things are worth reading off this table. A sandbox create is fast because a
+cached rootfs is mounted as a shared base layer rather than copied; the 127 MB
+tree is never written per sandbox. And `pause` is roughly half of `stop` on the
+way out and `resume` roughly half of `start` on the way back, because neither
+tears down or rebuilds the runtime, the mounts, or the filesystem. The absolute
+gap is a tenth of a second here; what `pause` preserves is the process state,
+which is what makes the difference matter for a workspace that took real work to
+get into its current state.
+
+These are single-workspace numbers. For the eight-workspace aggregate see the
+lifecycle timing section in [runtime-details.md](runtime-details.md).
+
 ## Operation IDs
 
 Every daemon request runs as one operation with one id. Mutating commands print it
