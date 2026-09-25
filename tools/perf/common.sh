@@ -10,6 +10,14 @@ require_binary() {
     printf 'build it with: cargo build --release\n' >&2
     exit 2
   fi
+  # A binary older than the tree it is meant to describe produces numbers that do
+  # not describe the current code, which is worse than no number at all.
+  local stale_source
+  stale_source=$(find "$repo_root/src" "$repo_root/Cargo.toml" -newer "$binary" -print -quit 2>/dev/null || true)
+  if [[ -n "$stale_source" ]]; then
+    printf 'warning: %s is older than %s; these numbers do not describe the current tree\n' \
+      "$binary" "$stale_source" >&2
+  fi
 }
 
 host_metadata() {

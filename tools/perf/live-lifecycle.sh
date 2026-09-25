@@ -3,14 +3,33 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$script_dir/../.." && pwd)
-binary=${ENCLAVE_BINARY:-$repo_dir/target/debug/enclave}
+# Prefer the release profile, for the same reason common.sh uses it: the debug
+# binary is more than ten times the size, and the cost of starting it three times
+# per workspace start lands entirely in the session phase of the measurement. A
+# debug build is still accepted so a developer without one can run this, but the
+# numbers are labelled so they are not compared with a release build.
+binary=${ENCLAVE_BINARY:-}
+if [[ -z "$binary" ]]; then
+  binary=$repo_dir/target/release/enclave
+  if [[ ! -x "$binary" && -x "$repo_dir/target/debug/enclave" ]]; then
+    binary=$repo_dir/target/debug/enclave
+    printf 'warning: no release binary; using the debug build, whose session phase includes the cost of a much larger executable\n' >&2
+  fi
+fi
+# A binary older than the tree it is meant to describe produces numbers that do
+# not describe the current code, which is worse than no number at all.
+stale_source=$(find "$repo_dir/src" "$repo_dir/Cargo.toml" -newer "$binary" -print -quit 2>/dev/null || true)
+if [[ -n "$stale_source" ]]; then
+  printf 'warning: %s is older than %s; these numbers do not describe the current tree\n' \
+    "$binary" "$stale_source" >&2
+fi
 workers=${ENCLAVE_UP_WORKERS:-1}
 cleanup_workers=${ENCLAVE_CLEANUP_WORKERS:-4}
 rootfs_source=${ENCLAVE_LIVE_ROOTFS:-/root/.local/state/enclave/sandboxes/rootfs-cache/bookworm}
 
 if [[ $(id -u) -eq 0 ]]; then runner=(); else runner=(sudo -n); fi
 if ! "${runner[@]}" test -x "$binary"; then
-  printf 'error: build the binary first: %s\n' "$binary" >&2
+  printf 'error: build the binary first: %s (cargo build --release)\n' "$binary" >&2
   exit 1
 fi
 if ! "${runner[@]}" test -d "$rootfs_source"; then
@@ -54,7 +73,8 @@ cp "$script_dir/live-heavy.Enclavefile" "$work_dir/Enclavefile"
   --suite bookworm --bootstrap-method cached_rootfs >/dev/null
 
 cd "$work_dir"
-printf 'workers=%s cleanup_workers=%s rootfs_source=%s\n' "$workers" "$cleanup_workers" "$rootfs_source"
+printf 'binary=%s workers=%s cleanup_workers=%s rootfs_source=%s\n' \
+  "$binary" "$workers" "$cleanup_workers" "$rootfs_source"
 ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
   /usr/bin/time -f 'WORKSPACE_BOOT_COLD_SECONDS=%e' \
   "${runner[@]}" "$binary" --socket "$socket_path" up --cache-setup
