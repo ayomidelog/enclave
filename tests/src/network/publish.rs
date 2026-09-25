@@ -1,5 +1,49 @@
 use super::*;
 
+/// Poison `mutex` by panicking while holding it, the way a panicking request
+/// would. Returns whether the poison took effect.
+fn poison(mutex: &Mutex<impl Sized>) -> bool {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = mutex.lock().expect("first lock");
+        panic!("simulated panic while holding the lock");
+    }));
+    std::panic::set_hook(previous);
+    assert!(result.is_err(), "the simulated panic should propagate");
+    mutex.is_poisoned()
+}
+
+#[test]
+fn the_publisher_keeps_serving_after_a_poisoned_lock() {
+    // A panic in one request must not cost the daemon its port handling. Without
+    // recovery every later publish, unpublish, and status call would panic too,
+    // and each panic would take down another request worker.
+    let publisher = PortPublisher::new();
+    assert!(poison(&publisher.inner));
+
+    assert!(publisher.active_workspaces().is_empty());
+    assert!(publisher.workspace_statuses("sb", "ws").is_empty());
+    assert!(!publisher.has_active_workspace_ports("sb", "ws"));
+    publisher.clear_workspace_ports("sb", "ws");
+    // The strict apply path also has to survive the poison and report a normal
+    // failure rather than panicking.
+    assert!(publisher
+        .apply_workspace_ports_strict("sb", "ws", 1, "10.200.0.99", &[])
+        .is_ok());
+}
+
+#[test]
+fn a_permit_still_releases_its_slot_after_a_poisoned_lock() {
+    // A panic inside this destructor would abort the process when it happened
+    // during unwinding, so the release has to be panic free.
+    let limiter = Arc::new(ConnectionLimiter::new(1));
+    let permit = limiter.try_acquire().expect("first permit");
+    assert!(poison(limiter.state_mutex()));
+    drop(permit);
+    assert_eq!(limiter.active(), 0);
+}
+
 #[test]
 fn connection_limiter_rejects_above_configured_capacity() {
     let limiter = Arc::new(ConnectionLimiter::new(1));

@@ -28,10 +28,7 @@ impl ConnectionLimiter {
     }
 
     pub(crate) fn try_acquire(self: &Arc<Self>) -> Option<Permit> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("connection limiter mutex poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.active >= self.limit {
             return None;
         }
@@ -45,18 +42,28 @@ impl ConnectionLimiter {
     pub(crate) fn active(&self) -> usize {
         self.state
             .lock()
-            .expect("connection limiter mutex poisoned")
+            .unwrap_or_else(|error| error.into_inner())
             .active
+    }
+
+    /// The counter mutex, so a test can prove the release path survives a poison.
+    #[cfg(test)]
+    pub(crate) fn state_mutex(&self) -> &Mutex<ConnectionState> {
+        &self.state
     }
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
+        // A panic here would be a panic inside a destructor, which aborts the
+        // whole daemon when it happens during unwinding. Recovering from a
+        // poisoned lock keeps releasing the slot, which is the only thing this
+        // has to do.
         let mut state = self
             .limiter
             .state
             .lock()
-            .expect("connection limiter mutex poisoned");
+            .unwrap_or_else(|error| error.into_inner());
         state.active = state.active.saturating_sub(1);
     }
 }

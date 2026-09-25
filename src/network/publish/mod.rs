@@ -64,7 +64,7 @@ struct PublisherState {
 
 impl std::fmt::Debug for PortPublisher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state = self.inner.lock().expect("port publisher mutex poisoned");
+        let state = self.state();
         f.debug_struct("PortPublisher")
             .field("active_workspaces", &state.active.len())
             .field("failed_workspaces", &state.failed.len())
@@ -78,6 +78,19 @@ impl PortPublisher {
             inner: Mutex::new(PublisherState::default()),
             connections: Arc::new(ConnectionLimiter::new(MAX_PUBLISHED_CONNECTIONS)),
         }
+    }
+
+    /// The publisher state, recovered if a panic poisoned the mutex.
+    ///
+    /// A panic while the lock is held would otherwise poison it for the life of
+    /// the daemon: every later publish, unpublish, and status call would panic in
+    /// turn, and each panic takes down another request worker. The state behind
+    /// the lock is two maps of owned listeners, which a panic cannot leave
+    /// half-updated in a way that matters, so recovering is both safe and the
+    /// difference between one failed request and a daemon that cannot serve ports
+    /// again.
+    fn state(&self) -> std::sync::MutexGuard<'_, PublisherState> {
+        self.inner.lock().unwrap_or_else(|error| error.into_inner())
     }
 
     pub fn apply_workspace_ports_strict(
@@ -129,7 +142,7 @@ impl PortPublisher {
     /// is what lets a stop certificate cover ports rather than assume them.
     pub fn has_active_workspace_ports(&self, sandbox_id: &str, workspace_id: &str) -> bool {
         let key = WorkspacePublishKey::new(sandbox_id, workspace_id);
-        let state = self.inner.lock().expect("port publisher mutex poisoned");
+        let state = self.state();
         state
             .active
             .get(&key)
@@ -144,7 +157,7 @@ impl PortPublisher {
     /// uses this to name a listener whose workspace is no longer running, which
     /// is otherwise invisible until a later start fails with the port in use.
     pub fn active_workspaces(&self) -> Vec<PublishedPortOwner> {
-        let state = self.inner.lock().expect("port publisher mutex poisoned");
+        let state = self.state();
         state
             .active
             .iter()
@@ -162,7 +175,7 @@ impl PortPublisher {
         workspace_id: &str,
     ) -> Vec<PublishedPortStatus> {
         let key = WorkspacePublishKey::new(sandbox_id, workspace_id);
-        let state = self.inner.lock().expect("port publisher mutex poisoned");
+        let state = self.state();
 
         let mut statuses = Vec::new();
         if let Some(active) = state.active.get(&key) {
@@ -238,14 +251,14 @@ impl PortPublisher {
     }
 
     fn take_active_publications(&self, key: &WorkspacePublishKey) -> Vec<ActivePublication> {
-        let mut state = self.inner.lock().expect("port publisher mutex poisoned");
+        let mut state = self.state();
         let active = state.active.remove(key).unwrap_or_default();
         state.failed.remove(key);
         active
     }
 
     fn clear_failed_statuses(&self, key: &WorkspacePublishKey) {
-        let mut state = self.inner.lock().expect("port publisher mutex poisoned");
+        let mut state = self.state();
         state.failed.remove(key);
     }
 
@@ -255,7 +268,7 @@ impl PortPublisher {
         active: Vec<ActivePublication>,
         failures: Vec<PublishedPortStatus>,
     ) {
-        let mut state = self.inner.lock().expect("port publisher mutex poisoned");
+        let mut state = self.state();
         if active.is_empty() {
             state.active.remove(&key);
         } else {
