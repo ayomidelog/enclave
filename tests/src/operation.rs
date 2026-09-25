@@ -350,3 +350,29 @@ fn an_unfinished_record_survives_the_retention_trim() {
 
     fs::remove_dir_all(state).expect("remove journal fixture");
 }
+
+/// A journal directory that cannot be created must be reported, not ignored.
+///
+/// If this returned success the operation would run with no record of it, and
+/// nothing downstream would notice: recovery reads the journal to find what was in
+/// flight, so an operation that silently has no record looks like one that never
+/// happened.
+#[test]
+fn beginning_a_journal_in_an_unusable_directory_fails() {
+    let state = retention_state("unusable");
+    fs::create_dir_all(&state).expect("create state dir");
+    // A file where the journal directory belongs.
+    fs::write(state.join("operations"), b"").expect("create the blocker file");
+
+    let error = match Journal::begin(&state, "workspace.start", "sb/ws") {
+        Ok(_) => panic!("a journal that cannot be written must be reported"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:#}").contains("operation journal"),
+        "the error must name the journal: {error:#}"
+    );
+
+    fs::remove_file(state.join("operations")).expect("remove the blocker");
+    fs::remove_dir_all(state).expect("remove journal fixture");
+}
