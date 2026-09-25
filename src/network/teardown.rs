@@ -38,7 +38,10 @@ pub fn remove_veth(veth_host: &str) -> Result<()> {
             attempt + 1,
             MAX_ATTEMPTS
         );
-        thread::sleep(Duration::from_millis(25 * (attempt as u64 + 1)));
+        let delay = Duration::from_millis(25 * (attempt as u64 + 1));
+        crate::perf::record_cleanup_retry();
+        crate::perf::record_cleanup_retry_delay(delay.as_micros() as u64);
+        thread::sleep(delay);
     }
     unreachable!("veth deletion loop always returns or errors")
 }
@@ -50,7 +53,10 @@ fn verify_veth_absent(veth_host: &str) -> Result<()> {
         return Ok(());
     }
     for attempt in 0..2 {
-        thread::sleep(Duration::from_millis(25 * (attempt as u64 + 1)));
+        let delay = Duration::from_millis(25 * (attempt as u64 + 1));
+        crate::perf::record_cleanup_retry();
+        crate::perf::record_cleanup_retry_delay(delay.as_micros() as u64);
+        thread::sleep(delay);
         if !veth_is_present(veth_host) {
             return Ok(());
         }

@@ -5,6 +5,8 @@ use super::*;
 
 use crate::hostcmd::HostCommand;
 
+use std::time::Duration;
+
 pub fn ensure_workspace_anti_spoofing(
     veth_host: &str,
     assigned_ip: &str,
@@ -51,27 +53,57 @@ pub(crate) fn anti_spoof_chains_for(
     anti_spoof_chains_present(&iptables, veth_host, assigned_ip)
 }
 
-pub fn remove_workspace_anti_spoofing(
-    veth_host: &str,
-    assigned_ip: &str,
-    workspace_id: &str,
-) -> Result<()> {
+/// How many times the delete of one anti-spoofing rule is attempted.
+const REMOVE_ATTEMPTS: usize = 3;
+
+pub fn remove_workspace_anti_spoofing(veth_host: &str, assigned_ip: &str) -> Result<()> {
     let iptables = detect_iptables()?;
-    // One `iptables -S` lists the whole filter table, which is enough to learn
-    // which chains still carry this interface's rule. Checking per rule shape
-    // cost one process per candidate and dominated workspace stop time.
-    let present = anti_spoof_chains_present(&iptables, veth_host, assigned_ip)?;
-    for chain in present {
-        // Prefer the tagged shape this version installs, then fall back to the
-        // untagged shape older releases used.
-        let tagged = anti_spoof_rule_args(veth_host, assigned_ip, Some(workspace_id));
-        let tagged_refs: Vec<&str> = tagged.iter().map(String::as_str).collect();
-        let legacy = anti_spoof_rule_args(veth_host, assigned_ip, None);
-        let legacy_refs: Vec<&str> = legacy.iter().map(String::as_str).collect();
-        remove_filter_rule(&iptables, chain, &tagged_refs)
-            .or_else(|_| remove_filter_rule(&iptables, chain, &legacy_refs))?;
+    // One `iptables -S` lists the whole filter table, and the rules it prints are
+    // the ones that exist. Deleting from that listing removes the shape that is
+    // really installed, tagged or legacy, instead of the shape this release
+    // guesses. The guess matters because `iptables -D` reports success for a rule
+    // that is not present, so a wrong guess looks like a successful removal and
+    // only fails the absence check that follows.
+    let dump = run_iptables_dump(&iptables)?;
+    for (chain, rule) in anti_spoof_rules(&dump, veth_host, assigned_ip) {
+        let args = split_rule_args(&rule);
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        remove_filter_rule_with_retry(&iptables, chain, &args)?;
     }
     verify_anti_spoofing_absent(&iptables, veth_host, assigned_ip)
+}
+
+/// Delete one rule, retrying a bounded number of times with backoff.
+///
+/// A delete can fail transiently while another writer holds the table lock, and
+/// the absence check that follows treats a leftover rule as a failure, so a
+/// short retry turns a flaky stop into a successful one. The attempt count and
+/// the time the retries waited are both recorded, so a host that needs them is
+/// visible in the metrics rather than only in a debug log.
+fn remove_filter_rule_with_retry(iptables: &str, chain: &str, rule_args: &[&str]) -> Result<()> {
+    let mut last_error = None;
+    for attempt in 0..REMOVE_ATTEMPTS {
+        match remove_filter_rule(iptables, chain, rule_args) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = Some(error),
+        }
+        if attempt + 1 == REMOVE_ATTEMPTS {
+            break;
+        }
+        let delay = Duration::from_millis(20 * (attempt as u64 + 1));
+        crate::perf::record_cleanup_retry();
+        crate::perf::record_cleanup_retry_delay(delay.as_micros() as u64);
+        tracing::debug!(
+            "retrying removal of a {chain} rule via {iptables} after a transient error (attempt {}/{})",
+            attempt + 1,
+            REMOVE_ATTEMPTS
+        );
+        std::thread::sleep(delay);
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None => bail!("failed to remove the {chain} rule for {iptables}"),
+    }
 }
 
 /// Chains in the filter table that still carry an anti-spoofing rule for this
@@ -85,22 +117,43 @@ pub(in crate::network) fn anti_spoof_chains_present(
     Ok(chains_with_anti_spoof_rule(&dump, veth_host, assigned_ip))
 }
 
+/// Chains and rule bodies that carry an anti-spoofing rule for this interface
+/// and address.
+///
+/// The body is the text after `-A <chain> `, which is exactly what `iptables -D`
+/// wants back, so removal deletes the rule that is really there instead of
+/// reconstructing the shape this release happens to install.
+pub(in crate::network) fn anti_spoof_rules(
+    dump: &str,
+    veth_host: &str,
+    assigned_ip: &str,
+) -> Vec<(&'static str, String)> {
+    let mut found = Vec::new();
+    for chain in ["INPUT", "FORWARD"] {
+        for line in dump.lines() {
+            let Some(rule) = line.strip_prefix(&format!("-A {chain} ")) else {
+                continue;
+            };
+            if is_anti_spoof_rule(rule, veth_host, assigned_ip) {
+                found.push((chain, rule.to_string()));
+            }
+        }
+    }
+    found
+}
+
 pub(in crate::network) fn chains_with_anti_spoof_rule(
     dump: &str,
     veth_host: &str,
     assigned_ip: &str,
 ) -> Vec<&'static str> {
-    ["INPUT", "FORWARD"]
-        .into_iter()
-        .filter(|chain| {
-            dump.lines().any(|line| {
-                let Some(rule) = line.strip_prefix(&format!("-A {chain} ")) else {
-                    return false;
-                };
-                is_anti_spoof_rule(rule, veth_host, assigned_ip)
-            })
-        })
-        .collect()
+    let mut chains: Vec<&'static str> = Vec::new();
+    for (chain, _) in anti_spoof_rules(dump, veth_host, assigned_ip) {
+        if !chains.contains(&chain) {
+            chains.push(chain);
+        }
+    }
+    chains
 }
 
 /// Whether one `iptables -S` rule body is the anti-spoofing rule for this

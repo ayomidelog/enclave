@@ -169,7 +169,7 @@ pub fn teardown_workspace_network(assigned_ip: &str, workspace_id: &str) -> Netw
     let (veth_host, _) = veth::veth_names(host_octet, workspace_id);
     report.veth_host = Some(veth_host.clone());
 
-    match nat::remove_workspace_anti_spoofing(&veth_host, assigned_ip, workspace_id) {
+    match nat::remove_workspace_anti_spoofing(&veth_host, assigned_ip) {
         Ok(()) => report.anti_spoof_rules_absent = true,
         Err(error) => report.failures.push(NetworkCleanupFailure {
             resource: "anti-spoofing-rules".to_string(),

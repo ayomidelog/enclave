@@ -17,6 +17,7 @@ static PROCESS_SPAWNS: AtomicU64 = AtomicU64::new(0);
 static MOUNT_COUNT: AtomicU64 = AtomicU64::new(0);
 static UNMOUNT_COUNT: AtomicU64 = AtomicU64::new(0);
 static CLEANUP_RETRIES: AtomicU64 = AtomicU64::new(0);
+static CLEANUP_RETRY_DELAY_US: AtomicU64 = AtomicU64::new(0);
 static HOST_COMMANDS: AtomicU64 = AtomicU64::new(0);
 static HOST_COMMAND_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 static HOST_COMMAND_FAILURES: AtomicU64 = AtomicU64::new(0);
@@ -124,6 +125,15 @@ pub(crate) fn record_cleanup_retry() {
     CLEANUP_RETRIES.fetch_add(1, Ordering::Relaxed);
 }
 
+/// Record the time a cleanup retry waited before trying again.
+///
+/// The attempt count alone does not say whether retries cost a millisecond or a
+/// second, and that difference is what decides whether a retry policy is the
+/// reason a stop is slow.
+pub(crate) fn record_cleanup_retry_delay(elapsed_us: u64) {
+    CLEANUP_RETRY_DELAY_US.fetch_add(elapsed_us, Ordering::Relaxed);
+}
+
 /// Record one bounded host command and how it ended.
 pub(crate) fn record_host_command(timed_out: bool, failed: bool) {
     HOST_COMMANDS.fetch_add(1, Ordering::Relaxed);
@@ -153,6 +163,7 @@ pub(crate) fn metrics() -> serde_json::Value {
         "mounts": MOUNT_COUNT.load(Ordering::Relaxed),
         "unmounts": UNMOUNT_COUNT.load(Ordering::Relaxed),
         "cleanup_retries": CLEANUP_RETRIES.load(Ordering::Relaxed),
+        "cleanup_retry_delay_us": CLEANUP_RETRY_DELAY_US.load(Ordering::Relaxed),
         "host_commands": HOST_COMMANDS.load(Ordering::Relaxed),
         "host_command_timeouts": HOST_COMMAND_TIMEOUTS.load(Ordering::Relaxed),
         "host_command_failures": HOST_COMMAND_FAILURES.load(Ordering::Relaxed),

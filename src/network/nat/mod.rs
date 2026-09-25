@@ -43,7 +43,9 @@ pub(in crate::network) use primitives::{quote_restore_argument, restore_binary_f
 // The nat tests exercise the rule builders, the parser, and iptables discovery
 // directly, so they reach the submodule internals through the module root.
 #[cfg(test)]
-pub(in crate::network) use anti_spoof::{anti_spoof_rule_args, chains_with_anti_spoof_rule};
+pub(in crate::network) use anti_spoof::{
+    anti_spoof_rule_args, anti_spoof_rules, chains_with_anti_spoof_rule,
+};
 #[cfg(test)]
 pub(in crate::network) use forwarding::{bridge_rules, stale_bridge_rules};
 #[cfg(test)]

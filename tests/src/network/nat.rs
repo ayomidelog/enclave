@@ -141,6 +141,46 @@ fn anti_spoof_chains_are_detected_for_both_rule_shapes() {
     );
 }
 
+/// Removal deletes the rule that is really in the table. `iptables -D` reports
+/// success for a rule that is not present, so reconstructing the tagged shape
+/// and deleting that would look like a successful removal of a legacy rule and
+/// leave it in place until the absence check failed.
+#[test]
+fn anti_spoof_rules_returns_the_bodies_that_are_actually_installed() {
+    let dump = "-P INPUT ACCEPT\n\
+-A INPUT -i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP\n\
+-A FORWARD -i veth-4-0a1b2c ! -s 10.200.0.4/32 -m comment --comment \"enclave:session-a\" -j DROP\n";
+    let rules = anti_spoof_rules(dump, "veth-4-0a1b2c", "10.200.0.4");
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].0, "INPUT");
+    assert_eq!(rules[0].1, "-i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP");
+    assert_eq!(rules[1].0, "FORWARD");
+    assert_eq!(
+        rules[1].1,
+        "-i veth-4-0a1b2c ! -s 10.200.0.4/32 -m comment --comment \"enclave:session-a\" -j DROP"
+    );
+}
+
+/// Every copy of the rule is listed, not just the first, so a duplicated rule
+/// does not survive the removal and fail the absence check.
+#[test]
+fn anti_spoof_rules_lists_every_copy_in_a_chain() {
+    let dump = "-A INPUT -i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP\n\
+-A INPUT -i veth-4-0a1b2c ! -s 10.200.0.4/32 -j DROP\n";
+    assert_eq!(
+        anti_spoof_rules(dump, "veth-4-0a1b2c", "10.200.0.4").len(),
+        2
+    );
+}
+
+/// The bodies are scoped to this interface and address, so a neighbouring
+/// workspace's rule is never returned for deletion.
+#[test]
+fn anti_spoof_rules_ignores_other_interfaces() {
+    let dump = "-A INPUT -i veth-5-0a1b2c ! -s 10.200.0.5/32 -j DROP\n";
+    assert!(anti_spoof_rules(dump, "veth-4-0a1b2c", "10.200.0.4").is_empty());
+}
+
 /// Another workspace's interface must never be reported as this workspace's
 /// leftover rule, and an unrelated rule on the same interface must not be
 /// mistaken for the anti-spoofing rule either.

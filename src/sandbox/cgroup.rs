@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -41,8 +42,15 @@ impl CgroupConfig {
     }
 }
 
+/// Whether the host exposes the cgroup v2 unified hierarchy.
+///
+/// The answer is a property of the running kernel and its mount layout, so it
+/// cannot change while the daemon runs, and the check is on every quota-backed
+/// workspace start. Answering it once keeps that start path from paying a
+/// syscall per cgroup operation and keeps the answer consistent between them.
 pub fn is_cgroup_v2_available() -> bool {
-    Path::new(CGROUP_ROOT).join("cgroup.controllers").exists()
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| Path::new(CGROUP_ROOT).join("cgroup.controllers").exists())
 }
 
 pub fn available_controllers() -> Vec<String> {
@@ -231,7 +239,10 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
                 if attempt < 2 {
-                    thread::sleep(Duration::from_millis(10 * (attempt as u64 + 1)));
+                    let delay = Duration::from_millis(10 * (attempt as u64 + 1));
+                    crate::perf::record_cleanup_retry();
+                    crate::perf::record_cleanup_retry_delay(delay.as_micros() as u64);
+                    thread::sleep(delay);
                     continue;
                 }
                 return Err(err).with_context(|| {
