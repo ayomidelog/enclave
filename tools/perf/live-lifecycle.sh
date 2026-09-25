@@ -30,6 +30,11 @@ fi
 workers=${ENCLAVE_UP_WORKERS:-1}
 cleanup_workers=${ENCLAVE_CLEANUP_WORKERS:-4}
 rootfs_source=${ENCLAVE_LIVE_ROOTFS:-/root/.local/state/enclave/sandboxes/rootfs-cache/bookworm}
+# The eight-workspace fixture is the default, and it is the one whose numbers are
+# published. A caller who wants a different number of workspaces points this at
+# another file rather than editing the published fixture, so the numbers that
+# were measured stay attached to the fixture that produced them.
+fixture=${ENCLAVE_LIVE_ENCLAVEFILE:-$script_dir/live-heavy.Enclavefile}
 
 if [[ $(id -u) -eq 0 ]]; then runner=(); else runner=(sudo -n); fi
 if ! "${runner[@]}" test -x "$binary"; then
@@ -68,7 +73,7 @@ trap cleanup EXIT INT TERM
 
 "${runner[@]}" mkdir -p "$state_dir/sandboxes/rootfs-cache"
 "${runner[@]}" cp -a "$rootfs_source" "$state_dir/sandboxes/rootfs-cache/"
-cp "$script_dir/live-heavy.Enclavefile" "$work_dir/Enclavefile"
+cp "$fixture" "$work_dir/Enclavefile"
 "${runner[@]}" env \
   ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
   "$binary" --socket "$socket_path" daemon start \
@@ -77,8 +82,8 @@ cp "$script_dir/live-heavy.Enclavefile" "$work_dir/Enclavefile"
   --suite bookworm --bootstrap-method cached_rootfs >/dev/null
 
 cd "$work_dir"
-printf 'binary=%s workers=%s cleanup_workers=%s rootfs_source=%s\n' \
-  "$binary" "$workers" "$cleanup_workers" "$rootfs_source"
+printf 'binary=%s workers=%s cleanup_workers=%s fixture=%s rootfs_source=%s\n' \
+  "$binary" "$workers" "$cleanup_workers" "$fixture" "$rootfs_source"
 # The host the numbers came from, so a saved result can be compared with
 # another one rather than only read.
 host_metadata
