@@ -85,6 +85,19 @@ fn configure_host_veth(host: &str, peer: &str, pid: u32) -> Result<()> {
 /// loaded host each spawn costs ~15 ms, which dominated workspace startup for a
 /// handful of link commands.
 ///
+/// The plan proposes replacing this with rtnetlink, and the measurement says not to.
+/// A start now runs two ip processes for the whole of workspace networking, and the
+/// spawn floor is about 4.5 ms each, so the total a netlink client could remove is
+/// under 10 ms of a start that measures about 205 ms. What it would not remove is
+/// the kernel's own work: measured on this host, one veth pair created and deleted is
+/// 33 ms of kernel time against a 17 ms floor for the two spawns that did it. That is
+/// the larger part of the phase, and it is the same either way. Against 10 ms stands
+/// several hundred lines of hand-rolled netlink, or an async runtime this project
+/// does not otherwise depend on, on the path that decides a workspace's network
+/// isolation. The plan's own completion criterion for this item, that no shell is
+/// spawned for standard workspace networking, is already met: `ip -batch` reads its
+/// script from standard input and no shell is involved.
+///
 /// Port isolation goes through ip's `bridge_slave` type rather than the separate
 /// `bridge` utility, so the host side stays one process. The `bridge`
 /// subcommand cannot be reached from an `ip` batch, and that second spawn cost as

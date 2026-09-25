@@ -138,6 +138,23 @@ fn ensure_bridge_address() -> Result<()> {
 /// same /24 gives the kernel two connected routes for one prefix. Workspace
 /// traffic can then leave through, or be delivered to, a network Enclave does
 /// not control, while every workspace still reports clean anti-spoofing rules.
+/// Other interfaces on the host that already use the Enclave subnet.
+///
+/// The subnet and the bridge name are fixed rather than configurable, and this is
+/// the half of that decision that matters. A host whose routes or interfaces already
+/// use 10.200.0.0/24 is refused with the interfaces named, before any host state is
+/// changed, which is the outcome the plan asks for: its completion criterion is that
+/// startup refuses safely or chooses a non-conflicting configured network, and
+/// refusing safely is the half that does not put a second unknown network on the
+/// operator's host.
+///
+/// Making the subnet configurable is the other half and was not done. The subnet is
+/// compiled into the shapes of the firewall rules Enclave compares against
+/// `iptables -S` to prove ownership, so a configurable value has to reach every one
+/// of those comparisons exactly or ownership detection starts mis-attributing rules
+/// in both directions: Enclave's own rules read as foreign, and foreign rules read as
+/// Enclave's. That is the mechanism the security boundary rests on, and a change to
+/// it is not worth making for a host configuration this refuses clearly.
 pub fn subnet_conflicts() -> Result<Vec<String>> {
     let output = HostCommand::new("ip")
         .args(["-o", "-4", "addr", "show"])
