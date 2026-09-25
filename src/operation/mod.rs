@@ -28,5 +28,5 @@ pub(crate) use store::JOURNAL_TERMINAL_LIMIT;
 pub use store::{close_unfinished_records, latest, load, prune_terminal_records};
 
 #[cfg(test)]
-#[path = "../../tests/src/operation.rs"]
+#[path = "../../tests/src/operation/mod.rs"]
 mod tests;
