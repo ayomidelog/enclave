@@ -1,5 +1,6 @@
 mod auth_flow;
 mod cgroup_cleanup;
+mod cgroup_failure;
 mod cgroup_limits;
 mod cleanup_safety;
 mod concurrency;
@@ -10,6 +11,7 @@ mod dns_rollback;
 mod lifecycle;
 mod network_collision;
 mod network_rules;
+mod pause_commit;
 mod pid_identity;
 mod process_tree;
 mod quota_storage;
