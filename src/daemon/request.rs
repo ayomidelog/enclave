@@ -32,7 +32,6 @@ pub(super) fn handle_client(
     services: &services::DaemonServices,
 ) -> Result<()> {
     crate::perf::record_request();
-    let _request_total = crate::perf::Timer::new("daemon.request");
     let request_raw = match read_request_line(&stream) {
         Ok(Some(request_raw)) => request_raw,
         Ok(None) => return Ok(()),
@@ -73,6 +72,11 @@ pub(super) fn handle_client(
         .unwrap_or_else(operation::new_id);
     operation::set_current(Some(operation_id.clone()));
     let _clear = ClearOperationOnDrop;
+    // Started after the id is set and before the guard, so the request-level
+    // timing is dropped while the id is still current and its log line can name
+    // the operation. Reading and parsing the request are not part of this span;
+    // they are the request's own transport cost, not the work it asks for.
+    let _request_total = crate::perf::Timer::new("daemon.request");
 
     // A lifecycle operation is worth one line at the default level: it is how an
     // operator ties a command to the journal record and the phase timings for the

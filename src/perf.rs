@@ -210,9 +210,19 @@ impl Drop for Timer {
             record_request_latency(elapsed_us);
         }
         if enabled() {
-            eprintln!("timing phase={} elapsed_us={}", self.name, elapsed_us);
+            // The operation id is part of the line so a phase timing can be tied
+            // to the lifecycle operation that produced it. Without it, a slow
+            // phase in the log cannot be attributed to the request that paid it,
+            // which is what makes a phase trace actionable rather than only
+            // interesting.
+            let operation = crate::operation::current().unwrap_or_default();
+            eprintln!(
+                "timing operation={} phase={} elapsed_us={}",
+                operation, self.name, elapsed_us
+            );
             tracing::info!(
                 target: "enclave::perf",
+                operation_id = %operation,
                 phase = self.name,
                 elapsed_us,
             );
