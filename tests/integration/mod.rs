@@ -2,6 +2,7 @@ mod auth_flow;
 mod cgroup_cleanup;
 mod cgroup_limits;
 mod cleanup_safety;
+mod destroy_contract;
 mod detached_commands;
 mod disk_lifecycle;
 mod lifecycle;
