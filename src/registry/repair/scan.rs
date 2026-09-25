@@ -14,7 +14,11 @@ use super::super::RegistrySandbox;
 use super::orphan::remove_orphan_directory;
 use super::{DiskScan, RetainedOrphan};
 
-pub(super) fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<DiskScan> {
+pub(super) fn scan_on_disk(
+    state_dir: &Path,
+    strict: bool,
+    known: &crate::registry::Registry,
+) -> Result<DiskScan> {
     let sandboxes_root = state_dir.join("sandboxes");
     let mut scan = DiskScan::default();
 
@@ -50,17 +54,24 @@ pub(super) fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<DiskScan> {
         if dir_name == "rootfs-cache" {
             continue;
         }
+        let known_sandbox = known.sandboxes.get(&dir_name);
+        // A live create owns this directory until it commits its own record, so
+        // the scan leaves it alone whether or not its metadata has been written
+        // yet. The metadata is written before the registry insert, and a create
+        // runs this repair, so without this a sibling create's repair would adopt
+        // the record first and the create's own commit would fail with a name
+        // that "already exists". A marker left by a create that died names a
+        // process that is gone, so it does not protect the directory.
+        //
+        // A record the registry already has is never skipped: between the
+        // create's registry commit and its marker removal the directory carries
+        // both, and dropping it from the scan would delete the record it just
+        // committed.
+        if known_sandbox.is_none() && crate::fsutil::creation_in_progress(&sandbox_dir) {
+            continue;
+        }
         let metadata_path = sandbox_dir.join("sandbox.json");
         if !metadata_path.exists() {
-            // A sandbox being created has no `sandbox.json` yet, because the
-            // record is only written once the rootfs is in place. Removing it
-            // would delete a sibling create's work in progress, so a directory a
-            // live process has claimed is left alone. A marker left behind by a
-            // create that died names a process that is gone, so it does not
-            // protect the directory from being cleaned up.
-            if crate::fsutil::creation_in_progress(&sandbox_dir) {
-                continue;
-            }
             if strict {
                 bail!(
                     "strict repair failed: missing sandbox metadata {}",
@@ -145,7 +156,8 @@ pub(super) fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<DiskScan> {
             persist_metadata(&metadata_path, &metadata)?;
         }
 
-        let discovered_workspaces = scan_workspaces(&metadata, strict, &mut scan.retained_orphans)?;
+        let discovered_workspaces =
+            scan_workspaces(&metadata, strict, &mut scan.retained_orphans, known_sandbox)?;
         scan.sandboxes.insert(
             metadata.id.clone(),
             RegistrySandbox {
@@ -162,6 +174,7 @@ fn scan_workspaces(
     sandbox: &SandboxMetadata,
     strict: bool,
     retained_orphans: &mut Vec<RetainedOrphan>,
+    known: Option<&RegistrySandbox>,
 ) -> Result<BTreeMap<String, WorkspaceMetadata>> {
     let mut result = BTreeMap::new();
     let workspaces_path = PathBuf::from(&sandbox.workspaces_path);
@@ -194,13 +207,15 @@ fn scan_workspaces(
             }
         };
         let metadata_path = workspace_dir.join("workspace.json");
+        // Same as a sandbox: a live create owns its directory until it commits,
+        // and its metadata is written before that commit. A workspace the
+        // registry already records is never skipped, so the window between a
+        // create's commit and its marker removal cannot delete the record.
+        let known_workspace = known.is_some_and(|entry| entry.workspaces.contains_key(&dir_name));
+        if !known_workspace && crate::fsutil::creation_in_progress(&workspace_dir) {
+            continue;
+        }
         if !metadata_path.exists() {
-            // Same as a sandbox: a workspace being created has no metadata yet, so
-            // a live create marker is what keeps a concurrent repair from deleting
-            // it. A marker from a create that died does not protect the directory.
-            if crate::fsutil::creation_in_progress(&workspace_dir) {
-                continue;
-            }
             // A workspace whose metadata is gone may still have a running runtime.
             // Deleting its directory would leave that runtime, its cgroup, its
             // interface, and its firewall rules owned by nothing, so the directory

@@ -81,7 +81,7 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
         let DiskScan {
             sandboxes: discovered,
             retained_orphans,
-        } = scan_on_disk(state_dir, strict)?;
+        } = scan_on_disk(state_dir, strict, &registry)?;
         report.retained_orphans = retained_orphans;
 
         // Garbage from creates that died, swept here because repair is the one
