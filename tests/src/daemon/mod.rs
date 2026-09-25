@@ -2,6 +2,7 @@ use super::socket::prepare_runtime_paths;
 use super::wait_for_listener;
 use std::fs;
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
@@ -51,8 +52,24 @@ fn prepare_runtime_paths_rejects_active_socket() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Serializes the tests that install the daemon's shutdown wakeup pipe.
+///
+/// The write end is a process-wide static, because a signal handler has to reach it
+/// without any context of its own. A second install replaces the descriptor the first
+/// test's waker writes to, so a test that installs it while another is waiting sends the
+/// byte to the wrong pipe and leaves the other blocked on a poll that has no timeout.
+/// Running them one at a time is what makes the pair deterministic.
+static SHUTDOWN_WAKEUP_TESTS: Mutex<()> = Mutex::new(());
+
+fn serialize_shutdown_wakeup_test() -> std::sync::MutexGuard<'static, ()> {
+    SHUTDOWN_WAKEUP_TESTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
 #[test]
 fn wait_for_listener_returns_when_a_connection_is_ready() {
+    let _serial = serialize_shutdown_wakeup_test();
     let dir = std::env::temp_dir().join(format!("enclave-daemon-poll-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create poll test dir");
@@ -81,6 +98,7 @@ fn wait_for_listener_returns_when_a_connection_is_ready() {
 /// is delivered, which is the case this covers.
 #[test]
 fn wait_for_listener_returns_when_a_shutdown_is_requested() {
+    let _serial = serialize_shutdown_wakeup_test();
     let dir = std::env::temp_dir().join(format!("enclave-daemon-wakeup-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create wakeup test dir");
