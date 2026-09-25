@@ -12,12 +12,74 @@
 //! be parsed never claims a live owner.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 /// Name of the marker file inside the directory being created.
 pub(crate) const CREATION_MARKER_NAME: &str = ".creating";
+
+/// Where a directory is built before it is renamed into its final place.
+///
+/// The staging tree is deliberately outside `sandboxes/`, which repair scans for
+/// directories that carry no metadata. A staging directory inside that tree would
+/// be read as an orphan, which is the race this exists to close.
+pub(crate) fn creation_staging_root(state_dir: &Path) -> PathBuf {
+    state_dir.join(".staging")
+}
+
+/// Create `directory` with its creation marker already inside it.
+///
+/// Creating the directory and then writing the marker leaves a window in which
+/// the directory exists with no claim. The marker write opens a temp file, writes
+/// it, and fsyncs before renaming it in, which under load is long enough for a
+/// concurrent `repair_registry` — every create runs one — to read the directory as
+/// a leftover and delete it out from under the create. Building the directory
+/// under the staging tree and renaming it into place means the final name never
+/// exists without its claim: either the rename has not happened, or the marker is
+/// already there.
+///
+/// `kind` separates the sandbox and workspace staging trees so a sandbox id can
+/// never collide with a workspace id in the staging area.
+pub(crate) fn create_claimed_directory(
+    state_dir: &Path,
+    kind: &str,
+    directory: &Path,
+) -> Result<()> {
+    let name = directory
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("path {} has no file name", directory.display()))?;
+    let staging = creation_staging_root(state_dir).join(kind).join(name);
+    if let Some(parent) = staging.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    // A staging directory left behind by a create that died is in the way of the
+    // name this create wants. It cannot belong to a live create, so it goes.
+    if staging.exists() && !creation_in_progress(&staging) {
+        fs::remove_dir_all(&staging)
+            .with_context(|| format!("failed to clear stale {}", staging.display()))?;
+    }
+    fs::create_dir(&staging).with_context(|| format!("failed to create {}", staging.display()))?;
+    let claim = (|| {
+        write_creation_marker(&staging)?;
+        if let Some(parent) = directory.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        fs::rename(&staging, directory).with_context(|| {
+            format!(
+                "failed to move {} into place as {}",
+                staging.display(),
+                directory.display()
+            )
+        })
+    })();
+    if claim.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    claim
+}
 
 /// Record that this process is creating `directory`.
 pub(crate) fn write_creation_marker(directory: &Path) -> Result<()> {

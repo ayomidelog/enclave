@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::fsutil::{remove_creation_marker, write_creation_marker};
+use crate::fsutil::{create_claimed_directory, remove_creation_marker};
 
 pub fn create_sandbox(
     state_dir: &Path,
@@ -62,17 +62,14 @@ pub fn create_sandbox_with_options(
     let home_base_dir = sandbox_dir.join("home-base");
 
     let create_result = (|| {
-        fs::create_dir(&sandbox_dir).with_context(|| {
-            format!(
-                "failed to create sandbox directory {}",
-                sandbox_dir.to_string_lossy()
-            )
-        })?;
         // Claim the directory before anything is written into it. The registry
         // record only appears at the end, after the bootstrap, so without this a
         // concurrent repair would see a directory with no `sandbox.json` and
-        // remove it as an orphan while this create is still filling it.
-        write_creation_marker(&sandbox_dir)?;
+        // remove it as an orphan while this create is still filling it. The claim
+        // has to be in place at the instant the name becomes visible, which is
+        // what `create_claimed_directory` guarantees by renaming a marked
+        // directory into place.
+        create_claimed_directory(state_dir, "sandbox", &sandbox_dir)?;
         fs::create_dir(&rootfs_dir).with_context(|| {
             format!(
                 "failed to create rootfs directory {}",

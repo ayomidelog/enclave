@@ -131,12 +131,13 @@ pub fn create_workspace_with_options(
     let pid_ns_ref = namespaces_dir.join("pid.ref");
 
     let create_result = (|| {
-        fs::create_dir(&workspace_dir)
-            .with_context(|| format!("failed to create {}", workspace_dir.display()))?;
         // Claim the directory before filling it. `workspace.json` is written a few
         // steps later, and until it exists the directory looks like a leftover to
-        // a concurrent repair, which would delete it mid-create.
-        crate::fsutil::write_creation_marker(&workspace_dir)?;
+        // a concurrent repair, which would delete it mid-create. The claim has to
+        // be in place at the instant the name becomes visible, which is what
+        // `create_claimed_directory` guarantees by renaming a marked directory
+        // into place.
+        crate::fsutil::create_claimed_directory(state_dir, "workspace", &workspace_dir)?;
         fs::create_dir(&filesystem_dir)
             .with_context(|| format!("failed to create {}", filesystem_dir.display()))?;
         ensure_traversable_directory_permissions(&filesystem_dir)?;

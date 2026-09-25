@@ -11,7 +11,13 @@ mod permissions;
 pub use copies::{copy_file_range_file, reflink_copy_file};
 #[cfg(test)]
 pub(crate) use creation::CREATION_MARKER_NAME;
-pub(crate) use creation::{creation_in_progress, remove_creation_marker, write_creation_marker};
+pub(crate) use creation::{
+    create_claimed_directory, creation_in_progress, creation_staging_root, remove_creation_marker,
+};
+// Only the test modules write a marker into an existing directory; the create
+// paths go through `create_claimed_directory`.
+#[cfg(test)]
+pub(crate) use creation::write_creation_marker;
 pub(crate) use loopback::{attached_loop_devices, loop_devices_for_image};
 #[cfg(test)]
 pub(crate) use loopback::{

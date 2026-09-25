@@ -21,6 +21,7 @@ use super::storage::{
 };
 use super::{ensure_registry, Registry, RegistrySandbox, RepairReport};
 
+use orphan::remove_stale_creation_staging;
 use scan::scan_on_disk;
 
 /// A workspace directory repair refused to remove because a live runtime owns it.
@@ -82,6 +83,12 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
             retained_orphans,
         } = scan_on_disk(state_dir, strict)?;
         report.retained_orphans = retained_orphans;
+
+        // Garbage from creates that died, swept here because repair is the one
+        // place that knows the staging tree is not part of the registry.
+        if let Err(err) = remove_stale_creation_staging(state_dir) {
+            tracing::warn!("failed to sweep the creation staging tree: {err:#}");
+        }
 
         reconcile(&mut registry, &discovered, &mut report);
 

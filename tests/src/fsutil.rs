@@ -449,6 +449,56 @@ fn this_process_marks_a_directory_it_is_creating() {
 }
 
 #[test]
+fn a_claimed_directory_is_visible_with_its_marker_already_in_place() {
+    // The reason the directory is built under the staging tree and renamed into
+    // place is that the final name must never exist without a claim: repair runs
+    // on every create and would otherwise read it as a leftover. The staging
+    // entry has to be renamed away, not copied.
+    let state_dir =
+        std::env::temp_dir().join(format!("enclave-claimed-directory-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state_dir);
+    let target = state_dir.join("sandboxes").join("sandbox-abc123");
+    create_claimed_directory(&state_dir, "sandbox", &target).expect("claim the directory");
+    assert!(target.is_dir());
+    assert!(
+        creation_in_progress(&target),
+        "the renamed directory carries the marker that claims it"
+    );
+    assert!(
+        !creation_staging_root(&state_dir)
+            .join("sandbox")
+            .join("sandbox-abc123")
+            .exists(),
+        "the staging entry is renamed into place, not copied"
+    );
+    let _ = std::fs::remove_dir_all(&state_dir);
+}
+
+#[test]
+fn a_stale_staging_entry_does_not_block_the_name_it_holds() {
+    // A create that died before the rename leaves its staging directory behind.
+    // Its marker names a process that is gone, so the next create of that name
+    // clears it instead of failing.
+    let state_dir =
+        std::env::temp_dir().join(format!("enclave-stale-staging-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&state_dir);
+    let target = state_dir.join("sandboxes").join("sandbox-abc123");
+    let staging = creation_staging_root(&state_dir)
+        .join("sandbox")
+        .join("sandbox-abc123");
+    std::fs::create_dir_all(&staging).expect("create the stale staging directory");
+    std::fs::write(
+        staging.join(CREATION_MARKER_NAME),
+        format!("pid={}\nstarttime=1\n", u32::MAX),
+    )
+    .expect("write a stale marker");
+
+    create_claimed_directory(&state_dir, "sandbox", &target).expect("claim over the stale entry");
+    assert!(creation_in_progress(&target));
+    let _ = std::fs::remove_dir_all(&state_dir);
+}
+
+#[test]
 fn a_marker_from_a_dead_process_is_stale() {
     // A create that died leaves its marker behind. The recorded start time no
     // longer matches anything, so the directory is treated as an orphan again

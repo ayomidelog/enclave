@@ -1,6 +1,62 @@
 use super::*;
 use std::fs;
 
+/// Move a path's modification time `seconds` into the past.
+fn backdate(path: &std::path::Path, seconds: i64) {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let raw = CString::new(path.as_os_str().as_bytes()).expect("path is not NUL-terminated");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock is after the epoch")
+        .as_secs() as i64;
+    let stamp = libc::timespec {
+        tv_sec: now - seconds,
+        tv_nsec: 0,
+    };
+    let result =
+        unsafe { libc::utimensat(libc::AT_FDCWD, raw.as_ptr(), [stamp, stamp].as_ptr(), 0) };
+    assert_eq!(result, 0, "failed to backdate {}", path.display());
+}
+
+/// A staging directory is where a create builds a directory before renaming it
+/// into place, so it is not part of the registry and no scan reads it. One left
+/// by a create that died is garbage, but a fresh one may still belong to a live
+/// create, so the sweep has to be age-guarded rather than unconditional.
+#[test]
+fn repair_sweeps_an_abandoned_creation_staging_directory() {
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-registry-staging-sweep-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = fs::remove_dir_all(&state_dir);
+    let staging_root = crate::fsutil::creation_staging_root(&state_dir).join("sandbox");
+    let fresh = staging_root.join("sandbox-fresh");
+    let abandoned = staging_root.join("sandbox-abandoned");
+    fs::create_dir_all(&fresh).expect("create a fresh staging directory");
+    fs::create_dir_all(&abandoned).expect("create an abandoned staging directory");
+    fs::write(
+        abandoned.join(crate::fsutil::CREATION_MARKER_NAME),
+        format!("pid={}\nstarttime=1\n", u32::MAX),
+    )
+    .expect("write a stale marker");
+    backdate(&abandoned, 300);
+
+    repair_registry(&state_dir, false).expect("repair should succeed");
+
+    assert!(
+        fresh.exists(),
+        "a staging directory inside the grace period may belong to a live create"
+    );
+    assert!(
+        !abandoned.exists(),
+        "a staging directory left by a dead create is swept"
+    );
+    let _ = fs::remove_dir_all(&state_dir);
+}
+
 #[test]
 fn strict_repair_ignores_rootfs_cache_directory() {
     let state_dir =
