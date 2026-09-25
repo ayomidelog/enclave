@@ -67,8 +67,38 @@ fn wait_for_listener_returns_when_a_connection_is_ready() {
         }
     });
 
-    wait_for_listener(&listener).expect("poll should report readiness");
+    let shutdown_wait = super::shutdown::install_shutdown_wait().expect("create the wakeup pipe");
+    wait_for_listener(&listener, &shutdown_wait).expect("poll should report readiness");
     assert!(listener.accept().is_ok());
     connector.join().expect("connector thread");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A shutdown has to end the accept loop's wait, which blocks indefinitely.
+///
+/// The loop no longer wakes on a timer, so nothing but the pipe interrupts it. A
+/// shutdown requested over the socket arrives on a worker thread, where no signal
+/// is delivered, which is the case this covers.
+#[test]
+fn wait_for_listener_returns_when_a_shutdown_is_requested() {
+    let dir = std::env::temp_dir().join(format!("enclave-daemon-wakeup-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create wakeup test dir");
+    let socket = dir.join("daemon.sock");
+    let listener = UnixListener::bind(&socket).expect("bind wakeup socket");
+    let shutdown_wait = super::shutdown::install_shutdown_wait().expect("create the wakeup pipe");
+
+    let waker = thread::spawn(|| {
+        thread::sleep(Duration::from_millis(20));
+        super::shutdown::wake_shutdown_wait();
+    });
+
+    let started = std::time::Instant::now();
+    wait_for_listener(&listener, &shutdown_wait).expect("a wakeup should end the wait");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the wait must end on the wakeup rather than on a timer"
+    );
+    waker.join().expect("waker thread");
     let _ = fs::remove_dir_all(&dir);
 }

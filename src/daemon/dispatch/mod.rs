@@ -309,6 +309,9 @@ pub(crate) fn dispatch(
         Action::Shutdown => {
             shutdown.store(true, Ordering::SeqCst);
             super::shutdown::SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
+            // This runs on a worker thread, so no signal is delivered to the accept
+            // loop; the pipe is what tells it to stop waiting.
+            super::shutdown::wake_shutdown_wait();
             Ok(json!({"status": "shutting_down"}))
         }
     }

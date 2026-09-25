@@ -26,6 +26,7 @@ pub(crate) mod state_lock;
 mod workers;
 
 use std::fs;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -119,7 +120,10 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         .with_context(|| format!("failed to write pid file {}", config.pid_file.display()))?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let workers = match serve(listener, &config, &shutdown, &services) {
+    // Created before the accept loop and before any worker can request a shutdown,
+    // so the pipe the signal handler writes to always exists by the time it runs.
+    let shutdown_wait = shutdown::install_shutdown_wait()?;
+    let workers = match serve(listener, &config, &shutdown, &services, &shutdown_wait) {
         Ok(workers) => workers,
         Err(err) => {
             tracing::error!("daemon accept loop failed: {err:#}");
@@ -174,6 +178,7 @@ fn serve(
     config: &DaemonConfig,
     shutdown: &Arc<AtomicBool>,
     services: &services::DaemonServices,
+    shutdown_wait: &OwnedFd,
 ) -> Result<workers::RequestWorkerPool> {
     listener
         .set_nonblocking(true)
@@ -184,7 +189,7 @@ fn serve(
             break;
         }
 
-        wait_for_listener(&listener)?;
+        wait_for_listener(&listener, shutdown_wait)?;
         if shutdown_requested(shutdown) {
             break;
         }
@@ -206,28 +211,41 @@ fn serve(
     Ok(workers)
 }
 
-fn wait_for_listener(listener: &UnixListener) -> Result<()> {
-    // The poll wakes once a second even when nothing connects. That is the
-    // price of noticing a shutdown request while blocked in the accept loop: a
-    // self-pipe would let the poll block indefinitely, but one wakeup per second
-    // costs nothing next to the thread and socket machinery it would add.
-    let mut readiness = libc::pollfd {
-        fd: std::os::fd::AsRawFd::as_raw_fd(listener),
-        events: libc::POLLIN,
-        revents: 0,
-    };
+/// Wait until a client connects or a shutdown is requested, without polling.
+///
+/// The wait blocks indefinitely and ends on either event, so an idle daemon does
+/// no work at all and a shutdown is noticed at once rather than at the next
+/// periodic wakeup. The shutdown side is a pipe: the signal handler and the worker
+/// that serves a shutdown request both write one byte to it, which is the only
+/// thing a signal handler is allowed to do to interrupt a wait.
+fn wait_for_listener(listener: &UnixListener, shutdown_wait: &OwnedFd) -> Result<()> {
+    let mut descriptors = [
+        libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: shutdown_wait.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
     loop {
-        let result = unsafe { libc::poll(&mut readiness, 1, 1_000) };
+        let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
         if result > 0 {
-            if readiness.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            if descriptors[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
                 bail!(
                     "daemon listener became unusable (poll events 0x{:x})",
-                    readiness.revents
+                    descriptors[0].revents
                 );
             }
-            return Ok(());
-        }
-        if result == 0 {
+            if descriptors[1].revents != 0 {
+                // Drain the byte, so a wakeup that has already been acted on does
+                // not make the next wait return immediately.
+                let mut byte = [0u8; 1];
+                unsafe { libc::read(descriptors[1].fd, byte.as_mut_ptr().cast(), 1) };
+            }
             return Ok(());
         }
         let error = std::io::Error::last_os_error();
