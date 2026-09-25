@@ -67,12 +67,18 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     shutdown::install_signal_handlers()?;
     let _state_lock = state_lock::acquire_state_lock(&config.state_dir, &config.socket_path)?;
     sandbox::init_storage(&config.state_dir)?;
+    // Resolve transitions the previous daemon left half-done. This is the one
+    // place it is safe: the state lock above proved no other daemon is running
+    // and this one has not served a request yet, so nothing is in flight to roll
+    // back. Every later `init_storage` call is a create, which must leave a
+    // concurrent start alone.
+    crate::sandbox::reconcile_runtime_state(&config.state_dir)?;
     // Every open journal record at this point belongs to a previous daemon: the
     // state lock above proved no other daemon is running, and this one has not
-    // served a request yet. The storage init reconciled the targets it could, so
-    // the records are closed here with that outcome. Without this the journal
-    // keeps every interrupted operation open forever, and doctor reports each
-    // one as unfinished on every run.
+    // served a request yet. The reconciliation above resolved the targets it
+    // could, so the records are closed here with that outcome. Without this the
+    // journal keeps every interrupted operation open forever, and doctor reports
+    // each one as unfinished on every run.
     match crate::operation::close_unfinished_records(
         &config.state_dir,
         "interrupted by a daemon restart; the target state was reconciled at startup",

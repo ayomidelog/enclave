@@ -20,6 +20,15 @@ use super::util::{
     resolve_sandbox_id, sandboxes_dir, validate_debootstrap_inputs, validate_name,
 };
 
+/// Prepare the state directory for use.
+///
+/// This deliberately does not resolve interrupted lifecycle transitions.
+/// `reconcile_runtime_state` rolls a transitional workspace back to stopped, and
+/// every create calls this, so reconciling here would let one request roll back a
+/// start that another request has in flight — the workspace would be marked
+/// `Starting`, this would reset it to `Stopped` underneath the launch, and the
+/// launch would refuse to commit its runtime. The daemon reconciles once at
+/// startup and on an explicit repair, where no transition of its own is running.
 pub fn init_storage(state_dir: &Path) -> Result<()> {
     fs::create_dir_all(sandboxes_dir(state_dir))
         .with_context(|| format!("failed to initialize storage at {}", state_dir.display()))?;
@@ -27,7 +36,6 @@ pub fn init_storage(state_dir: &Path) -> Result<()> {
     ensure_registry(state_dir)?;
     repair_registry(state_dir, false)?;
     restore_shared_rootfs_mounts(state_dir)?;
-    reconcile_runtime_state(state_dir)?;
     Ok(())
 }
 
