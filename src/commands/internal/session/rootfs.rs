@@ -6,11 +6,9 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
     // what makes a slow workspace start attributable to the root filesystem, the
     // overlay, the pivot, the workspace bind mount, or the post-pivot mounts
     // instead of "session readiness".
-    let validate = crate::perf::Timer::new("session.bootstrap.validate");
     let rootfs = validate_workspace_rootfs(Path::new(&args.rootfs))?;
     let old_root_name = workspace_old_root_name(&args.workspace_id)?;
     let pivoted_old_root = PathBuf::from("/").join(&old_root_name);
-    drop(validate);
     let root = crate::perf::Timer::new("session.bootstrap.root");
     let (new_root, host_old_root) = if args.root_overlay_merged.is_empty() {
         let host_old_root = workspace_old_root_path(&rootfs, &args.workspace_id)?;
@@ -34,14 +32,12 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
     pivot_into_rootfs(&new_root, &host_old_root)?;
     std::env::set_current_dir("/").context("failed to chdir to / after pivot_root")?;
     drop(pivot);
-    let workspace = crate::perf::Timer::new("session.bootstrap.workspace");
     mount_workspace_source(
         &pivoted_old_root,
         Path::new(&args.workspace_fs),
         Path::new(&args.mount_target),
         &args.workspace_idmap_option,
     )?;
-    drop(workspace);
     let post = crate::perf::Timer::new("session.bootstrap.post_pivot");
     mount_post_pivot_filesystems(
         &pivoted_old_root,

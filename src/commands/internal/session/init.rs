@@ -25,15 +25,9 @@ pub(crate) fn run_workspace_session_init(args: WorkspaceSessionInitArgs) -> Resu
 
     // These steps run between the namespace unshare and the bootstrap helper, so
     // they are inside the readiness wait the daemon is blocked on.
-    let limits = crate::perf::Timer::new("session.init.limits");
     apply_workspace_limits(&args);
-    drop(limits);
-    let private = crate::perf::Timer::new("session.init.private_mounts");
     make_mounts_private()?;
-    drop(private);
-    let hostname = crate::perf::Timer::new("session.init.hostname");
     set_workspace_hostname(&args.workspace_hostname);
-    drop(hostname);
     let refs = crate::perf::Timer::new("session.init.namespace_refs");
     write_namespace_references(&args.mount_ref, &args.pid_ref)?;
     write_host_pid(&args.pid_file)?;

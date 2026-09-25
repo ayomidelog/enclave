@@ -7,9 +7,13 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
     match child {
         ForkResult::Parent { child } => {
             drop(child_sync);
+            let timer = crate::perf::Timer::new("session.launch.child_unshare_wait");
             wait_for_child_unshare(&mut parent_sync)?;
+            drop(timer);
             if args.enable_userns {
+                let timer = crate::perf::Timer::new("session.launch.id_maps");
                 apply_workspace_id_maps(child.as_raw() as u32, &args)?;
+                drop(timer);
             }
             parent_sync
                 .write_all(&[1])
@@ -18,7 +22,9 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
         }
         ForkResult::Child => {
             drop(parent_sync);
+            let timer = crate::perf::Timer::new("session.launch.unshare");
             unshare_workspace_namespaces(args.enable_userns)?;
+            drop(timer);
             child_sync
                 .write_all(&[1])
                 .context("failed to notify parent after namespace unshare")?;
@@ -27,7 +33,9 @@ pub(crate) fn run_workspace_session_launch(args: WorkspaceSessionLaunchArgs) -> 
                 .read_exact(&mut ack)
                 .context("failed to wait for parent id map setup")?;
             if args.enable_userns {
+                let timer = crate::perf::Timer::new("session.launch.finalize_identity");
                 finalize_workspace_identity()?;
+                drop(timer);
             }
 
             let grandchild =
@@ -169,11 +177,21 @@ pub(crate) fn run_workspace_session_loop(args: WorkspaceSessionLoopArgs) -> Resu
 }
 
 pub(crate) fn run_workspace_session_loop_inner(old_root: &Path, ready_file: &Path) -> Result<()> {
+    // Everything up to the ready marker is between the last mount and the daemon
+    // learning the workspace is up, so it is inside the readiness wait the start
+    // path is blocked on. Timing each step is what makes a slow readiness
+    // attributable to the hardening rather than to the mounts or the exec.
     let ready_handle = open_ready_file_via_old_root(old_root, ready_file)?;
+    let timer = crate::perf::Timer::new("session.loop.mask_paths");
     crate::workspace::session::mask_runtime_paths()?;
+    drop(timer);
     crate::workspace::session::tighten_namespace_mounts()?;
+    let timer = crate::perf::Timer::new("session.loop.detach_old_root");
     crate::workspace::session::detach_old_root(old_root)?;
+    drop(timer);
+    let timer = crate::perf::Timer::new("session.loop.restrictions");
     crate::workspace::session::apply_session_restrictions()?;
+    drop(timer);
     signal_ready(ready_handle)?;
     crate::commands::internal::runtime_init::run_runtime_init_loop()
 }

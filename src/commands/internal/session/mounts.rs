@@ -110,9 +110,7 @@ pub(crate) fn mount_post_pivot_filesystems(
     workspace_idmap_option: &str,
     disk_backed_tmp: bool,
 ) -> Result<()> {
-    let proc_timer = crate::perf::Timer::new("session.mounts.proc");
     mount_proc_if_needed()?;
-    drop(proc_timer);
     let devpts_timer = crate::perf::Timer::new("session.mounts.devpts");
     mount_devpts_if_needed()?;
     drop(devpts_timer);
