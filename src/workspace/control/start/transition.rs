@@ -53,6 +53,41 @@ pub(super) fn release_dead_runtime_resources(
     })
 }
 
+/// Write the workspace's own record of a runtime that has just launched.
+///
+/// This runs before the registry commit and outside the registry lock, and both
+/// halves of that are deliberate.
+///
+/// The precedence rule is that a lifecycle step writes the per-directory metadata
+/// before it commits the registry record, so a crash between the two leaves a
+/// record that is ahead of the registry rather than behind it. Writing the file
+/// first is therefore the order the rule already asks for.
+///
+/// The lock is not what protects these files. A start holds the workspace's
+/// lifecycle lease for its whole duration, so no other operation can be writing
+/// them; the registry lock protects the registry. Writing three files here is six
+/// fsyncs, which measured as most of the commit phase on this host, and none of it
+/// has any business inside a lock every other lifecycle request has to take.
+///
+/// The caller still verifies under the lock that the workspace is the one this
+/// launch was for. If it is not, the launch rolls back and rewrites this record as
+/// stopped, so the file never disagrees with the registry for longer than the
+/// rollback takes.
+pub(crate) fn persist_started_workspace_runtime(
+    workspace: &WorkspaceMetadata,
+    started: &WorkspaceRuntimeStart,
+) -> Result<WorkspaceMetadata> {
+    let mut record = workspace.clone();
+    record.status = WorkspaceStatus::Running;
+    record.runtime_pid = Some(started.pid);
+    record.runtime_starttime_ticks = Some(started.starttime_ticks);
+    record.assigned_ip = Some(started.assigned_ip.clone());
+    normalize_namespace_ref_paths(&mut record);
+    session::write_namespace_ref_values(&record, &started.mount_ns, &started.pid_ns)?;
+    persist_workspace_metadata(&record)?;
+    Ok(record)
+}
+
 /// Record that a workspace runtime launch has begun.
 pub(crate) fn mark_workspace_starting(
     state_dir: &std::path::Path,

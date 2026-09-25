@@ -11,7 +11,9 @@ mod transition;
 use super::*;
 
 pub use launch::launch_workspace_runtime;
-pub(crate) use transition::{mark_workspace_start_failed, mark_workspace_starting};
+pub(crate) use transition::{
+    mark_workspace_start_failed, mark_workspace_starting, persist_started_workspace_runtime,
+};
 
 pub fn start_workspace(
     state_dir: &std::path::Path,
@@ -220,6 +222,32 @@ pub fn start_workspace_with_security(
 
     journal.phase("commit_runtime_metadata")?;
     let commit_timer = crate::perf::Timer::new("workspace.start.commit");
+    // The workspace's own files go down first, outside the lock. See the note on
+    // this function for why that is the order the precedence rule asks for and why
+    // the lifecycle lease is what makes it safe.
+    let prepared = match persist_started_workspace_runtime(&workspace_snapshot, &started) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            drop(commit_timer);
+            let _ = session::stop_session(started.pid, Some(started.starttime_ticks));
+            let _ = cleanup::remove_workspace_cgroups(
+                &sandbox_snapshot,
+                &workspace_snapshot.id,
+                Some(started.pid),
+            );
+            let _ = network::teardown_workspace_network(&started.assigned_ip, &workspace_id);
+            let _ = crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
+            let _ = mark_workspace_start_failed(state_dir, &sandbox_id, &workspace_id);
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error).context("failed to record the launched workspace runtime");
+        }
+    };
+    // Only the registry is written under the lock, and only after re-checking that
+    // the workspace is still the one this launch was for. The registry half is
+    // timed on its own because it is the part that holds the lock: a reader can
+    // then see how long the lock was held rather than only how long the whole
+    // commit took, and the difference between the two is what the file writes cost.
+    let registry_commit = crate::perf::Timer::new("workspace.start.commit_registry");
     let commit = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
@@ -232,7 +260,7 @@ pub fn start_workspace_with_security(
         // `mark_workspace_starting` recorded the transition before the runtime
         // was launched. Anything else means a competing operation touched the
         // workspace while the launch was in flight, so the runtime identity
-        // captured below cannot be trusted as the current one.
+        // captured above cannot be trusted as the current one.
         if workspace.status != WorkspaceStatus::Starting {
             bail!(
                 "workspace '{}' is {} while a start was in progress; refusing to commit runtime metadata",
@@ -240,25 +268,15 @@ pub fn start_workspace_with_security(
                 workspace.status.as_str()
             );
         }
-        workspace.sandbox_rootfs_path = workspace_snapshot.sandbox_rootfs_path.clone();
+        workspace.sandbox_rootfs_path = prepared.sandbox_rootfs_path.clone();
         workspace.status = WorkspaceStatus::Running;
-        workspace.runtime_pid = Some(started.pid);
-        workspace.runtime_starttime_ticks = Some(started.starttime_ticks);
-        workspace.assigned_ip = Some(started.assigned_ip.clone());
-        normalize_namespace_ref_paths(workspace);
-        session::write_namespace_ref_values(workspace, &started.mount_ns, &started.pid_ns)?;
-
-        let metadata_path = PathBuf::from(&workspace.workspace_path).join("workspace.json");
-        let metadata_raw = serde_json::to_string_pretty(workspace)?;
-        crate::fsutil::write_file_atomic(&metadata_path, metadata_raw.as_bytes(), 0o600)
-            .with_context(|| {
-                format!(
-                    "failed to write workspace metadata {}",
-                    metadata_path.display()
-                )
-            })?;
+        workspace.runtime_pid = prepared.runtime_pid;
+        workspace.runtime_starttime_ticks = prepared.runtime_starttime_ticks;
+        workspace.assigned_ip = prepared.assigned_ip.clone();
+        workspace.namespace_refs = prepared.namespace_refs.clone();
         Ok(workspace.clone())
     });
+    drop(registry_commit);
     drop(commit_timer);
 
     match commit {
