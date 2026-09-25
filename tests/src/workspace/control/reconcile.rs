@@ -1,5 +1,8 @@
 //! Reconciling a record that disagrees with what is actually running.
 
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
 use super::*;
 
 /// A workspace that is starting already owns its address.
@@ -211,4 +214,95 @@ fn reconcile_rolls_back_interrupted_stop_with_a_dead_runtime() {
     assert!(!workspace_dir.join("ns").join("mnt.ref").exists());
 
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+/// A launch killed before it commits leaves a live session that only the
+/// workspace directory can name.
+///
+/// The record is written `Starting` with the address reserved and no pid, because
+/// the pid is part of the commit the crash interrupted. The session itself wrote
+/// `runtime/session.pid` and `ns/pid.ref` from inside its own namespace before it
+/// reported ready, so those two files are what the rollback has to read. Without
+/// them the teardown runs against a record that names no runtime, and the daemon
+/// reports a workspace it has stopped while the session keeps running.
+#[test]
+fn reconcile_stops_a_runtime_the_record_never_named() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "enclave-workspace-reconcile-uncommitted-runtime-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&temp_dir);
+    let sandbox_dir = temp_dir.join("sandbox");
+    let (mut workspace, workspace_dir) =
+        transitional_workspace(&sandbox_dir, WorkspaceStatus::Starting, None);
+    assert!(
+        workspace.runtime_pid.is_none(),
+        "the fixture has to leave the record unnamed for this to test the discovery"
+    );
+
+    // A process whose command line marks it as an Enclave runtime, which is what
+    // the signal guard checks before it will end one.
+    let mut runtime = spawn_enclave_like_runtime();
+    let runtime_pid = runtime.id();
+    fs::create_dir_all(workspace_dir.join("runtime")).unwrap();
+    fs::write(
+        workspace_dir.join("runtime").join("session.pid"),
+        format!("{runtime_pid}\n"),
+    )
+    .unwrap();
+    // The namespace reference is what proves the pid names the session rather
+    // than a process that later inherited the same pid, so it is written from the
+    // live process rather than made up.
+    fs::write(
+        workspace_dir.join("ns").join("pid.ref"),
+        format!(
+            "{}\n",
+            fs::read_link(format!("/proc/{runtime_pid}/ns/pid"))
+                .expect("read the runtime's pid namespace")
+                .to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    assert!(
+        reconcile_workspace_runtime_state(&reconcile_sandbox(&sandbox_dir), &mut workspace)
+            .unwrap()
+    );
+    assert_eq!(workspace.status, WorkspaceStatus::Stopped);
+    assert!(workspace.runtime_pid.is_none());
+    assert!(
+        reap_within(&mut runtime, Duration::from_secs(10)),
+        "the rollback left the runtime the record never named running"
+    );
+    // The marker files the session wrote are gone with the runtime, so a second
+    // reconcile has nothing left to find.
+    assert!(!workspace_dir.join("runtime").join("session.pid").exists());
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+/// A process the signal guard recognizes as an Enclave runtime, which exits on
+/// the SIGTERM the stop sends it.
+fn spawn_enclave_like_runtime() -> Child {
+    Command::new("bash")
+        .args(["-c", "exec -a enclave-workspace-session sleep 300"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn an enclave-like runtime")
+}
+
+/// Whether a child exits within `timeout`.
+fn reap_within(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if child.try_wait().expect("poll the child").is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    false
 }

@@ -1,5 +1,7 @@
 //! Repairing a workspace record that disagrees with what is actually running.
 
+use std::path::Path;
+
 use anyhow::Result;
 
 use crate::sandbox::SandboxMetadata;
@@ -10,6 +12,32 @@ use crate::workspace::types::{WorkspaceMetadata, WorkspaceStatus};
 use super::record::{
     clear_workspace_namespace_refs, persist_workspace_metadata, remove_workspace_runtime_markers,
 };
+
+/// The runtime of a workspace left mid-transition, with the identity to stop it by.
+///
+/// A launch records the runtime's pid only when it commits, so a launch killed
+/// between the session starting and that commit leaves a live runtime the record
+/// does not name. The workspace directory does name it: the session writes
+/// `runtime/session.pid` and `ns/pid.ref` from inside its own namespace before it
+/// reports ready, so those markers exist for exactly the window in which the
+/// record has no pid. Reading them is what keeps the rollback below from stopping
+/// nothing and reporting a clean stop over a runtime that is still running.
+fn transitional_runtime(workspace: &WorkspaceMetadata) -> Option<(u32, Option<u64>)> {
+    if let Some((pid, starttime)) = workspace.runtime_pid.zip(workspace.runtime_starttime_ticks) {
+        return Some((pid, Some(starttime)));
+    }
+    let orphan = crate::workspace::find_orphan_runtime(
+        Path::new(&workspace.workspace_path),
+        &workspace.sandbox_id,
+        &workspace.id,
+    )?;
+    let pid = orphan.runtime_pid?;
+    // The pid was found by matching the namespace the session recorded, so it is
+    // the runtime rather than a reused pid. Its start time is read now, before it
+    // is signalled, so the stop proves it is the same process it ends.
+    let starttime = session::process_starttime_ticks(pid).ok();
+    Some((pid, starttime))
+}
 
 /// Release the host resources a workspace still owns after its runtime is gone.
 ///
@@ -64,30 +92,36 @@ pub(crate) fn reconcile_workspace_runtime_state(
     // recorded identity may not match the process that is actually running.
     if workspace.status.is_transitional() {
         let interrupted = workspace.status.clone();
-        if let Some((pid, starttime)) = workspace.runtime_pid.zip(workspace.runtime_starttime_ticks)
-        {
-            if session::process_matches(pid, Some(starttime)) {
-                // A live runtime from the interrupted operation must be stopped
-                // before the workspace can be reported as cleanly stopped.
-                if let Err(error) = session::stop_session(pid, Some(starttime)) {
-                    tracing::warn!(
-                        "reconcile: failed to stop runtime {} for interrupted {:?} workspace '{}': {error:#}",
-                        pid,
-                        interrupted,
-                        workspace.id
-                    );
-                    return Ok(false);
-                }
+        let runtime = transitional_runtime(workspace);
+        if let Some((pid, starttime)) = runtime {
+            // A live runtime from the interrupted operation must be stopped
+            // before the workspace can be reported as cleanly stopped.
+            if let Err(error) = session::stop_session(pid, starttime) {
+                tracing::warn!(
+                    "reconcile: failed to stop runtime {} for interrupted {:?} workspace '{}': {error:#}",
+                    pid,
+                    interrupted,
+                    workspace.id
+                );
+                return Ok(false);
             }
         }
         // Tear down everything the interrupted operation may have created:
         // workspace cgroup, network, storage mounts, private tmp. A failed
         // teardown keeps the record transitional instead of claiming the
         // workspace is stopped while resources are still held.
+        //
+        // The record handed to the teardown carries the pid that was just
+        // stopped whether or not the record named it, because the cgroup of a
+        // workspace started before cgroups were named from the resource ids is
+        // still named from its pid.
+        let mut cleanup_record = workspace.clone();
+        cleanup_record.runtime_pid = runtime.map(|(pid, _)| pid);
+        cleanup_record.runtime_starttime_ticks = runtime.and_then(|(_, starttime)| starttime);
         if let Err(error) = cleanup::run_workspace_stop_cleanup(
             WorkspaceStopCleanup {
                 sandbox: sandbox.clone(),
-                workspace: workspace.clone(),
+                workspace: cleanup_record,
             },
             false,
             false,
