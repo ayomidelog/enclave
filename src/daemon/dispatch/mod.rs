@@ -14,9 +14,12 @@ use crate::workspace;
 use super::DaemonConfig;
 
 mod action;
+mod daemon_handlers;
 mod lease_scope;
 mod params;
+mod policy_handlers;
 mod ports;
+mod sandbox_exec_setup;
 mod sandbox_handlers;
 mod snapshots;
 mod transition;
@@ -32,19 +35,29 @@ use action::Action;
 pub(super) fn action_is_lifecycle(action: &str) -> bool {
     Action::parse(action).is_ok_and(Action::is_lifecycle)
 }
+use daemon_handlers::{
+    dispatch_daemon_doctor, dispatch_daemon_doctor_repair, dispatch_daemon_health, dispatch_init,
+    dispatch_shutdown,
+};
 use params::{
     parse_cleanup_mode, parse_optional_bool_field, parse_required_disk_bytes,
     parse_sandbox_limits_create, parse_sandbox_limits_update, parse_string_array,
     parse_workspace_limits_create, parse_workspace_limits_update, require_param_str,
 };
+use policy_handlers::{
+    dispatch_policy_clear, dispatch_policy_get, dispatch_policy_rule, dispatch_policy_set_default,
+    dispatch_registry_repair,
+};
 use ports::{
     dispatch_workspace_port_list, dispatch_workspace_port_publish,
     dispatch_workspace_port_unpublish,
 };
+use sandbox_exec_setup::dispatch_sandbox_exec_setup;
 use sandbox_handlers::{
-    dispatch_sandbox_create, dispatch_sandbox_destroy, dispatch_sandbox_pause,
-    dispatch_sandbox_resume, dispatch_sandbox_start, dispatch_sandbox_status,
-    dispatch_sandbox_stop, dispatch_sandbox_update, dispatch_sandbox_wipe,
+    dispatch_sandbox_create, dispatch_sandbox_destroy, dispatch_sandbox_list,
+    dispatch_sandbox_pause, dispatch_sandbox_remove, dispatch_sandbox_resume,
+    dispatch_sandbox_start, dispatch_sandbox_status, dispatch_sandbox_stop,
+    dispatch_sandbox_update, dispatch_sandbox_wipe,
 };
 use snapshots::{
     dispatch_workspace_restore, dispatch_workspace_snapshot, dispatch_workspace_snapshot_export,
@@ -62,8 +75,14 @@ use workspace_handlers::{
     dispatch_workspace_cp, dispatch_workspace_create, dispatch_workspace_exec,
     dispatch_workspace_list, dispatch_workspace_logs, dispatch_workspace_resize,
     dispatch_workspace_start_many, dispatch_workspace_target, dispatch_workspace_update,
+    dispatch_workspace_wipe,
 };
 
+/// Route one request to the handler for its action.
+///
+/// The handlers live in the module for the area a request acts on, so this is only
+/// the routing table: the action, the lease it needs, and the one call that
+/// answers it.
 pub(crate) fn dispatch(
     request: crate::protocol::Request,
     config: &DaemonConfig,
@@ -82,50 +101,10 @@ pub(crate) fn dispatch(
     };
     match action {
         Action::Ping => Ok(json!({"status": "pong"})),
-        Action::DaemonHealth => Ok(json!({
-            "status": "ok",
-            "pid": std::process::id(),
-            "state_dir": config.state_dir.to_string_lossy(),
-            "socket_path": config.socket_path.to_string_lossy(),
-            // Lifecycle operations running right now, so a slow daemon can be
-            // explained without reading the log.
-            "active_operations": services
-                .active_operations
-                .in_flight()
-                .iter()
-                .map(crate::daemon::active_operations::ActiveOperation::describe)
-                .collect::<Vec<_>>(),
-            // The last lifecycle operation the daemon ran, so a status report can
-            // name it without the operator reading the journal directory.
-            "last_operation": crate::operation::latest(&config.state_dir)?,
-            // The deadlines actually in force, so a wait that ended early or late
-            // can be explained without reading the environment of the daemon.
-            "deadlines": crate::deadlines::describe_all(),
-            "metrics": crate::perf::metrics(),
-        })),
-        Action::DaemonDoctor => {
-            // The daemon owns the port publisher and the running operations, so
-            // this is the one caller that can report a published listener no
-            // running workspace is using and tell a live operation apart from one
-            // whose daemon died.
-            let daemon = crate::doctor::DaemonState {
-                port_publisher,
-                active_operations: services.active_operations.as_ref(),
-            };
-            let report = crate::doctor::run_doctor(&config.state_dir, Some(&daemon))?;
-            Ok(serde_json::to_value(report)?)
-        }
-        Action::DaemonDoctorRepair => {
-            let report = crate::doctor::repair_doctor(&config.state_dir, &config.socket_path)?;
-            Ok(serde_json::to_value(report)?)
-        }
-        Action::Init => {
-            sandbox::init_storage(&config.state_dir)?;
-            Ok(json!({
-                "state_dir": config.state_dir.to_string_lossy(),
-                "socket_path": config.socket_path.to_string_lossy(),
-            }))
-        }
+        Action::DaemonHealth => dispatch_daemon_health(config, services),
+        Action::DaemonDoctor => dispatch_daemon_doctor(config, port_publisher, services),
+        Action::DaemonDoctorRepair => dispatch_daemon_doctor_repair(config),
+        Action::Init => dispatch_init(config),
         Action::SandboxCreate => dispatch_sandbox_create(&request.params, config),
         Action::SandboxUpdate => dispatch_sandbox_update(&request.params, config),
         Action::SandboxStart => dispatch_sandbox_start(&request.params, config),
@@ -135,55 +114,9 @@ pub(crate) fn dispatch(
         Action::SandboxStatus => dispatch_sandbox_status(&request.params, config),
         Action::SandboxDestroy => dispatch_sandbox_destroy(&request.params, config, port_publisher),
         Action::SandboxWipe => dispatch_sandbox_wipe(&request.params, config, port_publisher),
-        Action::SandboxList => {
-            let sandboxes = sandbox::list_sandbox_items(&config.state_dir)?;
-            Ok(serde_json::to_value(sandboxes)?)
-        }
-        Action::SandboxRemove => {
-            let selector = require_param_str(&request.params, &["sandbox", "sandbox_id"])?;
-            let previous_state = sandbox_state_before(&config.state_dir, selector);
-            let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
-            Ok(with_transition(
-                json!({ "removed": removed }),
-                previous_state,
-                ABSENT,
-            ))
-        }
-        Action::SandboxExecSetup => {
-            let selector = require_param_str(&request.params, &["sandbox", "sandbox_id"])?;
-            let command = require_param_str(&request.params, &["command"])?;
-            let cache_setup = request
-                .params
-                .get("cache_setup")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let setup_digest = request.params.get("setup_digest").and_then(Value::as_str);
-            let setup_commands = request
-                .params
-                .get("setup_commands")
-                .and_then(Value::as_array)
-                .map(|commands| {
-                    commands
-                        .iter()
-                        .map(|command| {
-                            command.as_str().map(str::to_string).ok_or_else(|| {
-                                anyhow::anyhow!("setup_commands entries must be strings")
-                            })
-                        })
-                        .collect::<Result<Vec<_>>>()
-                })
-                .transpose()?;
-            let setup_index = request.params.get("setup_index").and_then(Value::as_u64);
-            sandbox::exec_setup_command(
-                &config.state_dir,
-                selector,
-                command,
-                cache_setup,
-                setup_commands.as_deref(),
-                setup_digest,
-                setup_index,
-            )
-        }
+        Action::SandboxList => dispatch_sandbox_list(config),
+        Action::SandboxRemove => dispatch_sandbox_remove(&request.params, config),
+        Action::SandboxExecSetup => dispatch_sandbox_exec_setup(&request.params, config),
         Action::ProcessList => {
             let entries = workspace::list_process_status(&config.state_dir)?;
             Ok(serde_json::to_value(entries)?)
@@ -203,24 +136,7 @@ pub(crate) fn dispatch(
         Action::WorkspaceDestroy => {
             dispatch_workspace_target(&request.params, config, "destroy", port_publisher)
         }
-        Action::WorkspaceWipe => {
-            let mode = parse_cleanup_mode(&request.params)?;
-            let workspaces = workspace::list_workspaces(&config.state_dir, None)?;
-            let report = workspace::destroy_all_workspaces(&config.state_dir, mode)?;
-            for workspace in &workspaces {
-                if report.removed.contains(&workspace.id) {
-                    port_publisher.clear_workspace_ports(&workspace.sandbox_id, &workspace.id);
-                }
-            }
-            if !report.errors.is_empty() {
-                bail!(
-                    "workspace wipe completed with {} error(s): {}",
-                    report.errors.len(),
-                    report.errors.join("; ")
-                );
-            }
-            Ok(serde_json::to_value(report)?)
-        }
+        Action::WorkspaceWipe => dispatch_workspace_wipe(&request.params, config, port_publisher),
         Action::WorkspaceStatus => {
             dispatch_workspace_target(&request.params, config, "status", port_publisher)
         }
@@ -268,69 +184,16 @@ pub(crate) fn dispatch(
         Action::WorkspaceSnapshotImport => {
             dispatch_workspace_snapshot_import(&request.params, config)
         }
-        Action::RegistryRepair => {
-            let strict = request
-                .params
-                .get("strict")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let mut report = registry::repair_registry(&config.state_dir, strict)?;
-            // Repair fixes registry/disk consistency; this brings the persisted
-            // lifecycle state back in line with what is actually running, so an
-            // interrupted start or stop is recoverable without a daemon restart.
-            report.reconciled_runtime_records =
-                crate::sandbox::reconcile_runtime_state(&config.state_dir)?;
-            Ok(serde_json::to_value(report)?)
-        }
-        Action::PolicyGet => {
-            let current = policy::load_policy(&config.state_dir)?;
-            Ok(serde_json::to_value(current)?)
-        }
-        Action::PolicySetDefault => {
-            let default_allow = request
-                .params
-                .get("default_allow")
-                .and_then(Value::as_bool)
-                .ok_or_else(|| anyhow::anyhow!("missing 'default_allow'"))?;
-            let updated = policy::set_default_allow(&config.state_dir, default_allow)?;
-            Ok(serde_json::to_value(updated)?)
-        }
+        Action::RegistryRepair => dispatch_registry_repair(&request.params, config),
+        Action::PolicyGet => dispatch_policy_get(config),
+        Action::PolicySetDefault => dispatch_policy_set_default(&request.params, config),
         Action::PolicyAllow => dispatch_policy_rule(&request.params, config, true),
         Action::PolicyDeny => dispatch_policy_rule(&request.params, config, false),
-        Action::PolicyClear => {
-            let uid = request
-                .params
-                .get("uid")
-                .and_then(Value::as_u64)
-                .map(|v| v as u32);
-            let updated = policy::clear_rules(&config.state_dir, uid)?;
-            Ok(serde_json::to_value(updated)?)
-        }
-        Action::Shutdown => {
-            shutdown.store(true, Ordering::SeqCst);
-            super::shutdown::SIGNAL_SHUTDOWN.store(true, Ordering::SeqCst);
-            // This runs on a worker thread, so no signal is delivered to the accept
-            // loop; the pipe is what tells it to stop waiting.
-            super::shutdown::wake_shutdown_wait();
-            Ok(json!({"status": "shutting_down"}))
-        }
+        Action::PolicyClear => dispatch_policy_clear(&request.params, config),
+        Action::Shutdown => dispatch_shutdown(shutdown),
     }
 }
 
-pub(super) fn dispatch_policy_rule(
-    params: &Value,
-    config: &DaemonConfig,
-    is_allow: bool,
-) -> Result<Value> {
-    let uid = params.get("uid").and_then(Value::as_u64).map(|v| v as u32);
-    let action = require_param_str(params, &["action"])?;
-    let updated = if is_allow {
-        policy::add_allow_rule(&config.state_dir, uid, action)?
-    } else {
-        policy::add_deny_rule(&config.state_dir, uid, action)?
-    };
-    Ok(serde_json::to_value(updated)?)
-}
 #[cfg(test)]
 #[path = "../../../tests/src/daemon/dispatch.rs"]
 mod tests;

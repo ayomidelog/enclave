@@ -1,7 +1,8 @@
 //! The daemon-side workspace request handlers.
 //!
 //! The requests are grouped by what they act on: creating a workspace, driving one
-//! through its lifecycle, changing its definition, and moving data in and out.
+//! through its lifecycle, changing its definition, moving data in and out, and
+//! wiping every workspace on the host.
 
 use super::*;
 use crate::workspace::WorkspaceStatus;
@@ -11,6 +12,7 @@ mod create;
 mod definition;
 mod lifecycle;
 mod transfer;
+mod wipe;
 
 pub(super) use batch::dispatch_workspace_start_many;
 #[cfg(test)]
@@ -23,3 +25,4 @@ pub(super) use lifecycle::dispatch_workspace_target;
 pub(super) use transfer::{
     dispatch_workspace_cp, dispatch_workspace_exec, dispatch_workspace_logs,
 };
+pub(super) use wipe::dispatch_workspace_wipe;

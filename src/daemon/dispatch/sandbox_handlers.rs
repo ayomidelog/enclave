@@ -256,3 +256,19 @@ pub(super) fn dispatch_sandbox_wipe(
     }
     Ok(serde_json::to_value(report)?)
 }
+
+pub(super) fn dispatch_sandbox_list(config: &DaemonConfig) -> Result<Value> {
+    let sandboxes = sandbox::list_sandbox_items(&config.state_dir)?;
+    Ok(serde_json::to_value(sandboxes)?)
+}
+
+pub(super) fn dispatch_sandbox_remove(params: &Value, config: &DaemonConfig) -> Result<Value> {
+    let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let previous_state = sandbox_state_before(&config.state_dir, selector);
+    let removed = sandbox::destroy_sandbox(&config.state_dir, selector)?;
+    Ok(with_transition(
+        json!({ "removed": removed }),
+        previous_state,
+        ABSENT,
+    ))
+}
