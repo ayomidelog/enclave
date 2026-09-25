@@ -64,6 +64,14 @@ impl AuthManager {
             );
         }
 
+        // The destination is inside the workspace's own mount namespace, where `/run`
+        // is a tmpfs the session mounted for this start. The files are therefore
+        // always absent when this runs, and rewriting them unconditionally is not the
+        // waste it looks like: measured on this host the whole phase is 216 us with
+        // three providers configured, because a write to that tmpfs never reaches a
+        // disk. Skipping an unchanged write was tried and removed again, because it
+        // saves nothing here and the reconcile it needs is more code than the
+        // remove-then-write it replaced.
         let auth_dir = rootfs.join("run/enclave/auth");
         fs::create_dir_all(&auth_dir)
             .with_context(|| format!("failed to create {}", auth_dir.display()))?;

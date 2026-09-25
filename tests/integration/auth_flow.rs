@@ -143,3 +143,92 @@ fn workspace_start_writes_declared_auth_token_file() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+
+/// A credential the workspace no longer declares must be removed, not left behind.
+///
+/// Skipping an unchanged write is only safe if the reconcile still removes what is
+/// no longer wanted. A token file left in place after the provider was dropped is a
+/// credential the workspace should not still hold, so this pins the other half of
+/// the same change.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn a_dropped_provider_token_is_removed_on_restart() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-auth-dropped");
+    prepare_cached_rootfs(&state, "bookworm");
+    let manager = AuthManager::new(&state);
+    manager
+        .store_token("github", "ghp_dropped_token")
+        .expect("store github token");
+    manager
+        .store_token("enclave", "enc_kept_token")
+        .expect("store enclave token");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-auth-dropped-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    let workspace = enclave::workspace::create_workspace_with_options(
+        &state,
+        &sandbox.id,
+        "dev",
+        enclave::workspace::WorkspaceCreateOptions {
+            limits: WorkspaceLimits::default(),
+            auth_providers: vec!["github".to_string(), "enclave".to_string()],
+            ..enclave::workspace::WorkspaceCreateOptions::default()
+        },
+    )
+    .expect("create workspace");
+
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let pid = started.runtime_pid.expect("runtime pid");
+    let auth_dir = Path::new("/proc")
+        .join(pid.to_string())
+        .join("root/run/enclave/auth");
+    assert!(auth_dir.join("github.token").exists());
+    assert!(auth_dir.join("enclave.token").exists());
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+
+    // Drop github, keeping enclave, and start again.
+    enclave::registry::with_registry_mut(&state, |registry| {
+        let workspace = registry
+            .sandboxes
+            .get_mut(&sandbox.id)
+            .and_then(|sandbox| sandbox.workspaces.get_mut(&workspace.id))
+            .expect("workspace record");
+        workspace.auth_providers = vec!["enclave".to_string()];
+        Ok(())
+    })
+    .expect("drop the github provider");
+
+    let restarted =
+        start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace again");
+    let pid = restarted.runtime_pid.expect("runtime pid");
+    let auth_dir = Path::new("/proc")
+        .join(pid.to_string())
+        .join("root/run/enclave/auth");
+    assert!(
+        !auth_dir.join("github.token").exists(),
+        "the token for a provider the workspace no longer declares is still there"
+    );
+    assert_eq!(
+        fs::read_to_string(auth_dir.join("enclave.token")).expect("read the kept token"),
+        "enc_kept_token"
+    );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
