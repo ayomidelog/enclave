@@ -1,6 +1,16 @@
+//! Running commands inside a workspace.
+//!
+//! A command is executed by a helper that enters the workspace's namespaces, so
+//! the module is split by how the helper is driven: the daemon-side entry point
+//! resolves the workspace, runs the command, and records it; the arguments module
+//! builds the helper's argument lists; and the detached module launches a
+//! long-running command without keeping the request open.
+
+mod args;
+mod detached;
+
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
-use std::thread;
+use std::process::{Child, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -12,6 +22,12 @@ use super::control::resolve_workspace_id;
 use super::logs;
 use super::session;
 use super::types::{WorkspaceExecResult, WorkspaceMetadata};
+
+#[cfg(test)]
+pub(crate) use args::runtime_exec_command_args;
+#[cfg(test)]
+pub(crate) use args::workspace_file_receive_args;
+pub(crate) use detached::spawn_workspace_command_detached;
 
 pub fn exec_workspace_command(
     state_dir: &Path,
@@ -134,8 +150,8 @@ pub(crate) fn spawn_workspace_command(
         crate::workspace::session::duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
     let fds = crate::workspace::session::raw_fds(&namespace_fds);
     crate::perf::record_process_spawn();
-    Command::new(&current_exe)
-        .args(runtime_exec_command_args_with_fds(
+    std::process::Command::new(&current_exe)
+        .args(args::runtime_exec_command_args_with_fds(
             runtime_pid,
             runtime_starttime_ticks,
             workspace.sandbox_id.as_str(),
@@ -149,29 +165,6 @@ pub(crate) fn spawn_workspace_command(
         .stderr(stderr)
         .spawn()
         .context("failed to execute workspace command via internal helper")
-}
-
-/// Launch a long-running command without keeping the daemon request open.
-/// The helper wrapper is attached to the workspace cgroup before it forks the
-/// command, so descendants follow the workspace lifecycle.
-pub(crate) fn spawn_workspace_command_detached(
-    workspace: &WorkspaceMetadata,
-    cwd: &str,
-    command: &[String],
-) -> Result<()> {
-    let child = spawn_workspace_command(
-        workspace,
-        cwd,
-        command,
-        Stdio::null(),
-        Stdio::null(),
-        Stdio::null(),
-    )?;
-    thread::spawn(move || {
-        let mut child = child;
-        let _ = child.wait();
-    });
-    Ok(())
 }
 
 pub(crate) fn spawn_workspace_file_receiver(
@@ -200,14 +193,14 @@ pub(crate) fn spawn_workspace_file_receiver(
         crate::workspace::session::duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
     let fds = crate::workspace::session::raw_fds(&namespace_fds);
     crate::perf::record_process_spawn();
-    let args = workspace_file_receive_args(
+    let args = args::workspace_file_receive_args(
         runtime_pid,
         runtime_starttime_ticks,
         target,
         super::existing_workspace_cgroup_path(&workspace.sandbox_id, &workspace.id).as_deref(),
         fds,
     );
-    Command::new(current_exe)
+    std::process::Command::new(current_exe)
         .args(args)
         .stdin(stdin)
         .stdout(Stdio::null())
@@ -216,121 +209,6 @@ pub(crate) fn spawn_workspace_file_receiver(
         .context("failed to execute workspace file receiver")
 }
 
-/// Arguments for the helper that writes transferred data into a workspace.
-fn workspace_file_receive_args(
-    runtime_pid: u32,
-    runtime_starttime_ticks: u64,
-    target: &str,
-    cgroup_path: Option<&str>,
-    fds: [std::os::fd::RawFd; 6],
-) -> Vec<String> {
-    let mut args = vec![
-        "internal".to_string(),
-        "workspace-file-receive".to_string(),
-        "--runtime-pid".to_string(),
-        runtime_pid.to_string(),
-        "--runtime-starttime-ticks".to_string(),
-        runtime_starttime_ticks.to_string(),
-        "--target".to_string(),
-        target.to_string(),
-    ];
-    if let Some(cgroup_path) = cgroup_path {
-        args.push("--cgroup-path".to_string());
-        args.push(cgroup_path.to_string());
-    }
-    append_namespace_fd_args(&mut args, fds);
-    args
-}
-
 #[cfg(test)]
-fn runtime_exec_command_args(
-    runtime_pid: u32,
-    runtime_starttime_ticks: u64,
-    sandbox_id: &str,
-    workspace_id: &str,
-    effective_cwd: &str,
-    command: &[String],
-) -> Vec<String> {
-    runtime_exec_command_args_base(
-        runtime_pid,
-        runtime_starttime_ticks,
-        sandbox_id,
-        workspace_id,
-        effective_cwd,
-        command,
-        None,
-    )
-}
-
-fn runtime_exec_command_args_with_fds(
-    runtime_pid: u32,
-    runtime_starttime_ticks: u64,
-    sandbox_id: &str,
-    workspace_id: &str,
-    effective_cwd: &str,
-    command: &[String],
-    fds: [std::os::fd::RawFd; 6],
-) -> Vec<String> {
-    runtime_exec_command_args_base(
-        runtime_pid,
-        runtime_starttime_ticks,
-        sandbox_id,
-        workspace_id,
-        effective_cwd,
-        command,
-        Some(fds),
-    )
-}
-
-fn runtime_exec_command_args_base(
-    runtime_pid: u32,
-    runtime_starttime_ticks: u64,
-    sandbox_id: &str,
-    workspace_id: &str,
-    effective_cwd: &str,
-    command: &[String],
-    fds: Option<[std::os::fd::RawFd; 6]>,
-) -> Vec<String> {
-    let mut args = vec![
-        "internal".to_string(),
-        "workspace-command".to_string(),
-        "--runtime-pid".to_string(),
-        runtime_pid.to_string(),
-        "--runtime-starttime-ticks".to_string(),
-        runtime_starttime_ticks.to_string(),
-        "--cwd".to_string(),
-        effective_cwd.to_string(),
-        "--sandbox-id".to_string(),
-        sandbox_id.to_string(),
-        "--workspace-id".to_string(),
-        workspace_id.to_string(),
-        "--cgroup-path".to_string(),
-        super::workspace_cgroup_path(sandbox_id, workspace_id)
-            .to_string_lossy()
-            .into_owned(),
-    ];
-    if let Some(fds) = fds {
-        append_namespace_fd_args(&mut args, fds);
-    }
-    args.push("--".to_string());
-    args.extend(command.iter().cloned());
-    args
-}
-
-fn append_namespace_fd_args(args: &mut Vec<String>, fds: [std::os::fd::RawFd; 6]) {
-    for (name, fd) in [
-        ("--root-fd", fds[0]),
-        ("--user-ns-fd", fds[1]),
-        ("--mount-ns-fd", fds[2]),
-        ("--pid-ns-fd", fds[3]),
-        ("--net-ns-fd", fds[4]),
-        ("--uts-ns-fd", fds[5]),
-    ] {
-        args.push(name.to_string());
-        args.push(fd.to_string());
-    }
-}
-
-#[cfg(test)]
-#[path = "../../tests/src/workspace/exec.rs"]
+#[path = "../../../tests/src/workspace/exec.rs"]
 mod tests;
