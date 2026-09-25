@@ -58,6 +58,29 @@ ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 \
 The benchmark copies the local cached rootfs into temporary state and never
 downloads bootstrap packages. Set `ENCLAVE_LIVE_ROOTFS` to use another cache.
 
+Run the quota-backed lifecycle benchmark, which measures the tier whose storage
+is an ext4 image on a loop device rather than a directory:
+
+```bash
+./tools/perf/live-quota.sh
+```
+
+Run the pause/resume lifecycle benchmark, which measures the tier that keeps the
+runtime alive rather than releasing it:
+
+```bash
+./tools/perf/live-pause.sh
+```
+
+It reports the pause and resume times and proves the tier's two claims: the
+counter a workspace is incrementing does not move while the sandbox is paused,
+and it continues afterwards, which is what makes the run a resume rather than a
+restart. It also checks that the runtime pid is the same on both sides.
+
+The three suites are separate files because each measures a different lifecycle
+tier on a different code path. Publishing one number for all of them would invite
+reading a change in one as a change in another.
+
 Generate deterministic transfer fixtures with:
 
 ```bash
