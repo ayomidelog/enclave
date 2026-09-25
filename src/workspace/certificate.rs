@@ -46,9 +46,34 @@ pub struct WorkspaceCleanupCertificate {
     pub files_removed: Option<bool>,
     #[serde(default)]
     pub failures: Vec<CleanupFailure>,
+    /// What the workspace owned before its teardown ran.
+    ///
+    /// The per-resource flags above say which checks passed. This says what the
+    /// checks were run against, so an operator can see the inventory a cleanup
+    /// started from and the report can prove the diff is empty rather than only
+    /// that each named check succeeded.
+    #[serde(default)]
+    pub inventory: Option<super::inventory::ResourceInventory>,
 }
 
 impl WorkspaceCleanupCertificate {
+    /// Record the inventory the teardown started from, and fail for every resource
+    /// that is still on the host.
+    ///
+    /// This is the check that turns "the cleanup calls returned success" into
+    /// "the resources are gone". A resource that survives is named by kind and
+    /// identity, so the report is actionable rather than a count.
+    pub fn with_inventory(mut self, inventory: super::inventory::ResourceInventory) -> Self {
+        for resource in inventory.surviving() {
+            self.failures.push(CleanupFailure {
+                resource: resource.kind().as_str().to_string(),
+                detail: format!("{} was not released", resource.describe()),
+            });
+        }
+        self.inventory = Some(inventory);
+        self
+    }
+
     /// Record the outcome of the caller's own port release step.
     pub fn with_ports_released(mut self, released: bool) -> Self {
         self.ports_released = Some(released);
@@ -175,6 +200,7 @@ pub(crate) fn verify_workspace_cleanup(
         ports_released: None,
         files_removed: None,
         failures: Vec::new(),
+        inventory: None,
     };
 
     if let Some((pid, starttime)) = workspace.runtime_pid.zip(workspace.runtime_starttime_ticks) {

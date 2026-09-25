@@ -1,4 +1,90 @@
 use super::*;
+
+fn fixture_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "enclave-certificate-{name}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create fixture dir");
+    dir
+}
+
+#[test]
+fn an_inventory_with_nothing_surviving_adds_no_failure() {
+    // The inventory is the evidence a cleanup started from. When everything it
+    // recorded is gone, it must not turn a complete certificate into an
+    // incomplete one.
+    let dir = fixture_dir("released");
+    let inventory = crate::workspace::ResourceInventory {
+        workspace_id: "ws-1".to_string(),
+        resources: Vec::new(),
+    };
+    let certificate = WorkspaceCleanupCertificate {
+        workspace_id: "ws-1".to_string(),
+        runtime_exited: true,
+        cgroup_absent: true,
+        mounts_absent: true,
+        loop_device_absent: true,
+        runtime_files_removed: true,
+        network_complete: Some(true),
+        ports_released: Some(true),
+        files_removed: Some(true),
+        failures: Vec::new(),
+        inventory: None,
+    }
+    .with_inventory(inventory);
+    assert!(
+        certificate.is_complete(),
+        "{}",
+        certificate.failure_summary()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_surviving_inventory_resource_makes_the_certificate_incomplete() {
+    // This is the check that turns "the cleanup calls returned success" into "the
+    // resources are gone". A marker file that is still there is a resource that
+    // was not released, and the certificate has to say so by name.
+    let dir = fixture_dir("surviving");
+    let leftover = dir.join("session.pid");
+    std::fs::write(&leftover, "1234\n").expect("write the leftover marker");
+    let inventory = crate::workspace::ResourceInventory {
+        workspace_id: "ws-1".to_string(),
+        resources: vec![crate::workspace::ResourceIdentity::Path {
+            path: leftover.clone(),
+        }],
+    };
+
+    let certificate = WorkspaceCleanupCertificate {
+        workspace_id: "ws-1".to_string(),
+        runtime_exited: true,
+        cgroup_absent: true,
+        mounts_absent: true,
+        loop_device_absent: true,
+        runtime_files_removed: true,
+        network_complete: Some(true),
+        ports_released: Some(true),
+        files_removed: Some(true),
+        failures: Vec::new(),
+        inventory: None,
+    }
+    .with_inventory(inventory);
+
+    assert!(!certificate.is_complete());
+    let summary = certificate.failure_summary();
+    assert!(summary.contains("path"), "{summary}");
+    assert!(
+        summary.contains(&leftover.display().to_string()),
+        "the surviving resource must be named: {summary}"
+    );
+    // The inventory is retained on the certificate so a report can show what the
+    // cleanup started from, not only what it failed to release.
+    assert_eq!(certificate.inventory.expect("inventory").resources.len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
 use std::fs;
 
 use crate::network::NetworkCleanupReport;

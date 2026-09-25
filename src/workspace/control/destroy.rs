@@ -88,6 +88,10 @@ pub fn destroy_workspace_with_mode(
         format!("{}/{}", sandbox.id, workspace_id),
     )?;
     journal.phase("cleanup")?;
+    // Take the inventory before anything is released: it is the list of what this
+    // workspace owned, and it is what the certificate re-checks afterwards to
+    // prove the diff is empty rather than only that the calls succeeded.
+    let inventory = crate::workspace::ResourceInventory::collect(&sandbox.id, &workspace);
     let outcome = match cleanup::cleanup_workspace_artifacts(&sandbox, &workspace, mode) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -116,7 +120,8 @@ pub fn destroy_workspace_with_mode(
         .retained
         .iter()
         .any(|retained| retained.resource == "network");
-    let certificate = crate::workspace::verify_workspace_destroyed(&workspace, network_complete);
+    let certificate = crate::workspace::verify_workspace_destroyed(&workspace, network_complete)
+        .with_inventory(inventory);
     if !mode.is_force() && !certificate.is_complete() {
         let _ = journal.fail(format!(
             "destroy verification failed: {}",

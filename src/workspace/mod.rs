@@ -5,6 +5,7 @@ mod cp;
 mod create;
 mod cwd;
 mod exec;
+mod inventory;
 mod logs;
 mod orphans;
 mod ports;
@@ -44,6 +45,7 @@ pub(crate) use cp::CopyOptions;
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
 pub use exec::exec_workspace_command;
 pub(crate) use exec::spawn_workspace_command_detached;
+pub use inventory::{ResourceIdentity, ResourceInventory, ResourceKind};
 pub use logs::workspace_logs;
 pub use orphans::{find_orphan_runtime, OrphanRuntime};
 pub use ports::{
@@ -72,6 +74,10 @@ pub use types::{
 pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) -> bool {
     session::process_matches(pid, expected_starttime_ticks)
 }
+
+/// The session module's path and process helpers, for the inventory and its tests.
+#[cfg(test)]
+pub(crate) use session as session_for_tests;
 
 pub(crate) use cwd::sanitize_workspace_cwd;
 #[cfg(test)]

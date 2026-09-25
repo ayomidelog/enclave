@@ -40,6 +40,10 @@ pub fn stop_workspace_with_certificate(
         "workspace.stop",
         format!("{}/{}", sandbox_id, workspace_id),
     )?;
+    // Take the inventory before the runtime is signalled: it is the list of what
+    // this workspace owned, and the certificate re-checks it afterwards so a stop
+    // proves the resources are gone rather than only that the calls returned.
+    let inventory = crate::workspace::ResourceInventory::collect(&sandbox_id, &current);
     journal.phase("stop_runtime")?;
     // Record the in-flight transition so an observer sees that teardown is
     // underway, and so a crash mid-stop leaves evidence instead of a workspace
@@ -75,7 +79,7 @@ pub fn stop_workspace_with_certificate(
                 workspace_id
             );
         }
-        let certificate = set_workspace_stopped(sandbox, &workspace_id)?;
+        let certificate = set_workspace_stopped(sandbox, &workspace_id)?.with_inventory(inventory);
         let result = sandbox
             .workspaces
             .get(&workspace_id)
