@@ -1,5 +1,6 @@
 use super::*;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn workspace_name_validation_rejects_dots() {
