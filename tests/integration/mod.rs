@@ -1,6 +1,8 @@
 mod auth_flow;
 mod cgroup_cleanup;
 mod cgroup_limits;
+mod cleanup_safety;
+mod detached_commands;
 mod disk_lifecycle;
 mod lifecycle;
 mod network_rules;
