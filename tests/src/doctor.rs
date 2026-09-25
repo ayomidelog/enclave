@@ -101,10 +101,42 @@ fn operation_journal_check_reports_unfinished_and_malformed_records() {
     std::fs::write(state_dir.join("operations").join("broken.json"), b"{broken")
         .expect("write malformed journal");
 
-    let check = check_operation_journal(&state_dir);
+    let check = check_operation_journal(&state_dir, &std::collections::BTreeSet::new());
     assert_eq!(check.status, "warn");
     assert!(check.detail.contains("unfinished"));
     assert!(check.detail.contains("malformed"));
+    std::fs::remove_dir_all(state_dir).expect("remove journal fixture");
+}
+
+#[test]
+fn operation_journal_check_does_not_report_a_running_operation() {
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-doctor-journal-running-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(state_dir.join("operations")).expect("create journal fixture");
+    let mut record = crate::operation::OperationRecord::new("workspace.start", "sb/ws");
+    record.begin("launch_runtime");
+    std::fs::write(
+        state_dir
+            .join("operations")
+            .join(format!("{}.json", record.id)),
+        serde_json::to_vec(&record).expect("serialize journal fixture"),
+    )
+    .expect("write open journal");
+
+    // The record is open, but the daemon says that operation is running right
+    // now, so it is expected rather than a finding.
+    let running = std::collections::BTreeSet::from([record.id.clone()]);
+    let check = check_operation_journal(&state_dir, &running);
+    assert_eq!(check.status, "ok", "{}", check.detail);
+
+    // With no daemon to vouch for it, the same record is an interrupted
+    // operation and is reported.
+    let check = check_operation_journal(&state_dir, &std::collections::BTreeSet::new());
+    assert_eq!(check.status, "warn");
+    assert!(check.detail.contains(&record.id), "{}", check.detail);
     std::fs::remove_dir_all(state_dir).expect("remove journal fixture");
 }
 

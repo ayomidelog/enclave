@@ -104,9 +104,15 @@ pub(crate) fn dispatch(
             "metrics": crate::perf::metrics(),
         })),
         Action::DaemonDoctor => {
-            // The daemon owns the port publisher, so this is the one caller that
-            // can report a published listener no running workspace is using.
-            let report = crate::doctor::run_doctor(&config.state_dir, Some(port_publisher))?;
+            // The daemon owns the port publisher and the running operations, so
+            // this is the one caller that can report a published listener no
+            // running workspace is using and tell a live operation apart from one
+            // whose daemon died.
+            let daemon = crate::doctor::DaemonState {
+                port_publisher,
+                active_operations: services.active_operations.as_ref(),
+            };
+            let report = crate::doctor::run_doctor(&config.state_dir, Some(&daemon))?;
             Ok(serde_json::to_value(report)?)
         }
         Action::DaemonDoctorRepair => {

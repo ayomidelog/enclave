@@ -5,7 +5,17 @@ use crate::operation::OperationStatus;
 
 use super::DoctorCheck;
 
-pub(crate) fn check_operation_journal(state_dir: &Path) -> DoctorCheck {
+/// Report records that are open without an operation behind them.
+///
+/// A record is written before its operation starts and closed when it finishes,
+/// so an open record normally means the operation is running right now. That is
+/// not a finding: `running` names the ids the daemon is currently executing, and
+/// those are expected to be open. What is left over is an operation whose daemon
+/// died before it could write its outcome, which is what this reports.
+pub(crate) fn check_operation_journal(
+    state_dir: &Path,
+    running: &std::collections::BTreeSet<String>,
+) -> DoctorCheck {
     let name = "operation_journal";
     let root = state_dir.join("operations");
     let entries = match fs::read_dir(&root) {
@@ -38,7 +48,9 @@ pub(crate) fn check_operation_journal(state_dir: &Path) -> DoctorCheck {
                     OperationStatus::Planned | OperationStatus::Running
                 ) =>
             {
-                unfinished.push(format!("{} {} ({})", record.id, record.kind, record.target));
+                if !running.contains(&record.id) {
+                    unfinished.push(format!("{} {} ({})", record.id, record.kind, record.target));
+                }
             }
             Some(_) => {}
             None => malformed += 1,

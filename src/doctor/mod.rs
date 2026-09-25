@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -58,15 +59,30 @@ impl DoctorCheck {
         }
     }
 }
-/// Run every check, including the ones that need the daemon's own state.
+/// The state only the running daemon can answer for.
 ///
-/// The port publisher is the only resource Enclave owns that no file records, so
-/// the check for it can only run where the publisher lives. A caller without one
-/// gets every other check rather than a report that looks complete and is not.
-pub fn run_doctor(
-    state_dir: &Path,
-    publisher: Option<&crate::network::publish::PortPublisher>,
-) -> Result<DoctorReport> {
+/// Two of the checks cannot be answered from the filesystem. Published ports are
+/// held by threads inside the daemon, and an operation whose journal record is
+/// still open may simply be running right now. Both live in the daemon's memory,
+/// so a caller that has no daemon gets the filesystem checks rather than a report
+/// that looks complete and is not.
+pub struct DaemonState<'a> {
+    pub port_publisher: &'a crate::network::publish::PortPublisher,
+    pub active_operations: &'a crate::daemon::active_operations::ActiveOperations,
+}
+
+/// Run every check, including the ones that need the daemon's own state.
+pub fn run_doctor(state_dir: &Path, daemon: Option<&DaemonState<'_>>) -> Result<DoctorReport> {
+    let running = daemon
+        .map(|daemon| {
+            daemon
+                .active_operations
+                .in_flight()
+                .into_iter()
+                .map(|operation| operation.id)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     let mut checks = vec![
         registry::check_registry_consistency(state_dir),
         mounts::check_orphaned_mounts(state_dir),
@@ -79,11 +95,14 @@ pub fn run_doctor(
         runtime::check_stale_runtime_state(state_dir),
         runtime::check_workspace_tmp_integrity(state_dir),
         runtime::check_workspace_storage(state_dir),
-        journal::check_operation_journal(state_dir),
+        journal::check_operation_journal(state_dir, &running),
         capabilities::check_cgroup_v2_availability(),
     ];
-    if let Some(publisher) = publisher {
-        checks.push(ports::check_published_ports(state_dir, publisher));
+    if let Some(daemon) = daemon {
+        checks.push(ports::check_published_ports(
+            state_dir,
+            daemon.port_publisher,
+        ));
     }
 
     let all_ok = checks.iter().all(|c| c.status == "ok");

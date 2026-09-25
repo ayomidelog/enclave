@@ -13,7 +13,7 @@
 //! - `active_operations` records the operations running right now.
 //! - `ports` re-establishes the published ports of a running workspace.
 
-mod active_operations;
+pub(crate) mod active_operations;
 mod dispatch;
 mod leases;
 mod ports;
@@ -67,6 +67,29 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     shutdown::install_signal_handlers()?;
     let _state_lock = state_lock::acquire_state_lock(&config.state_dir, &config.socket_path)?;
     sandbox::init_storage(&config.state_dir)?;
+    // Every open journal record at this point belongs to a previous daemon: the
+    // state lock above proved no other daemon is running, and this one has not
+    // served a request yet. The storage init reconciled the targets it could, so
+    // the records are closed here with that outcome. Without this the journal
+    // keeps every interrupted operation open forever, and doctor reports each
+    // one as unfinished on every run.
+    match crate::operation::close_unfinished_records(
+        &config.state_dir,
+        "interrupted by a daemon restart; the target state was reconciled at startup",
+    ) {
+        Ok(closed) if !closed.is_empty() => {
+            tracing::warn!(
+                "closed {} operation journal record(s) left open by a previous daemon: {}",
+                closed.len(),
+                closed.join(", ")
+            );
+        }
+        Ok(_) => {}
+        // A journal that cannot be updated is worth reporting but not worth
+        // refusing to start over: the daemon can still serve, and doctor will
+        // name the records that stayed open.
+        Err(error) => tracing::warn!("failed to close unfinished operation records: {error:#}"),
+    }
     policy::ensure_policy(&config.state_dir)?;
     socket::prepare_runtime_paths(&config.socket_path, &config.pid_file)?;
     let services = services::DaemonServices {

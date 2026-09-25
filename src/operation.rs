@@ -164,11 +164,64 @@ impl Journal {
     }
 
     fn persist(&self, durability: Durability) -> Result<()> {
-        let path = self.root.join(format!("{}.json", self.record.id));
-        let data = serde_json::to_vec_pretty(&self.record)?;
-        crate::fsutil::write_file_atomic_with(&path, &data, 0o600, durability)
-            .with_context(|| format!("failed to persist operation journal {}", path.display()))
+        persist_record(&self.root, &self.record, durability)
     }
+}
+
+fn persist_record(root: &Path, record: &OperationRecord, durability: Durability) -> Result<()> {
+    let path = root.join(format!("{}.json", record.id));
+    let data = serde_json::to_vec_pretty(record)?;
+    crate::fsutil::write_file_atomic_with(&path, &data, 0o600, durability)
+        .with_context(|| format!("failed to persist operation journal {}", path.display()))
+}
+
+/// Close every record that is still open, recording `reason` as its outcome.
+///
+/// An operation whose daemon died never writes its own outcome, because the
+/// process that would have written it is gone. The record then stays `planned`
+/// or `running` forever, so the journal becomes a growing list of operations
+/// that look like they are still in flight, and doctor reports each one on every
+/// run.
+///
+/// The daemon calls this once at startup, before it serves a request. At that
+/// moment nothing can be in flight, so every open record belongs to a previous
+/// daemon and its outcome is knowable: it was interrupted. The caller reconciles
+/// the targets' actual state first, so the reason it passes describes what
+/// recovery did rather than only that something stopped.
+pub fn close_unfinished_records(state_dir: &Path, reason: &str) -> Result<Vec<String>> {
+    let root = state_dir.join("operations");
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read operation journal {}", root.display()))
+        }
+    };
+
+    let mut closed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        // A record that cannot be read or parsed is a separate finding that
+        // doctor reports; it is not a reason to stop closing the others.
+        let Ok(raw) = fs::read(&path) else { continue };
+        let Ok(mut record) = serde_json::from_slice::<OperationRecord>(&raw) else {
+            continue;
+        };
+        if !matches!(
+            record.status,
+            OperationStatus::Planned | OperationStatus::Running
+        ) {
+            continue;
+        }
+        record.fail(reason);
+        persist_record(&root, &record, Durability::Required)?;
+        closed.push(record.id);
+    }
+    Ok(closed)
 }
 
 pub fn load(state_dir: &Path, id: &str) -> Result<OperationRecord> {

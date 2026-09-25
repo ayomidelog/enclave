@@ -144,3 +144,71 @@ fn only_a_uuid_shaped_id_is_accepted() {
     assert!(!is_valid_id("not-an-id"));
     assert!(!is_valid_id(""));
 }
+
+/// A record left open by a daemon that died is closed by the next daemon.
+///
+/// Without this, the record stays open forever and every later doctor run reports
+/// it as unfinished, which is what makes the journal grow into a list of
+/// operations that look permanently in flight.
+#[test]
+fn closing_unfinished_records_closes_every_open_one() {
+    let state =
+        std::env::temp_dir().join(format!("enclave-operation-close-{}", uuid::Uuid::new_v4()));
+
+    let open = Journal::begin(&state, "workspace.start", "sb/open").expect("begin open journal");
+    let open_id = open.id().to_string();
+    let finished = Journal::begin(&state, "workspace.stop", "sb/done").expect("begin finished");
+    let finished_id = finished.id().to_string();
+    finished.succeed().expect("finish journal");
+
+    let closed = close_unfinished_records(&state, "interrupted by a daemon restart")
+        .expect("close unfinished records");
+    assert_eq!(closed, vec![open_id.clone()]);
+
+    let record = load(&state, &open_id).expect("read closed record");
+    assert_eq!(record.status, OperationStatus::Failed);
+    assert_eq!(
+        record.error.as_deref(),
+        Some("interrupted by a daemon restart")
+    );
+
+    // A record that already reached a terminal state keeps its own outcome.
+    let record = load(&state, &finished_id).expect("read finished record");
+    assert_eq!(record.status, OperationStatus::Succeeded);
+
+    // A second pass finds nothing to do.
+    let closed = close_unfinished_records(&state, "interrupted by a daemon restart")
+        .expect("close unfinished records again");
+    assert!(closed.is_empty());
+
+    fs::remove_dir_all(state).expect("remove journal fixture");
+}
+
+/// Closing is not blocked by a record that cannot be read.
+#[test]
+fn closing_unfinished_records_skips_malformed_files() {
+    let state = std::env::temp_dir().join(format!(
+        "enclave-operation-close-malformed-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let open = Journal::begin(&state, "workspace.start", "sb/open").expect("begin open journal");
+    let open_id = open.id().to_string();
+    fs::write(state.join("operations").join("broken.json"), b"{ not json")
+        .expect("write malformed record");
+
+    let closed = close_unfinished_records(&state, "interrupted").expect("close unfinished records");
+    assert_eq!(closed, vec![open_id]);
+
+    fs::remove_dir_all(state).expect("remove journal fixture");
+}
+
+/// A state directory with no journal is not an error.
+#[test]
+fn closing_unfinished_records_on_an_empty_state_dir_is_a_no_op() {
+    let state = std::env::temp_dir().join(format!(
+        "enclave-operation-close-empty-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let closed = close_unfinished_records(&state, "interrupted").expect("close unfinished records");
+    assert!(closed.is_empty());
+}
