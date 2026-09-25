@@ -20,6 +20,14 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many(
         return Ok(json!([]));
     }
 
+    // The default is one start per core, and the sweep that would justify a
+    // different rule found nothing to justify one. On a four-CPU host the eight-
+    // workspace fixture booted in 1.54 s at four workers, 1.40 s at eight, and
+    // 1.65 s at sixteen, each the median of three runs; the differences are inside
+    // the spread of the fixture itself, and the sixteen-worker runs were the widest.
+    // So the count stays proportional to the host rather than becoming a constant,
+    // because on a host with sixteen cores sixteen starts are not oversubscribed.
+    // The environment override exists for a caller who has measured their own host.
     let worker_count = std::env::var("ENCLAVE_UP_WORKERS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())

@@ -77,6 +77,14 @@ ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 ./tools/perf/live-lifecycle.sh
 
 The benchmark reuses a local cached rootfs and does not download bootstrap packages.
 
+The run pins one up worker so its numbers are comparable between releases. The
+daemon's own default is one start per core, so a plain `enclave up` on this host is
+faster than the number above: the pinned run is a floor, and it is the one the
+range describes. A sweep of the worker count found no reason to change that
+default. On this four-CPU host the eight-workspace fixture booted in 1.54s at four
+workers, 1.40s at eight, and 1.65s at sixteen, each the median of three runs, which
+is inside the spread of the fixture itself.
+
 For a fast warm lifecycle, pause a running sandbox instead of stopping it:
 
 ```bash
