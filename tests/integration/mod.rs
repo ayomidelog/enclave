@@ -4,6 +4,7 @@ mod cgroup_failure;
 mod cgroup_limits;
 mod cleanup_safety;
 mod concurrency;
+mod concurrent_ops;
 mod destroy_contract;
 mod detached_commands;
 mod disk_lifecycle;
