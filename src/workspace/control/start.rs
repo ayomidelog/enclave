@@ -86,6 +86,15 @@ pub fn start_workspace_with_security(
                 });
             }
         }
+        // The record says the runtime is running, but the process is gone, so
+        // everything the runtime owned is now unowned. The kernel releases the
+        // interface when the network namespace dies with the process, but the
+        // anti-spoofing rules that name it, the cgroup, and the storage mounts
+        // all outlive it. Release them the way a stop would, rather than leaking
+        // them to a later `doctor --repair`: a plain `workspace start` after a
+        // crash is the command an operator runs first, and it must not leave the
+        // host dirtier than it found it.
+        release_dead_runtime_resources(state_dir, &sandbox_id, &workspace_id, &workspace_snapshot)?;
         workspace_snapshot.status = WorkspaceStatus::Stopped;
         workspace_snapshot.runtime_pid = None;
         workspace_snapshot.runtime_starttime_ticks = None;
@@ -213,6 +222,52 @@ pub fn start_workspace_with_security(
             Err(failure)
         }
     }
+}
+
+/// Release the host resources a workspace runtime left behind when it died.
+///
+/// The registry still describes what the dead runtime owned, so the record is
+/// the input: the interface name comes from its address and id, the cgroup from
+/// its pid, and the mounts from its storage paths. The teardown is the same one
+/// a stop runs, and it verifies itself, so a start that cannot release the old
+/// resources fails instead of stacking a second runtime on top of them.
+fn release_dead_runtime_resources(
+    state_dir: &std::path::Path,
+    sandbox_id: &str,
+    workspace_id: &str,
+    workspace_snapshot: &WorkspaceMetadata,
+) -> Result<()> {
+    with_registry_mut(state_dir, |registry| {
+        let sandbox = registry
+            .sandboxes
+            .get_mut(sandbox_id)
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+        let latest = sandbox
+            .workspaces
+            .get(workspace_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
+        // The snapshot was taken before any host work started, so the record has
+        // to still describe the same runtime. A different one means a competing
+        // operation already dealt with it, and this start should be retried
+        // against the new state rather than release resources it does not own.
+        if latest.runtime_pid != workspace_snapshot.runtime_pid
+            || latest.runtime_starttime_ticks != workspace_snapshot.runtime_starttime_ticks
+            || latest.assigned_ip != workspace_snapshot.assigned_ip
+        {
+            bail!(
+                "workspace '{}' changed while its dead runtime was being released; retry",
+                workspace_id
+            );
+        }
+        set_workspace_stopped(sandbox, workspace_id).map(|_| ())
+    })
+    .with_context(|| {
+        format!(
+            "failed to release the resources of the dead runtime of workspace '{}'",
+            workspace_id
+        )
+    })
 }
 
 /// Record that a workspace runtime launch has begun.

@@ -240,3 +240,90 @@ fn workspace_lifecycle_create_start_stop_destroy() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+
+/// Every interface named by an Enclave-owned firewall rule, with its rule count.
+fn enclave_rules_by_interface() -> Option<Vec<(String, usize)>> {
+    let saved = Command::new("iptables-save").output().ok()?;
+    if !saved.status.success() {
+        return None;
+    }
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for line in String::from_utf8_lossy(&saved.stdout).lines() {
+        if !line.contains("enclave:") {
+            continue;
+        }
+        for field in line.split_whitespace() {
+            if field.starts_with("veth-") {
+                *counts.entry(field.to_string()).or_default() += 1;
+            }
+        }
+    }
+    Some(counts.into_iter().collect())
+}
+
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn starting_a_workspace_releases_its_dead_runtime_rules() {
+    if !root_only() {
+        return;
+    }
+    let Some(before) = enclave_rules_by_interface() else {
+        return;
+    };
+
+    let state = state_dir("enclave-int-dead-runtime");
+    prepare_cached_rootfs(&state, "bookworm");
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-dead-runtime-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
+        .expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let runtime_pid = started.runtime_pid.expect("runtime pid") as i32;
+
+    // Kill the runtime the way a crash would, leaving the registry saying the
+    // workspace is still running. The kernel releases the interface with the
+    // namespace, but the rules that name it are Enclave's to remove.
+    unsafe { libc::kill(runtime_pid, libc::SIGKILL) };
+    for _ in 0..50 {
+        if unsafe { libc::kill(runtime_pid, 0) } != 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    start_workspace(&state, &sandbox.id, &workspace.id)
+        .expect("a start must release the dead runtime and succeed");
+
+    let after = enclave_rules_by_interface().expect("read rules after the restart");
+    // Every rule the probe's own run added is keyed by the workspace id hash, so
+    // only interfaces new since the first snapshot belong to this test.
+    let added = after
+        .iter()
+        .filter(|(interface, _)| !before.iter().any(|(known, _)| known == interface))
+        .map(|(interface, _)| interface.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        added.len(),
+        1,
+        "the restarted workspace should own exactly one interface; found {added:?}"
+    );
+    assert!(
+        Path::new("/sys/class/net").join(&added[0]).exists(),
+        "the rule names interface {} which does not exist",
+        added[0]
+    );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
