@@ -96,6 +96,41 @@ The three suites are separate files because each measures a different lifecycle
 tier on a different code path. Publishing one number for all of them would invite
 reading a change in one as a change in another.
 
+Run the loaded lifecycle check, which drives twelve workspaces whose run commands
+are CPU loops, all live at once, inside a sandbox capped at a quarter of the host:
+
+```bash
+./tools/perf/live-loaded.sh
+```
+
+The eight-workspace benchmark measures a sandbox whose workspaces are idle, so its
+number describes the lifecycle request and nothing else. This one measures the same
+lifecycle while every workspace is competing for the sandbox CPU, which is where a
+tail in a start appears and where a control request has to keep answering. It
+publishes the boot, the shutdown, and the stop and start of one workspace taken
+while the other eleven keep running.
+
+It is also a correctness check, and the assertions are made while the load is on:
+each workspace is entered and its /tmp is required to be a linked, writable
+directory of its own, which is the state whose absence made every write inside a
+workspace fail; the two quota-backed workspaces in the fixture are required to
+mount /tmp from their own workspace tmp directory inside their image rather than
+from a fresh tmpfs, so the two storage tiers are told apart; and the teardown is
+required to leave no runtime, no cgroup, no interface, and no bound port behind,
+which is a stronger claim with twelve runtimes to release than with one.
+
+Two numbers make the load a measured quantity rather than an assumption. The
+sandbox cgroup reports how much CPU it actually spent and how often it was
+throttled, and the run refuses to pass if the sandbox was never throttled, which
+would mean the workspaces were not asking for more than they were allowed. The
+whole host reports its busy fraction over the loaded window, so the demand this
+run put on the machine is published next to the result.
+
+The demand is larger than the cap on purpose, which is what makes the run safe to
+take on a host that is doing other work: the workspaces asking for 4.8 CPUs are
+refused rather than served, and the sandbox stays at the one CPU it was given.
+Point ENCLAVE_LOADED_ENCLAVEFILE at another fixture on a host with more cores.
+
 Run the published-port lifecycle check, which drives a workspace with three declared
 ports through start, pause, resume, stop, and destroy and asserts on whether each host
 port can be bound at every step:
