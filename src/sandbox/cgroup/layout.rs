@@ -107,11 +107,21 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // A cgroup that is still draining is not empty for a moment after its last
-    // process leaves, so removal is retried a bounded number of times with
-    // backoff. Each wait is recorded, because a retry that costs a second is the
-    // difference between a fast stop and a slow one.
-    for attempt in 0..3 {
+    // A cgroup that is still draining cannot be removed for a moment after its
+    // last process leaves, so removal is retried a bounded number of times with
+    // backoff. The kernel reports that state two different ways and both are
+    // retryable: `EBUSY` while a process is still listed, and `ENOTEMPTY` while a
+    // child cgroup is. Each wait is recorded, because a retry that costs a second
+    // is the difference between a fast stop and a slow one.
+    //
+    // The window this covers is real rather than theoretical. A command a
+    // workspace ran is reaped by the kernel when the runtime that owned its pid
+    // namespace exits, and the helper that launched it is itself a process in the
+    // workspace cgroup that only exits once its own wait returns, a moment later.
+    // Retrying only `ENOTEMPTY` left that moment as a reported cleanup failure on
+    // a stop that had actually released everything.
+    let mut last_error = None;
+    for attempt in 0..CGROUP_REMOVE_ATTEMPTS {
         match fs::remove_dir(path) {
             Ok(()) => {
                 if path.exists() {
@@ -120,20 +130,14 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
                 return Ok(());
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-                if attempt < 2 {
-                    let delay = Duration::from_millis(10 * (attempt as u64 + 1));
+            Err(err) if cgroup_removal_is_retryable(&err) => {
+                last_error = Some(err);
+                if attempt + 1 < CGROUP_REMOVE_ATTEMPTS {
+                    let delay = Duration::from_millis(10 * (u64::from(attempt) + 1));
                     crate::perf::record_cleanup_retry();
                     crate::perf::record_cleanup_retry_delay(delay.as_micros() as u64);
                     thread::sleep(delay);
-                    continue;
                 }
-                return Err(err).with_context(|| {
-                    format!(
-                        "cgroup {} is not empty; processes or child cgroups remain",
-                        path.display()
-                    )
-                });
             }
             Err(err) => {
                 return Err(err)
@@ -141,7 +145,29 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
             }
         }
     }
-    unreachable!("cgroup removal loop always returns")
+
+    match last_error {
+        Some(err) => Err(err).with_context(|| {
+            format!(
+                "cgroup {} is still busy after {} attempts; processes or child cgroups remain",
+                path.display(),
+                CGROUP_REMOVE_ATTEMPTS
+            )
+        }),
+        None => bail!("cgroup {} could not be removed", path.display()),
+    }
+}
+
+/// How many times a cgroup removal is retried while the cgroup is draining.
+///
+/// The backoff doubles from ten milliseconds, so the whole schedule is a bounded
+/// 150 ms that only a genuinely busy cgroup pays.
+const CGROUP_REMOVE_ATTEMPTS: u32 = 5;
+
+/// Whether the kernel's refusal to remove a cgroup is a state that clears itself.
+fn cgroup_removal_is_retryable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::DirectoryNotEmpty
+        || error.raw_os_error() == Some(libc::EBUSY)
 }
 
 fn ensure_child_cgroup(
