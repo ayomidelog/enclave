@@ -148,8 +148,10 @@ pub fn start_workspace_with_security(
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
 ) -> Result<WorkspaceMetadata> {
+    let resolve = crate::perf::Timer::new("workspace.start.resolve");
     let (sandbox_id, workspace_id, sandbox_snapshot, mut workspace_snapshot) =
         resolve_start_target(state_dir, sandbox_selector, workspace_selector)?;
+    drop(resolve);
 
     // A record that already says `running` is either a live runtime whose
     // namespace references need refreshing, or a dead one whose resources are
@@ -166,6 +168,7 @@ pub fn start_workspace_with_security(
         )?;
     }
 
+    let journal_timer = crate::perf::Timer::new("workspace.start.journal");
     let mut journal = crate::operation::Journal::begin(
         state_dir,
         "workspace.start",
@@ -181,6 +184,7 @@ pub fn start_workspace_with_security(
         let _ = journal.fail(format!("{error:#}"));
         return Err(error);
     }
+    drop(journal_timer);
     journal.phase("launch_runtime")?;
     // Record the in-flight transition durably so a crash during launch is
     // visible to the next daemon start instead of looking like a stopped
@@ -189,6 +193,7 @@ pub fn start_workspace_with_security(
     // at the same time cannot both take the first free one. Reserving it here
     // rather than committing it at the end is what makes the batch start path
     // safe: those workers read the registry before any of them has committed.
+    let registry_timer = crate::perf::Timer::new("workspace.start.reserve");
     let reserved_ip = match mark_workspace_starting(state_dir, &sandbox_id, &workspace_id) {
         Ok(ip) => ip,
         Err(error) => {
@@ -196,6 +201,7 @@ pub fn start_workspace_with_security(
             return Err(error);
         }
     };
+    drop(registry_timer);
     let started = match launch_workspace_runtime(
         state_dir,
         &sandbox_snapshot,
@@ -213,6 +219,7 @@ pub fn start_workspace_with_security(
     };
 
     journal.phase("commit_runtime_metadata")?;
+    let commit_timer = crate::perf::Timer::new("workspace.start.commit");
     let commit = with_registry_mut(state_dir, |registry| {
         let sandbox = registry
             .sandboxes
@@ -252,6 +259,7 @@ pub fn start_workspace_with_security(
             })?;
         Ok(workspace.clone())
     });
+    drop(commit_timer);
 
     match commit {
         Ok(metadata) => {
