@@ -96,6 +96,18 @@ The three suites are separate files because each measures a different lifecycle
 tier on a different code path. Publishing one number for all of them would invite
 reading a change in one as a change in another.
 
+Run the published-port lifecycle check, which drives a workspace with three declared
+ports through start, pause, resume, stop, and destroy and asserts on whether each host
+port can be bound at every step:
+
+```bash
+./tools/perf/live-ports.sh
+```
+
+It is a correctness check rather than a measurement, and it is a live run for the same
+reason the port publisher belongs to the daemon: the workspace layer never binds a
+listener, so the daemon has to be in the loop for the ports to exist at all.
+
 Generate deterministic transfer fixtures with:
 
 ```bash
