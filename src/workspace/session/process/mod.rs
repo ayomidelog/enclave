@@ -4,6 +4,10 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
+mod signal;
+
+pub(super) use signal::{send_signal, verify_signal_target, SignalTarget};
+
 pub fn process_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -152,98 +156,6 @@ pub fn process_starttime_ticks(pid: u32) -> Result<u64> {
     Ok(read_stat(pid)?.starttime_ticks)
 }
 
-pub(super) fn send_signal(pid: u32, signal: i32) -> Result<()> {
-    let rc = unsafe { libc::kill(pid as i32, signal) };
-    if rc == 0 {
-        return Ok(());
-    }
-
-    let err = io::Error::last_os_error();
-    if err.raw_os_error() == Some(libc::ESRCH) {
-        return Ok(());
-    }
-
-    Err(anyhow!(
-        "failed to send signal {} to pid {}: {}",
-        signal,
-        pid,
-        err
-    ))
-}
-
-/// Whether a recorded pid is one this process may signal.
-///
-/// A pid that is alive but is not an Enclave runtime this process owns means the
-/// record that named it is stale, which is a different outcome from the check
-/// itself failing. Callers decide what to do with that, so the distinction is a
-/// type rather than a substring of the message.
-pub(super) enum SignalTarget {
-    /// The pid is an Enclave runtime this process owns.
-    Signallable,
-    /// The pid is not an Enclave runtime this process owns.
-    Stale(StaleTarget),
-}
-
-/// Why a recorded pid is not signallable.
-pub(super) enum StaleTarget {
-    /// The pid belongs to another user.
-    ForeignOwner { owner_uid: u32 },
-    /// The pid exists but its command line is not an Enclave runtime.
-    NotEnclaveProcess,
-}
-
-impl std::fmt::Display for StaleTarget {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ForeignOwner { owner_uid } => write!(formatter, "owned by uid {owner_uid}"),
-            Self::NotEnclaveProcess => write!(formatter, "not an enclave runtime process"),
-        }
-    }
-}
-
-impl SignalTarget {
-    pub(super) fn is_signallable(&self) -> bool {
-        matches!(self, Self::Signallable)
-    }
-}
-
-pub(super) fn verify_signal_target(
-    pid: u32,
-    expected_starttime_ticks: Option<u64>,
-) -> Result<SignalTarget> {
-    if !process_matches(pid, expected_starttime_ticks) {
-        return Ok(SignalTarget::Signallable);
-    }
-
-    let status_path = format!("/proc/{pid}/status");
-    let status = fs::read_to_string(&status_path)
-        .with_context(|| format!("failed to read {}", status_path))?;
-    let uid_line = status
-        .lines()
-        .find(|line| line.starts_with("Uid:"))
-        .ok_or_else(|| anyhow!("missing Uid line in {}", status_path))?;
-    let owner_uid = uid_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow!("failed to parse uid from {}", status_path))?
-        .parse::<u32>()
-        .with_context(|| format!("failed to parse uid in {}", status_path))?;
-    let current_uid = current_euid();
-    if current_uid != 0 && owner_uid != current_uid {
-        return Ok(SignalTarget::Stale(StaleTarget::ForeignOwner { owner_uid }));
-    }
-
-    let cmdline_path = format!("/proc/{pid}/cmdline");
-    let cmdline =
-        fs::read(&cmdline_path).with_context(|| format!("failed to read {}", cmdline_path))?;
-    let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-    if !looks_like_enclave_runtime_cmdline(&cmdline) {
-        return Ok(SignalTarget::Stale(StaleTarget::NotEnclaveProcess));
-    }
-
-    Ok(SignalTarget::Signallable)
-}
-
 pub(crate) fn read_pid_file(path: &Path) -> Result<u32> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
@@ -303,5 +215,5 @@ pub(super) fn workspace_runtime_hostname(name: &str) -> String {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/src/workspace/session/process.rs"]
+#[path = "../../../../tests/src/workspace/session/process.rs"]
 mod tests;

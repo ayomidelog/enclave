@@ -1,5 +1,7 @@
 use super::*;
 
+use super::signal::StaleTarget;
+
 #[test]
 fn hostname_lowercases_name() {
     assert_eq!(workspace_runtime_hostname("MyProject"), "myproject");
