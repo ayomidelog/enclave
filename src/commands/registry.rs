@@ -46,6 +46,25 @@ fn run_registry_repair(socket: &Path, args: RegistryRepairArgs) -> Result<()> {
         }
         eprintln!("stop each runtime, then run this command again to finish the cleanup");
     }
+    // A disagreement between the registry and the per-directory metadata means the
+    // two copies of a workspace's state had diverged, which is what an interrupted
+    // lifecycle step leaves behind. Repair resolved it by adopting the on-disk
+    // copy, so this is a record of what changed rather than a warning: it is
+    // printed so an operator who saw a workspace in an unexpected state can see
+    // that repair was the reason.
+    if !report.metadata_disagreements.is_empty() {
+        println!(
+            "{} record(s) had registry and on-disk metadata that disagreed; the on-disk copy was adopted:",
+            report.metadata_disagreements.len()
+        );
+        for disagreement in &report.metadata_disagreements {
+            let target = match disagreement.workspace_id.as_deref() {
+                Some(workspace) => format!("{}/{}", disagreement.sandbox_id, workspace),
+                None => disagreement.sandbox_id.clone(),
+            };
+            println!("  - {}: {}", target, disagreement.differences.join(", "));
+        }
+    }
     print_operation_id();
     Ok(())
 }

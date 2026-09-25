@@ -15,6 +15,7 @@ use crate::sandbox::SandboxMetadata;
 use crate::workspace::WorkspaceMetadata;
 
 pub(crate) use migrate::{migrate, MigrationStep};
+pub(crate) use repair::workspace_state_differences;
 pub use repair::{repair_registry, RetainedOrphan};
 pub(crate) use storage::{
     load_registry_unlocked, registry_lock_path, save_registry_unlocked, update_cache,
@@ -58,6 +59,29 @@ pub struct RepairReport {
     /// cleaned up.
     #[serde(default)]
     pub retained_orphans: Vec<RetainedOrphan>,
+    /// Records where the registry and the per-directory metadata disagreed about
+    /// lifecycle state, and which copy repair adopted.
+    ///
+    /// Repair adopts the on-disk copy, and that rule is what this list keeps
+    /// honest: without it the adoption is a silent overwrite, and an operator
+    /// looking at a workspace whose state changed unexpectedly has no way to see
+    /// that the two copies had diverged or which one won.
+    #[serde(default)]
+    pub metadata_disagreements: Vec<MetadataDisagreement>,
+}
+
+/// One registry record and its on-disk copy disagreeing about lifecycle state.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MetadataDisagreement {
+    pub sandbox_id: String,
+    /// The workspace the disagreement is about, or nothing for the sandbox's own
+    /// record.
+    pub workspace_id: Option<String>,
+    /// Each field that differed, as field: registry=<value> disk=<value>.
+    pub differences: Vec<String>,
+    /// The copy repair adopted. The on-disk copy always wins, because a lifecycle
+    /// step writes it before it commits the registry record.
+    pub adopted: String,
 }
 
 impl Default for Registry {

@@ -15,11 +15,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::workspace::OrphanRuntime;
+use crate::workspace::WorkspaceMetadata;
 
 use super::storage::{
     load_registry_with_migrations, registry_lock_path, save_registry_unlocked, update_cache,
 };
-use super::{ensure_registry, Registry, RegistrySandbox, RepairReport};
+use super::{ensure_registry, MetadataDisagreement, Registry, RegistrySandbox, RepairReport};
 
 use orphan::remove_stale_creation_staging;
 use scan::scan_on_disk;
@@ -104,6 +105,14 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
 /// registry but not on disk is dropped, and a workspace inside a discovered
 /// sandbox is added or removed to match. The counters record each of those so the
 /// report names what changed rather than only that something did.
+///
+/// When the registry and the per-directory metadata disagree about lifecycle
+/// state, repair adopts the on-disk copy. That is the precedence rule: a lifecycle
+/// step writes the per-directory metadata before it commits the registry record,
+/// so the file is never older than the record it disagrees with, and adopting the
+/// record instead would roll a completed step back. Each disagreement is recorded
+/// rather than overwritten silently, so an operator can see that the two copies
+/// had diverged and which one won.
 fn reconcile(
     registry: &mut Registry,
     discovered: &BTreeMap<String, RegistrySandbox>,
@@ -112,11 +121,38 @@ fn reconcile(
     for (sandbox_id, discovered_sandbox) in discovered {
         match registry.sandboxes.get_mut(sandbox_id) {
             Some(existing) => {
+                let mut sandbox_differences = Vec::new();
+                if existing.metadata.status != discovered_sandbox.metadata.status {
+                    sandbox_differences.push(format!(
+                        "status: registry={} disk={}",
+                        existing.metadata.status.as_str(),
+                        discovered_sandbox.metadata.status.as_str()
+                    ));
+                }
+                if !sandbox_differences.is_empty() {
+                    report.metadata_disagreements.push(MetadataDisagreement {
+                        sandbox_id: sandbox_id.clone(),
+                        workspace_id: None,
+                        differences: sandbox_differences,
+                        adopted: ADOPTED_FROM_DISK.to_string(),
+                    });
+                }
                 existing.metadata = discovered_sandbox.metadata.clone();
 
                 for (workspace_id, workspace) in &discovered_sandbox.workspaces {
-                    if !existing.workspaces.contains_key(workspace_id) {
-                        report.added_workspaces += 1;
+                    match existing.workspaces.get(workspace_id) {
+                        Some(known) => {
+                            let differences = workspace_state_differences(known, workspace);
+                            if !differences.is_empty() {
+                                report.metadata_disagreements.push(MetadataDisagreement {
+                                    sandbox_id: sandbox_id.clone(),
+                                    workspace_id: Some(workspace_id.clone()),
+                                    differences,
+                                    adopted: ADOPTED_FROM_DISK.to_string(),
+                                });
+                            }
+                        }
+                        None => report.added_workspaces += 1,
                     }
                     existing
                         .workspaces
@@ -156,4 +192,49 @@ fn reconcile(
             report.removed_workspaces += removed.workspaces.len();
         }
     }
+}
+
+/// The copy repair adopts when the registry and the per-directory metadata
+/// disagree.
+const ADOPTED_FROM_DISK: &str = "disk";
+
+/// The lifecycle fields where a registry record and its on-disk copy disagree.
+///
+/// Only the fields that describe the runtime are compared. The path fields are
+/// routinely normalized by repair itself, so comparing them would report that
+/// normalization as a disagreement.
+///
+/// Shared with the doctor's read-only check, so a disagreement is described the
+/// same way whether it is being reported or resolved.
+pub(crate) fn workspace_state_differences(
+    known: &WorkspaceMetadata,
+    disk: &WorkspaceMetadata,
+) -> Vec<String> {
+    let mut differences = Vec::new();
+    if known.status != disk.status {
+        differences.push(format!(
+            "status: registry={} disk={}",
+            known.status.as_str(),
+            disk.status.as_str()
+        ));
+    }
+    if known.runtime_pid != disk.runtime_pid {
+        differences.push(format!(
+            "runtime_pid: registry={:?} disk={:?}",
+            known.runtime_pid, disk.runtime_pid
+        ));
+    }
+    if known.runtime_starttime_ticks != disk.runtime_starttime_ticks {
+        differences.push(format!(
+            "runtime_starttime_ticks: registry={:?} disk={:?}",
+            known.runtime_starttime_ticks, disk.runtime_starttime_ticks
+        ));
+    }
+    if known.assigned_ip != disk.assigned_ip {
+        differences.push(format!(
+            "assigned_ip: registry={:?} disk={:?}",
+            known.assigned_ip, disk.assigned_ip
+        ));
+    }
+    differences
 }

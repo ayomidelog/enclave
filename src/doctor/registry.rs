@@ -31,6 +31,35 @@ pub(crate) fn check_registry_consistency(state_dir: &Path) -> DoctorCheck {
                         "workspace '{}' in sandbox '{}' registered but directory missing",
                         workspace_id, sandbox_id
                     ));
+                    continue;
+                }
+                // The registry and the per-directory copy are two records of the
+                // same workspace, and a lifecycle step writes the file before it
+                // commits the registry. When they disagree, the copies have
+                // diverged and repair would adopt the file, so the operator needs
+                // to see it before that happens rather than after.
+                let metadata_path = ws_path.join("workspace.json");
+                let Ok(raw) = fs::read_to_string(&metadata_path) else {
+                    continue;
+                };
+                let Ok(on_disk) = serde_json::from_str::<crate::workspace::WorkspaceMetadata>(&raw)
+                else {
+                    issues.push(format!(
+                        "workspace '{}' in sandbox '{}' has unreadable metadata at {}",
+                        workspace_id,
+                        sandbox_id,
+                        metadata_path.display()
+                    ));
+                    continue;
+                };
+                let differences = crate::registry::workspace_state_differences(workspace, &on_disk);
+                if !differences.is_empty() {
+                    issues.push(format!(
+                        "workspace '{}' in sandbox '{}' disagrees with its on-disk metadata ({})",
+                        workspace_id,
+                        sandbox_id,
+                        differences.join(", ")
+                    ));
                 }
             }
         }
