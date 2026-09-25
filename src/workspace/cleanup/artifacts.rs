@@ -235,6 +235,38 @@ fn workspace_dir_for_cleanup(
     }
 }
 
+/// Remove the workspace directory once more, after its registry record is gone.
+///
+/// A destroy removes the files and then the record, and the two are not one step: the
+/// host work runs outside the registry lock, and the record removal is the last thing
+/// that holds it. An operation that had already resolved this workspace before the
+/// destroy began can therefore persist its own metadata while the destroy is releasing
+/// host state, which recreates the directory after the removal above. Once the record
+/// is gone nothing can resolve the workspace again, so no further write can arrive and
+/// this is the last removal a destroy has to make.
+///
+/// The path is resolved through the same checks the first removal used, so a
+/// concurrent write cannot turn this into a removal of something else.
+pub(crate) fn remove_workspace_directory_after_record_removal(
+    sandbox: &SandboxMetadata,
+    workspace: &WorkspaceMetadata,
+) -> Result<bool> {
+    let Some(workspace_path) = workspace_dir_for_cleanup(sandbox, workspace)? else {
+        return Ok(false);
+    };
+    if !workspace_path.exists() {
+        return Ok(false);
+    }
+    remove_path_if_present(&workspace_path)?;
+    if workspace_path.exists() {
+        bail!(
+            "workspace directory {} was recreated while the destroy ran and could not be removed",
+            workspace_path.display()
+        );
+    }
+    Ok(true)
+}
+
 fn remove_path_if_present(path: &std::path::Path) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {

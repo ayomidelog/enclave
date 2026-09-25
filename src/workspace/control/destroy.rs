@@ -149,6 +149,27 @@ pub fn destroy_workspace_with_mode(
         let _ = journal.fail(format!("{error:#}"));
         return Err(error);
     }
+    // The files were removed before the record was, and removing the record is the last
+    // thing the registry lock is held for. An operation that had already resolved this
+    // workspace before the destroy began can persist its own metadata while the destroy
+    // is releasing host state, which recreates the directory after the removal above and
+    // before the record goes. The record is gone now, so nothing can resolve the workspace
+    // again and no further write can arrive: the directory is removed once more, so the
+    // files are gone at the moment the destroy returns rather than only at the moment the
+    // record was still there. The certificate needs no correction for this, because it
+    // records the files as gone and they are gone again.
+    // Force mode keeps the files whenever anything is still held, because the
+    // directory is the only remaining description of what is running. The removal
+    // below is therefore conditional on the artifact cleanup having removed them:
+    // a destroy that kept its files keeps them.
+    if outcome.files_removed {
+        if let Err(error) =
+            cleanup::remove_workspace_directory_after_record_removal(&sandbox, &workspace)
+        {
+            let _ = journal.fail(format!("{error:#}"));
+            return Err(error);
+        }
+    }
     journal.succeed()?;
 
     Ok(WorkspaceDestroyReport {

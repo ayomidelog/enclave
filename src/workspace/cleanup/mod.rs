@@ -20,7 +20,9 @@ use crate::sandbox::SandboxMetadata;
 
 use super::types::WorkspaceMetadata;
 
-pub(super) use artifacts::cleanup_workspace_artifacts;
+pub(super) use artifacts::{
+    cleanup_workspace_artifacts, remove_workspace_directory_after_record_removal,
+};
 pub(super) use batch::{
     format_network_cleanup_error, run_workspace_stop_cleanup, run_workspace_stop_cleanups,
 };
