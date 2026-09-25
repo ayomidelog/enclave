@@ -31,6 +31,22 @@ fn a_configured_value_replaces_the_default_and_is_marked_as_an_override() {
 }
 
 #[test]
+fn a_timeout_description_names_the_value_the_variable_and_the_ceiling() {
+    let deadline = Deadline::resolve_from(
+        "probe",
+        "ENCLAVE_TEST_DEADLINE",
+        Unit::Milliseconds,
+        Duration::from_millis(500),
+        Duration::from_secs(10),
+        Some("2500"),
+    );
+    let described = deadline.describe_timeout();
+    assert!(described.contains("2.5s"), "{described}");
+    assert!(described.contains("ENCLAVE_TEST_DEADLINE"), "{described}");
+    assert!(described.contains("10s"), "{described}");
+}
+
+#[test]
 fn a_configured_value_is_clamped_to_the_hard_bound() {
     let deadline = Deadline::resolve_from(
         "probe",

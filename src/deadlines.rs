@@ -122,6 +122,18 @@ impl Deadline {
         self.value
     }
 
+    /// How this deadline reads in an error an operator has to act on.
+    ///
+    /// A timeout message is only useful if it says which bound was hit and what
+    /// can be done about it. The rendering names the variable that overrides the
+    /// value and the ceiling that caps it, so the operator does not have to find
+    /// the table to learn either. The host-command deadline is the one that
+    /// matters most here: it is resolved for every host command, so a host under
+    /// heavy load hits it first and its variable is the one an operator raises.
+    pub(crate) fn describe_timeout(self) -> String {
+        format!("{:?} ({}, max {:?})", self.value, self.variable, self.max)
+    }
+
     /// Render the deadline for a status report.
     pub(crate) fn describe(self) -> serde_json::Value {
         serde_json::json!({

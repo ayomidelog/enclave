@@ -31,8 +31,9 @@ impl std::fmt::Display for HostCommandError {
             HostCommandFailure::Spawn => write!(formatter, "failed to run: {command}"),
             HostCommandFailure::TimedOut => write!(
                 formatter,
-                "{command} did not finish within {:?} and was stopped",
-                self.timeout
+                "{command} did not finish within {:?} and was stopped; raise {} to allow more time",
+                self.timeout,
+                crate::deadlines::host_command().variable
             ),
             HostCommandFailure::ExitStatus => {
                 let status = self

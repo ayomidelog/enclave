@@ -124,3 +124,24 @@ fn the_default_deadline_is_bounded() {
     assert!(DEFAULT_TIMEOUT <= MAX_TIMEOUT);
     assert!(!DEFAULT_TIMEOUT.is_zero());
 }
+
+#[test]
+fn a_timeout_names_the_variable_that_raises_it() {
+    // The host-command deadline is resolved for every command, so it is the one
+    // a loaded host hits first. The message has to say which variable to raise
+    // rather than only how long it waited.
+    let error = HostCommandError {
+        program: "ip".to_string(),
+        args: vec!["-batch".to_string()],
+        kind: HostCommandFailure::TimedOut,
+        status: None,
+        stderr: String::new(),
+        timeout: Duration::from_secs(10),
+    };
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains(crate::deadlines::host_command().variable),
+        "the message should name the override: {rendered}"
+    );
+    assert!(rendered.contains("did not finish within"), "{rendered}");
+}

@@ -96,6 +96,16 @@ default, ceiling, and whether an operator set it. `enclave daemon status` prints
 the overrides, which is what makes a start that failed on a short deadline
 distinguishable from a start that failed on its own.
 
+The default that matters most on a loaded host is `ENCLAVE_SESSION_READY_MS`. A
+batch start runs several workspaces at once and each one's setup is CPU bound, so
+on a small or busy host the last workspace in the batch can wait several times
+longer than the first. On a 4-CPU host with a 5-second default, 16 workspaces
+start in under 3 seconds, while 32 workspaces exceed the default and report
+`workspace session did not become ready`. The failure is a deadline, not a broken
+runtime, and the message now names the deadline with its variable and ceiling so
+that is visible from the error. Raise `ENCLAVE_SESSION_READY_MS` when starting
+many workspaces at once, or lower `ENCLAVE_UP_WORKERS` so fewer start in parallel.
+
 Deadlines for jobs that are minutes long and have their own supervision —
 `debootstrap`, rootfs copies, snapshot archives — are not in this table. They are
 bounded where the job is defined.

@@ -152,7 +152,7 @@ pub fn start_session(
         &ready_file,
         &pid_file,
         &log_file,
-        crate::deadlines::session_ready().get(),
+        crate::deadlines::session_ready(),
     )?;
     drop(ready);
     let pid = process::read_pid_file(&pid_file)?;
@@ -185,8 +185,9 @@ pub(crate) fn wait_for_session_ready(
     ready_file: &Path,
     pid_file: &Path,
     log_file: &Path,
-    timeout: Duration,
+    deadline: crate::deadlines::Deadline,
 ) -> Result<()> {
+    let timeout = deadline.get();
     let parent = ready_file
         .parent()
         .ok_or_else(|| anyhow::anyhow!("session ready path has no parent"))?;
@@ -232,8 +233,8 @@ pub(crate) fn wait_for_session_ready(
                 tail
             };
             bail!(
-                "workspace session did not become ready within {}s (expected files: {}, {}). log file: {}. recent log:\n{}",
-                timeout.as_secs(),
+                "workspace session did not become ready within {} (expected files: {}, {}). log file: {}. recent log:\n{}",
+                deadline.describe_timeout(),
                 pid_file.display(),
                 ready_file.display(),
                 log_file.display(),
