@@ -15,7 +15,7 @@ use crate::sandbox::SandboxMetadata;
 use crate::workspace::WorkspaceMetadata;
 
 pub(crate) use migrate::{migrate, MigrationStep};
-pub use repair::repair_registry;
+pub use repair::{repair_registry, RetainedOrphan};
 pub(crate) use storage::{
     load_registry_unlocked, registry_lock_path, save_registry_unlocked, update_cache,
     with_cached_registry,
@@ -52,6 +52,12 @@ pub struct RepairReport {
     /// the one this binary writes and had to be migrated before use.
     #[serde(default)]
     pub migrated_registry_from_version: Option<u32>,
+    /// Workspace directories repair refused to remove because a live runtime
+    /// still owns them. Their metadata is gone, so this is the only place the
+    /// operator learns that a runtime must be stopped before the directory can be
+    /// cleaned up.
+    #[serde(default)]
+    pub retained_orphans: Vec<RetainedOrphan>,
 }
 
 impl Default for Registry {

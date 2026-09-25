@@ -32,6 +32,20 @@ fn run_registry_repair(socket: &Path, args: RegistryRepairArgs) -> Result<()> {
         report.removed_workspaces,
         report.reconciled_runtime_records
     );
+    // A retained directory is a leak the operator has to act on, so it is printed
+    // rather than left in the daemon log. The fix is to stop the runtime the
+    // directory still belongs to; repair cannot do it, because signalling a
+    // process it did not start is exactly what it must not do.
+    if !report.retained_orphans.is_empty() {
+        eprintln!(
+            "{} workspace directory(ies) were retained because a live runtime still owns them:",
+            report.retained_orphans.len()
+        );
+        for orphan in &report.retained_orphans {
+            eprintln!("  - {}", orphan.describe());
+        }
+        eprintln!("stop each runtime, then run this command again to finish the cleanup");
+    }
     print_operation_id();
     Ok(())
 }

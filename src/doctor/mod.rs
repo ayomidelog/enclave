@@ -13,6 +13,7 @@ mod firewall;
 mod journal;
 mod mounts;
 mod network;
+mod orphans;
 mod ports;
 mod registry;
 mod runtime;
@@ -99,6 +100,7 @@ pub fn run_doctor(state_dir: &Path, daemon: Option<&DaemonState<'_>>) -> Result<
         runtime::check_stale_runtime_state(state_dir),
         runtime::check_workspace_tmp_integrity(state_dir),
         runtime::check_workspace_storage(state_dir),
+        orphans::check_orphan_runtimes(state_dir),
         journal::check_operation_journal(state_dir, &running),
         capabilities::check_cgroup_v2_availability(),
     ];

@@ -244,7 +244,7 @@ pub(super) fn verify_signal_target(
     Ok(SignalTarget::Signallable)
 }
 
-pub(super) fn read_pid_file(path: &Path) -> Result<u32> {
+pub(crate) fn read_pid_file(path: &Path) -> Result<u32> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let pid = raw.trim().parse::<u32>().map_err(|_| {

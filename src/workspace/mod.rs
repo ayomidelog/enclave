@@ -6,6 +6,7 @@ mod create;
 mod cwd;
 mod exec;
 mod logs;
+mod orphans;
 mod ports;
 pub mod ps;
 mod runtime;
@@ -44,6 +45,7 @@ pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreat
 pub use exec::exec_workspace_command;
 pub(crate) use exec::spawn_workspace_command_detached;
 pub use logs::workspace_logs;
+pub use orphans::{find_orphan_runtime, OrphanRuntime};
 pub use ports::{
     configured_port_statuses, merge_published_port_statuses, validate_published_ports,
     PublishedPortBinding, PublishedPortSpec, PublishedPortState, PublishedPortStatus,

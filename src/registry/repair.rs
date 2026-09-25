@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::sandbox::{ensure_sandbox_layout, normalize_sandbox_metadata};
-use crate::workspace::WorkspaceMetadata;
+use crate::workspace::{OrphanRuntime, WorkspaceMetadata};
 
 use crate::sandbox::SandboxMetadata;
 
@@ -16,6 +16,36 @@ use super::storage::{
     save_registry_unlocked, update_cache,
 };
 use super::{ensure_registry, Registry, RegistrySandbox, RepairReport};
+
+/// A workspace directory repair refused to remove because a live runtime owns it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RetainedOrphan {
+    pub sandbox_id: String,
+    pub workspace_id: String,
+    pub workspace_dir: PathBuf,
+    pub runtime: OrphanRuntime,
+}
+
+impl RetainedOrphan {
+    /// One line naming the directory and what still owns it.
+    pub fn describe(&self) -> String {
+        format!(
+            "{}/{} at {} ({})",
+            self.sandbox_id,
+            self.workspace_id,
+            self.workspace_dir.display(),
+            self.runtime.describe()
+        )
+    }
+}
+
+/// What one scan of the sandboxes tree found.
+#[derive(Default)]
+struct DiskScan {
+    sandboxes: BTreeMap<String, RegistrySandbox>,
+    /// Workspace directories retained because a live runtime still owns them.
+    retained_orphans: Vec<RetainedOrphan>,
+}
 
 pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
     ensure_registry(state_dir)?;
@@ -41,7 +71,11 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
         fs::create_dir_all(&sandboxes_root)
             .with_context(|| format!("failed to create {}", sandboxes_root.display()))?;
 
-        let discovered = scan_on_disk(state_dir, strict)?;
+        let DiskScan {
+            sandboxes: discovered,
+            retained_orphans,
+        } = scan_on_disk(state_dir, strict)?;
+        report.retained_orphans = retained_orphans;
 
         for (sandbox_id, discovered_sandbox) in &discovered {
             match registry.sandboxes.get_mut(sandbox_id) {
@@ -97,12 +131,12 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
     })
 }
 
-fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, RegistrySandbox>> {
+fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<DiskScan> {
     let sandboxes_root = state_dir.join("sandboxes");
-    let mut result = BTreeMap::new();
+    let mut scan = DiskScan::default();
 
     if !sandboxes_root.exists() {
-        return Ok(result);
+        return Ok(scan);
     }
 
     for entry in fs::read_dir(&sandboxes_root)
@@ -228,8 +262,8 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
             persist_metadata(&metadata_path, &metadata)?;
         }
 
-        let discovered_workspaces = scan_workspaces(&metadata, strict)?;
-        result.insert(
+        let discovered_workspaces = scan_workspaces(&metadata, strict, &mut scan.retained_orphans)?;
+        scan.sandboxes.insert(
             metadata.id.clone(),
             RegistrySandbox {
                 metadata,
@@ -238,12 +272,13 @@ fn scan_on_disk(state_dir: &Path, strict: bool) -> Result<BTreeMap<String, Regis
         );
     }
 
-    Ok(result)
+    Ok(scan)
 }
 
 fn scan_workspaces(
     sandbox: &SandboxMetadata,
     strict: bool,
+    retained_orphans: &mut Vec<RetainedOrphan>,
 ) -> Result<BTreeMap<String, WorkspaceMetadata>> {
     let mut result = BTreeMap::new();
     let workspaces_path = PathBuf::from(&sandbox.workspaces_path);
@@ -281,6 +316,27 @@ fn scan_workspaces(
             // a live create marker is what keeps a concurrent repair from deleting
             // it. A marker from a create that died does not protect the directory.
             if crate::fsutil::creation_in_progress(&workspace_dir) {
+                continue;
+            }
+            // A workspace whose metadata is gone may still have a running runtime.
+            // Deleting its directory would leave that runtime, its cgroup, its
+            // interface, and its firewall rules owned by nothing, so the directory
+            // is retained and reported instead. Discovery reads only the markers
+            // the runtime itself wrote; it never signals a process.
+            if let Some(orphan) =
+                crate::workspace::find_orphan_runtime(&workspace_dir, &sandbox.id, &dir_name)
+            {
+                tracing::warn!(
+                    "registry repair retained workspace directory {} with no metadata: a live runtime still owns it ({})",
+                    workspace_dir.display(),
+                    orphan.describe()
+                );
+                retained_orphans.push(RetainedOrphan {
+                    workspace_dir: workspace_dir.clone(),
+                    sandbox_id: sandbox.id.clone(),
+                    workspace_id: dir_name.clone(),
+                    runtime: orphan,
+                });
                 continue;
             }
             if strict {

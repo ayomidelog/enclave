@@ -25,6 +25,7 @@ pub(crate) use namespace_cache::{duplicate_for_child, make_inheritable, raw_fds}
 pub(crate) use persistent::{
     execute_persistent_command, output_to_string, MAX_HELPER_OUTPUT_BYTES,
 };
+pub(crate) use process::read_pid_file;
 pub use process::{
     count_processes_in_pid_namespace, process_alive, process_matches, process_resource_usage,
     process_starttime_ticks, read_namespace_refs,

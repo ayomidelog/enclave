@@ -111,3 +111,98 @@ fn repair_leaves_a_sandbox_that_a_live_process_is_creating() {
     );
     let _ = fs::remove_dir_all(&state_dir);
 }
+
+#[test]
+fn repair_retains_a_workspace_directory_a_live_runtime_still_owns() {
+    // `workspace.json` is the only file that records a runtime's pid. Losing it
+    // used to make repair delete the directory, leaving the runtime, its cgroup,
+    // its interface, and its firewall rules owned by nothing. The directory's own
+    // namespace marker is what proves a live owner, so repair must retain it and
+    // say why.
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-registry-live-orphan-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = fs::remove_dir_all(&state_dir);
+    let sandbox_dir = state_dir.join("sandboxes").join("sb-live");
+    let workspace_dir = sandbox_dir.join("workspaces").join("ws-live");
+    fs::create_dir_all(workspace_dir.join("ns")).expect("create workspace dir");
+    // The sandbox itself has to look real, or repair removes the whole sandbox
+    // directory before it ever reaches the workspace.
+    let metadata = crate::sandbox::SandboxMetadata {
+        id: "sb-live".to_string(),
+        name: "sb-live".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "https://deb.debian.org/debian".to_string(),
+        bootstrap_method: crate::sandbox::BootstrapMethod::CachedRootfs,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
+        mounted_rootfs_path: sandbox_dir
+            .join("runtime/rootfs.mnt")
+            .to_string_lossy()
+            .to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: crate::sandbox::SandboxLimits::default(),
+        status: crate::sandbox::SandboxStatus::Stopped,
+    };
+    fs::create_dir_all(sandbox_dir.join("rootfs")).expect("create rootfs dir");
+    fs::write(
+        sandbox_dir.join("sandbox.json"),
+        serde_json::to_string_pretty(&metadata).expect("serialize sandbox metadata"),
+    )
+    .expect("write sandbox metadata");
+    let namespace = fs::read_link("/proc/self/ns/pid").expect("read own pid namespace");
+    fs::write(
+        workspace_dir.join("ns/pid.ref"),
+        format!("{}\n", namespace.to_string_lossy()),
+    )
+    .expect("write the namespace marker");
+
+    let report = repair_registry(&state_dir, false).expect("repair should succeed");
+    assert!(
+        workspace_dir.exists(),
+        "repair deleted a directory a live runtime still owns"
+    );
+    assert_eq!(
+        report.retained_orphans.len(),
+        1,
+        "{:?}",
+        report.retained_orphans
+    );
+    let retained = &report.retained_orphans[0];
+    assert_eq!(retained.workspace_id, "ws-live");
+    let discovered = retained
+        .runtime
+        .runtime_pid
+        .expect("a pid in the namespace");
+    assert_eq!(
+        fs::read_link(format!("/proc/{discovered}/ns/pid"))
+            .expect("read the discovered process namespace")
+            .to_string_lossy(),
+        namespace.to_string_lossy()
+    );
+    assert!(
+        retained.describe().contains("ws-live"),
+        "{}",
+        retained.describe()
+    );
+
+    // Once nothing owns the directory it is a leftover again, and repair removes
+    // it as it always did.
+    fs::write(workspace_dir.join("ns/pid.ref"), "unassigned\n").expect("clear the marker");
+    let report = repair_registry(&state_dir, false).expect("repair should succeed");
+    assert!(
+        report.retained_orphans.is_empty(),
+        "{:?}",
+        report.retained_orphans
+    );
+    assert!(
+        !workspace_dir.exists(),
+        "a directory with no live owner is a leftover"
+    );
+    let _ = fs::remove_dir_all(&state_dir);
+}
