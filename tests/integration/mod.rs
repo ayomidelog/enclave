@@ -13,6 +13,7 @@ mod quota_storage;
 mod repair;
 mod snapshot;
 mod start_intent;
+mod stop_intent;
 mod support;
 mod tmp_isolation;
 mod workspace_cp;
