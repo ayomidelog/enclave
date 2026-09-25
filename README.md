@@ -85,12 +85,42 @@ default. On this four-CPU host the eight-workspace fixture booted in 1.54s at fo
 workers, 1.40s at eight, and 1.65s at sixteen, each the median of three runs, which
 is inside the spread of the fixture itself.
 
-For a fast warm lifecycle, pause a running sandbox instead of stopping it:
+These numbers are all for the stop-and-start tier. Pausing a running sandbox is the
+fast tier, and it keeps the processes and their memory; see the lifecycle tiers
+section below.
 
-```bash
-enclave pause mybox
-enclave resume mybox
-```
+## Lifecycle tiers
+
+Enclave has three ways to put a workspace away, and they preserve different things.
+Which one to use is a question about what the work inside the workspace holds that is
+expensive to rebuild, so each is stated in those terms.
+
+| Command | Runtime and its PID | Memory and processes | Mounts | Files | Typical cost |
+|---|---|---|---|---|---|
+| `pause` / `resume` | kept | kept, and frozen while paused | kept | kept | ~0.2 s |
+| `stop` / `start` | released and rebuilt | lost | released and rebuilt | kept | ~0.9 s warm |
+| `destroy` | released | lost | released | removed | a stop, plus deletion |
+
+A `pause` freezes the sandbox cgroup and leaves everything else where it is. The
+processes keep their PIDs, their memory, and their mounts, so a program that was
+running continues from where it was rather than starting over. That is the tier to
+reach for when the workspace holds something that took minutes to build and cannot be
+rebuilt cheaply, such as a loaded model, a warm cache, or a long test run in progress.
+
+A `stop` releases the runtime and everything only the runtime held, and keeps the
+workspace files. A later `start` builds a new runtime from those files, so the
+processes are new processes with new PIDs and nothing in memory survives. Use it when
+the workspace is between jobs.
+
+A `destroy` does what a `stop` does and then removes the workspace files and its
+record. Use it when the work inside the workspace is finished with.
+
+The published number for each tier is measured by the benchmark under `tools/perf/`
+that exercises it: `live-lifecycle.sh` for stop and start, `live-pause.sh` for pause
+and resume, `live-quota.sh` for the storage tier whose workspace owns an ext4 image
+rather than a directory, and `live-loaded.sh` for a sandbox whose workspaces are all
+busy at once. They are separate runs because a change to one tier is not a change to
+another, and one number covering all of them would describe none of them.
 
 ## Snapshot Archives
 

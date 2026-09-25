@@ -15,7 +15,7 @@ use anyhow::{bail, Result};
 use serde_json::json;
 
 use crate::cli::WipeArgs;
-use crate::sandbox::{SandboxListItem, SandboxStatusReport};
+use crate::sandbox::{RootfsTier, SandboxListItem, SandboxStatusReport};
 
 use super::super::{
     confirm_destructive_action, daemon, print_operation_id, print_state_transition,
@@ -88,6 +88,12 @@ pub(crate) fn run_status(socket: &Path, sandbox: &str) -> Result<()> {
     println!("created_at: {}", status.created_at);
     println!("status: {}", format!("{:?}", status.status).to_lowercase());
     println!("rootfs_path: {}", status.rootfs_path);
+    // The backend is what decides what creating this sandbox cost, and it is the one
+    // property of a sandbox a caller cannot read off the other fields: a shared overlay
+    // and a private copy have the same shape on disk. The base it shares is named
+    // beside it, because that is the directory an operator has to look at to tell two
+    // sandboxes on the shared tier apart.
+    println!("rootfs_tier: {}", rootfs_tier(&status));
     println!(
         "rootfs_disk_usage_bytes: {}",
         status.rootfs_disk_usage_bytes
@@ -114,6 +120,24 @@ pub(crate) fn run_status(socket: &Path, sandbox: &str) -> Result<()> {
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string())
     );
     Ok(())
+}
+
+/// The base-image backend, with what it means for the lifecycle.
+///
+/// The shared tier mounts the cached rootfs as an immutable lower layer, so creating
+/// a sandbox does not copy the tree and no write ever reaches the shared base. The
+/// copied tier is the fallback for a host where that overlay cannot be set up, and it
+/// pays a full recursive copy once, at creation.
+fn rootfs_tier(status: &SandboxStatusReport) -> String {
+    match status.rootfs_tier {
+        RootfsTier::SharedOverlay => format!(
+            "shared_overlay (OverlayFS over {}, which is never copied and never written)",
+            status.rootfs_lower_path.as_deref().unwrap_or("unknown")
+        ),
+        RootfsTier::Copied => {
+            "copied (a private copy of the rootfs, made once at creation)".to_string()
+        }
+    }
 }
 
 pub(crate) fn run_remove(socket: &Path, sandbox_id: &str) -> Result<()> {

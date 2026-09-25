@@ -6,8 +6,10 @@ use std::process::Command;
 use std::time::Instant;
 
 use enclave::sandbox::{
-    create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
+    create_sandbox, destroy_sandbox, sandbox_status, start_sandbox, stop_sandbox, BootstrapMethod,
+    RootfsTier,
 };
+
 use enclave::workspace::{
     create_workspace, destroy_workspace, exec_workspace_command, start_workspace, stop_workspace,
     WorkspaceLimits, WorkspaceStatus,
@@ -36,10 +38,41 @@ fn sandbox_lifecycle_create_start_stop_destroy() {
     .expect("create sandbox");
     assert!(Path::new(&sandbox.rootfs_path).exists());
 
+    // The base-image tier is a durable choice made at creation, not something the
+    // daemon observes: a shared overlay and a private copy have the same shape on
+    // disk, and the overlay is mounted only while the sandbox is running. A tier
+    // that were probed would therefore read differently before and after a start,
+    // which is what the check below rules out.
+    let before_start = sandbox_status(&state, &sandbox.id).expect("read status");
+    assert_eq!(before_start.rootfs_tier, RootfsTier::SharedOverlay);
+    let base = before_start
+        .rootfs_lower_path
+        .as_deref()
+        .expect("a shared-overlay sandbox names its shared base");
+    assert!(
+        Path::new(base).starts_with(state.join("sandboxes").join("rootfs-cache")),
+        "the shared base {base} is not the cached rootfs the sandbox was created from"
+    );
+    assert!(!Path::new(base).starts_with(&sandbox.sandbox_path));
+
     let started = start_sandbox(&state, &sandbox.id).expect("start sandbox");
     assert!(Path::new(&started.mounted_rootfs_path).exists());
+    assert_eq!(
+        sandbox_status(&state, &sandbox.id)
+            .expect("read status while running")
+            .rootfs_tier,
+        before_start.rootfs_tier,
+        "the base-image tier must not change when the sandbox starts"
+    );
 
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    assert_eq!(
+        sandbox_status(&state, &sandbox.id)
+            .expect("read status while stopped")
+            .rootfs_tier,
+        before_start.rootfs_tier,
+        "the base-image tier must not change when the sandbox stops"
+    );
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }

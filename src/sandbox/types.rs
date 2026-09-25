@@ -178,6 +178,36 @@ pub struct SandboxListItem {
     pub workspace_count: usize,
 }
 
+/// Which base-image backend a sandbox root filesystem is on.
+///
+/// This is the one property of a sandbox that decides what creating it cost, and
+/// it is a durable choice rather than a per-operation one: a sandbox either was
+/// created from the cache as an overlay or had its rootfs copied, and it stays
+/// that way for its whole life. It is reported as a value rather than as a
+/// sentence so a caller can branch on it, with the sentence in the command
+/// output where a person reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RootfsTier {
+    /// The rootfs is an OverlayFS mount whose lower layer is the shared cached
+    /// rootfs, so creating the sandbox did not copy the tree and writes never
+    /// reach the shared base.
+    SharedOverlay,
+    /// The rootfs is a private copy of the tree, which is the fallback for a host
+    /// where the overlay cannot be set up.
+    Copied,
+}
+
+impl RootfsTier {
+    /// Lowercase label, for command output and reports.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SharedOverlay => "shared_overlay",
+            Self::Copied => "copied",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxStatusReport {
     pub id: String,
@@ -185,6 +215,11 @@ pub struct SandboxStatusReport {
     pub created_at: String,
     pub status: SandboxStatus,
     pub rootfs_path: String,
+    /// Which backend the rootfs is on, and the base it shares when it shares one.
+    pub rootfs_tier: RootfsTier,
+    /// The shared immutable base layer, when this sandbox has one.
+    #[serde(default)]
+    pub rootfs_lower_path: Option<String>,
     pub rootfs_disk_usage_bytes: u64,
     pub workspace_count: usize,
     #[serde(default)]
