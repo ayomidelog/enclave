@@ -86,6 +86,9 @@ fn a_surviving_inventory_resource_makes_the_certificate_incomplete() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 use std::fs;
+use std::path::PathBuf;
+
+use crate::workspace::session;
 
 use crate::network::NetworkCleanupReport;
 use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
