@@ -80,6 +80,7 @@ pub fn session_process_matches(pid: u32, expected_starttime_ticks: Option<u64>) 
 pub(crate) use session as session_for_tests;
 
 pub(crate) use cwd::sanitize_workspace_cwd;
+pub(crate) use storage::disk_backend_available;
 #[cfg(test)]
 pub(crate) use storage::LEGACY_WORKSPACE_TMP_DIR;
 pub(crate) use storage::{

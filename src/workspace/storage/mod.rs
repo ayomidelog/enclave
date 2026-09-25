@@ -69,6 +69,14 @@ pub use unmount::ensure_workspace_storage_unmounted;
 
 // Used by workspace lifecycle modules and their tests.
 pub(crate) use image::{workspace_disk_image_path, workspace_uses_disk_image};
+
+/// Whether this host has the tools a workspace disk quota needs.
+///
+/// The capability report asks this rather than calling the internal check, so the
+/// question it is asking is visible where it is asked.
+pub(crate) fn disk_backend_available() -> anyhow::Result<()> {
+    image::ensure_disk_backend_available()
+}
 pub(crate) use mount::with_workspace_storage_mounted;
 #[cfg(test)]
 pub(crate) use tmp::ensure_workspace_tmp_layout;

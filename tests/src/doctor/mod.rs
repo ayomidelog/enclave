@@ -6,6 +6,7 @@
 
 use super::*;
 
+mod capabilities;
 mod checks;
 mod mounts;
 mod repair;

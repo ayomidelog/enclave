@@ -6,12 +6,6 @@
 use super::*;
 
 #[test]
-fn check_cgroup_v2_does_not_panic() {
-    let check = check_cgroup_v2_availability();
-    assert!(check.status == "ok" || check.status == "warn");
-}
-
-#[test]
 fn check_stale_cgroups_does_not_panic() {
     let state_dir = std::env::temp_dir().join(format!(
         "enclave-doctor-cgroups-test-{}-{}",

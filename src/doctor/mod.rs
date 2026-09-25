@@ -116,7 +116,7 @@ pub fn run_doctor(state_dir: &Path, daemon: Option<&DaemonState<'_>>) -> Result<
         runtime::check_workspace_storage(state_dir),
         orphans::check_orphan_runtimes(state_dir),
         journal::check_operation_journal(state_dir, &running),
-        capabilities::check_cgroup_v2_availability(),
+        capabilities::check_host_capabilities(),
     ];
     if let Some(daemon) = daemon {
         checks.push(ports::check_published_ports(
@@ -227,8 +227,6 @@ mod tests;
 
 // The checks live in their own modules; the doctor tests reach them through the
 // module root so the test file stays one flat list of check behaviours.
-#[cfg(test)]
-pub(crate) use capabilities::check_cgroup_v2_availability;
 #[cfg(test)]
 pub(crate) use cgroups::check_stale_workspace_cgroups as check_stale_cgroups;
 #[cfg(test)]

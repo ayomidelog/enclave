@@ -41,6 +41,14 @@ Each workspace runs in its own network namespace with full port isolation and ou
   namespace-cache, helper-process, mount, unmount, cleanup-retry, and bounded request,
   per-phase, and registry-lock-wait latency histograms; detailed phase logs remain
   opt-in through `ENCLAVE_PERF=1`.
+- **Host capabilities**: `enclave doctor` reports every capability the lifecycle
+  depends on, with what each missing one costs. The rows are cgroup v2 and the
+  controllers it exposes, OverlayFS, idmapped mounts, the ext4 tools a disk quota needs,
+  iptables, and user namespaces. Every one is optional: a host without overlay still
+  runs, it copies the cached rootfs instead of sharing it. Naming them together is what
+  lets an operator see the whole answer at once rather than discovering one missing
+  piece per failed start. Each is a property of the running kernel or of the installed
+  programs, so the probes cache their answers and none is on a request path.
 - **Cleanup retries**: the retryable kernel states a teardown can meet are counted
   as attempts, as the total delay they cost, and as the attempts that ran out without
   recovering. The last errno the kernel gave is reported alongside them, so a busy

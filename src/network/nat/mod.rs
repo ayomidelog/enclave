@@ -50,7 +50,8 @@ pub(in crate::network) use anti_spoof::{
 pub(in crate::network) use forwarding::{bridge_rules, stale_bridge_rules};
 #[cfg(test)]
 pub(in crate::network) use inventory::parse_owned_rules;
-#[cfg(test)]
+// The capability report is outside this module and asks the same question, so the
+// detected binary is reachable from the network module rather than probed twice.
 pub(in crate::network) use primitives::detect_iptables;
 
 #[cfg(test)]

@@ -25,6 +25,14 @@ static HOST_NETWORKING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 /// doctor read it, so the path is defined once.
 pub(crate) const NET_CLASS_DIR: &str = "/sys/class/net";
 
+/// The iptables binary this host will use, detected once.
+///
+/// The capability report asks this rather than probing on its own, so the answer is
+/// the one the lifecycle will actually use and the probe is paid for once.
+pub(crate) fn iptables_binary() -> Result<String> {
+    nat::detect_iptables()
+}
+
 pub use cleanup::{
     teardown_workspace_network, teardown_workspace_networks, NetworkCleanupFailure,
     NetworkCleanupReport,
