@@ -1,7 +1,15 @@
 mod auth_flow;
 mod cgroup_cleanup;
+mod cgroup_limits;
+mod disk_lifecycle;
 mod lifecycle;
-mod snapshot_and_limits;
+mod network_rules;
+mod pid_identity;
+mod process_tree;
+mod quota_storage;
+mod repair;
+mod snapshot;
+mod support;
 mod tmp_isolation;
 mod workspace_cp;
 mod workspace_host_mount;
