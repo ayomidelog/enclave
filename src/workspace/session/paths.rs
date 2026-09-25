@@ -30,14 +30,33 @@ pub fn write_namespace_ref_values(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    crate::fsutil::write_file_atomic(
+    // Best effort on purpose. These two files are the cross-check that a recorded
+    // pid still has the namespaces it was recorded with, and they are re-derived
+    // from the live runtime by the next reconcile whenever they are missing or
+    // stale, so a lost write costs a re-derivation rather than a wrong answer.
+    //
+    // What they do have to survive is a *daemon* crash, because the runtime keeps
+    // running and a later check has to tell it apart from a process that inherited
+    // the pid. A write without fsync is already visible to every other process, so
+    // it survives exactly that. It does not survive a power loss, and it does not
+    // need to: a power loss takes the runtime with it, and the pid-reuse cross-check
+    // has nothing left to be wrong about. That is why these two writes are the one
+    // place on the start path where a durable write buys nothing; the workspace
+    // record beside them stays durable because recovery reads it as the truth.
+    crate::fsutil::write_file_atomic_with(
         &mount_ref_path,
         format!("{mount_value}\n").as_bytes(),
         0o600,
+        crate::fsutil::Durability::BestEffort,
     )
     .with_context(|| format!("failed to write {}", mount_ref_path.display()))?;
-    crate::fsutil::write_file_atomic(&pid_ref_path, format!("{pid_value}\n").as_bytes(), 0o600)
-        .with_context(|| format!("failed to write {}", pid_ref_path.display()))?;
+    crate::fsutil::write_file_atomic_with(
+        &pid_ref_path,
+        format!("{pid_value}\n").as_bytes(),
+        0o600,
+        crate::fsutil::Durability::BestEffort,
+    )
+    .with_context(|| format!("failed to write {}", pid_ref_path.display()))?;
     Ok(())
 }
 
