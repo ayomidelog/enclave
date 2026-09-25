@@ -1,6 +1,7 @@
 use super::{
-    infer_workspace_helper_from_current_exe, launch_userns_args, resolve_session_helper_source,
-    session_helper_load_failure, session_helper_path, setgroups_args, stop_sessions_batch,
+    infer_workspace_helper_from_current_exe, launch_userns_args, log_reports_text_file_busy,
+    resolve_session_helper_source, session_helper_load_failure, session_helper_path,
+    setgroups_args, stop_sessions_batch,
     userns::{IdMapRange, UserNamespaceMode, UserNamespacePlan},
 };
 
@@ -242,4 +243,36 @@ fn spawn_term_resistant_enclave_process() -> Child {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn enclave-like process")
+}
+/// A launch that failed because the helper binary was momentarily open for
+/// writing is the one launch failure worth retrying, and it is recognized from
+/// the session log rather than from the exit status: the launcher is started
+/// with setsid -f, which reports success as soon as it has forked.
+#[test]
+fn a_busy_helper_binary_is_recognized_from_the_session_log() {
+    let busy = session_log(
+        "txtbusy",
+        "setsid: failed to execute /tmp/enclave/session-helper: Text file busy\n",
+    );
+    assert!(log_reports_text_file_busy(&busy));
+    let _ = std::fs::remove_dir_all(busy.parent().expect("log parent"));
+}
+
+#[test]
+fn another_launch_failure_is_not_mistaken_for_a_busy_helper_binary() {
+    let other = session_log(
+        "other-failure",
+        "setsid: failed to execute /tmp/enclave/session-helper: Permission denied\n",
+    );
+    assert!(!log_reports_text_file_busy(&other));
+    let _ = std::fs::remove_dir_all(other.parent().expect("log parent"));
+}
+
+#[test]
+fn a_missing_session_log_is_not_a_busy_helper_binary() {
+    let missing = std::env::temp_dir().join(format!(
+        "enclave-session-log-missing-{}",
+        std::process::id()
+    ));
+    assert!(!log_reports_text_file_busy(&missing.join("session.log")));
 }

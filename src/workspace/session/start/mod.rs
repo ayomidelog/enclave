@@ -12,6 +12,23 @@ mod userns_args;
 use super::*;
 
 use readiness::wait_for_session_ready;
+
+/// How many times a launch that failed on a busy helper binary is retried.
+const LAUNCH_ATTEMPTS: usize = 3;
+
+/// Whether the session log ends in the kernel's busy-executable error.
+///
+/// The launcher is started with setsid -f, so its own exit status says nothing
+/// about whether the helper could be executed: the failure is written to the log
+/// by setsid. Only this specific failure is retried, so a launch that fails for
+/// any other reason is reported as it is rather than repeated.
+pub(crate) fn log_reports_text_file_busy(log_file: &Path) -> bool {
+    let Ok(tail) = process::read_log_tail(log_file, 20) else {
+        return false;
+    };
+    tail.contains("Text file busy")
+}
+
 // Used by the launch below, and by the tests through the session module.
 pub(crate) use userns_args::launch_userns_args;
 
@@ -157,28 +174,66 @@ pub fn start_session(
             .arg("--root-overlay-merged")
             .arg(merged);
     }
-    let launch = crate::perf::Timer::new("session.launch");
-    let status = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr))
-        .status()
-        .context("failed to launch workspace session via setsid/unshare")?;
-    drop(launch);
+    // The helper binary is installed by copying it into the sandbox runtime
+    // directory and hard-linking it into place, and the copy holds the
+    // destination open for writing. A descriptor is closed when a child execs,
+    // not when it forks, so a fork in another thread between the copy and the
+    // child's own exec leaves a writer on that inode for as long as the fork
+    // takes to exec. An exec of the helper in that window fails with the kernel's
+    // busy-executable error. It is transient by construction, and under load the
+    // fork-to-exec window is wide enough to hit it.
+    //
+    // The launcher is started with setsid -f, which exits as soon as it has
+    // forked, so that failure is not visible in the exit status: it surfaces as
+    // the session never becoming ready, with the reason in the session log. Only
+    // that reason is retried, so a launch that failed for anything else is
+    // reported as it is. The retry is bounded and recorded.
+    let mut attempt = 0;
+    loop {
+        let launch = crate::perf::Timer::new("session.launch");
+        let status = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout.try_clone().with_context(|| {
+                format!("failed to clone {}", log_file.display())
+            })?))
+            .stderr(Stdio::from(stderr.try_clone().with_context(|| {
+                format!("failed to clone {}", log_file.display())
+            })?))
+            .status()
+            .context("failed to launch workspace session via setsid/unshare")?;
+        drop(launch);
 
-    if !status.success() {
-        bail!("failed to launch workspace session (status {status})");
+        if !status.success() {
+            bail!("failed to launch workspace session (status {status})");
+        }
+
+        let ready = crate::perf::Timer::new("session.ready");
+        let outcome = wait_for_session_ready(
+            &ready_file,
+            &pid_file,
+            &log_file,
+            workspace.limits.memory_bytes,
+            crate::deadlines::session_ready(),
+        );
+        drop(ready);
+        match outcome {
+            Ok(()) => break,
+            Err(_error) if attempt < LAUNCH_ATTEMPTS && log_reports_text_file_busy(&log_file) => {
+                attempt += 1;
+                let delay = Duration::from_millis(100 * attempt as u64);
+                crate::perf::record_cleanup_retry();
+                crate::perf::record_cleanup_retry_delay(delay.as_micros() as u64);
+                tracing::debug!(
+                    "retrying the workspace session launch for {} after a busy helper binary (attempt {}/{})",
+                    workspace.id,
+                    attempt,
+                    LAUNCH_ATTEMPTS
+                );
+                thread::sleep(delay);
+            }
+            Err(error) => return Err(error),
+        }
     }
-
-    let ready = crate::perf::Timer::new("session.ready");
-    wait_for_session_ready(
-        &ready_file,
-        &pid_file,
-        &log_file,
-        workspace.limits.memory_bytes,
-        crate::deadlines::session_ready(),
-    )?;
-    drop(ready);
     let pid = process::read_pid_file(&pid_file)?;
     if !process_alive(pid) {
         let tail = process::read_log_tail(&log_file, 20).unwrap_or_default();

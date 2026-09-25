@@ -62,6 +62,8 @@ mod start;
 mod stop;
 
 // Runtime control.
+#[cfg(test)]
+pub(crate) use start::log_reports_text_file_busy;
 pub use start::start_session;
 #[cfg(test)]
 pub use stop::stop_sessions_batch;
