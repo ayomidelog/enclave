@@ -11,13 +11,12 @@ pub fn setup_workspace_networking(
     veth_host: &str,
     veth_peer: &str,
 ) -> Result<()> {
-    let tmp_peer = temporary_peer_name(veth_host);
     let result: Result<()> = (|| {
         let host_timer = crate::perf::Timer::new("network.veth.host");
-        configure_host_veth(veth_host, &tmp_peer, pid)?;
+        configure_host_veth(veth_host, veth_peer, pid)?;
         drop(host_timer);
         let netns_timer = crate::perf::Timer::new("network.veth.netns");
-        configure_workspace_netns(pid, &tmp_peer, veth_peer, workspace_ip)?;
+        configure_workspace_netns(pid, veth_peer, workspace_ip)?;
         drop(netns_timer);
         Ok(())
     })();
@@ -32,13 +31,6 @@ pub fn setup_workspace_networking(
         });
     }
     Ok(())
-}
-
-fn temporary_peer_name(veth_host: &str) -> String {
-    let hash = veth_host.bytes().fold(0x811c9dc5u32, |hash, byte| {
-        hash.wrapping_mul(0x01000193) ^ u32::from(byte)
-    });
-    format!("vp{hash:08x}")
 }
 
 pub fn veth_names(host_octet: u8, workspace_id: &str) -> (String, String) {
@@ -98,17 +90,27 @@ fn configure_host_veth(host: &str, peer: &str, pid: u32) -> Result<()> {
 /// spawned for standard workspace networking, is already met: `ip -batch` reads its
 /// script from standard input and no shell is involved.
 ///
+/// The peer is created directly inside the workspace's network namespace rather
+/// than created here and moved into it afterwards. Moving an interface between
+/// namespaces is the expensive half of building a pair: measured on this host, a
+/// pair created here and moved costs 64.5 ms against 24.1 ms for the same pair with
+/// the peer already in place, both including the deletion that follows. That is
+/// about 40 ms off a start that measures 205 ms.
+///
+/// Naming the peer by its final name is what makes this possible. It is `eth0`
+/// inside a namespace the session created, where nothing else exists, so there is no
+/// name to collide with and no rename afterwards.
+///
 /// Port isolation goes through ip's `bridge_slave` type rather than the separate
 /// `bridge` utility, so the host side stays one process. The `bridge`
 /// subcommand cannot be reached from an `ip` batch, and that second spawn cost as
 /// much as everything else on this side put together.
 fn host_veth_batch(host: &str, peer: &str, pid: u32) -> String {
     format!(
-        "link add {host} type veth peer name {peer}\n\
+        "link add {host} type veth peer name {peer} netns {pid}\n\
          link set {host} master {BRIDGE_NAME}\n\
          link set {host} type bridge_slave isolated on\n\
-         link set {host} up\n\
-         link set {peer} netns {pid}\n"
+         link set {host} up\n"
     )
 }
 
@@ -123,23 +125,17 @@ fn disable_ipv6(interface: &str) {
     }
 }
 
-fn configure_workspace_netns(
-    pid: u32,
-    old_name: &str,
-    new_name: &str,
-    workspace_ip: &str,
-) -> Result<()> {
+fn configure_workspace_netns(pid: u32, interface: &str, workspace_ip: &str) -> Result<()> {
     let pid_str = pid.to_string();
     let addr_cidr = format!("{workspace_ip}/24");
     // The final `route show default` both verifies the result and returns it in
     // the same process, so a healthy workspace pays one spawn for the whole
     // namespace configuration.
     let batch = format!(
-        "link set {old_name} name {new_name}\n\
-         link set lo up\n\
-         addr add {addr_cidr} dev {new_name}\n\
-         link set {new_name} up\n\
-         route replace default via {} dev {new_name}\n\
+        "link set lo up\n\
+         addr add {addr_cidr} dev {interface}\n\
+         link set {interface} up\n\
+         route replace default via {} dev {interface}\n\
          route show default\n",
         ipam::GATEWAY_IP
     );
@@ -147,20 +143,22 @@ fn configure_workspace_netns(
         .with_context(|| format!("failed to configure network namespace of pid {pid}"))?;
     let route_table = String::from_utf8_lossy(&output.stdout);
     if output.status.success()
-        && default_route_output_has_route(&route_table, new_name, ipam::GATEWAY_IP)
+        && default_route_output_has_route(&route_table, interface, ipam::GATEWAY_IP)
     {
         return Ok(());
     }
 
     let route_dump = dump_workspace_netns(&pid_str, &["route", "show"])
         .unwrap_or_else(|err| format!("failed to inspect route table: {err:#}"));
-    let addr_dump = dump_workspace_netns(&pid_str, &["addr", "show", "dev", new_name])
-        .unwrap_or_else(|err| format!("failed to inspect interface state for {new_name}: {err:#}"));
+    let addr_dump = dump_workspace_netns(&pid_str, &["addr", "show", "dev", interface])
+        .unwrap_or_else(|err| {
+            format!("failed to inspect interface state for {interface}: {err:#}")
+        });
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     bail!(
         "workspace network namespace did not install the expected route for {} via {} ({}): {}\nroute table:\n{}\ninterface state:\n{}",
-        new_name,
+        interface,
         ipam::GATEWAY_IP,
         output.status,
         stderr.trim(),
