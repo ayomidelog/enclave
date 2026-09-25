@@ -151,14 +151,62 @@ fn spawn_workers(
                 let Ok(job) = job else {
                     return;
                 };
-                if let Err(error) = handle_client(job.stream, &config, &shutdown, &services) {
-                    tracing::warn!(worker_id, class, "sandbox daemon request error: {error:#}");
+                match run_request(|| handle_client(job.stream, &config, &shutdown, &services)) {
+                    RequestOutcome::Finished => {}
+                    RequestOutcome::Failed(error) => {
+                        tracing::warn!(worker_id, class, "sandbox daemon request error: {error:#}")
+                    }
+                    RequestOutcome::Panicked(message) => tracing::error!(
+                        worker_id,
+                        class,
+                        "sandbox daemon request panicked: {message}"
+                    ),
                 }
             })
             .with_context(|| format!("failed to spawn daemon {class} worker {worker_id}"))?;
         workers.push(worker);
     }
     Ok(workers)
+}
+
+/// What one request did, once a panic cannot escape it.
+#[derive(Debug, PartialEq, Eq)]
+enum RequestOutcome {
+    Finished,
+    Failed(String),
+    Panicked(String),
+}
+
+/// Serve one request, turning a panic into a report rather than an unwind.
+///
+/// A panic in one request must not cost the daemon a worker. The control pool is
+/// six threads, so six panics would leave the daemon running and accepting
+/// connections while nothing answers a lifecycle request. Catching here turns
+/// that into one failed request and a logged panic.
+fn run_request<F>(operation: F) -> RequestOutcome
+where
+    F: FnOnce() -> Result<()>,
+{
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)) {
+        Ok(Ok(())) => RequestOutcome::Finished,
+        Ok(Err(error)) => RequestOutcome::Failed(format!("{error:#}")),
+        Err(payload) => RequestOutcome::Panicked(panic_message(&payload)),
+    }
+}
+
+/// The text of a caught panic payload.
+///
+/// A panic payload is whatever was passed to `panic!`, which is a `&str` or a
+/// `String` for every panic this codebase raises. Anything else is reported by
+/// its type rather than dropped, so a panic is never silent.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "<non-string panic payload>".to_string()
 }
 
 fn stream_is_transfer(stream: &UnixStream) -> bool {
@@ -188,7 +236,7 @@ fn stream_is_transfer(stream: &UnixStream) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{configured_worker_count, stream_is_transfer};
+    use super::{configured_worker_count, run_request, stream_is_transfer, RequestOutcome};
     use std::io::Write;
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixStream;
@@ -231,5 +279,40 @@ mod tests {
         unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "3") };
         assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 3);
         unsafe { std::env::remove_var("ENCLAVE_TEST_WORKER_COUNT") };
+    }
+
+    #[test]
+    fn a_panicking_request_is_reported_and_does_not_escape() {
+        // The daemon's control pool is six threads. If a panic escaped here the
+        // thread would die, and six panics would leave the daemon running and
+        // accepting connections while nothing answered a lifecycle request.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = run_request(|| panic!("simulated request panic"));
+        std::panic::set_hook(previous);
+        assert_eq!(
+            outcome,
+            RequestOutcome::Panicked("simulated request panic".to_string())
+        );
+    }
+
+    #[test]
+    fn a_request_error_and_a_success_are_reported_separately() {
+        assert_eq!(run_request(|| Ok(())), RequestOutcome::Finished);
+        let outcome = run_request(|| Err(anyhow::anyhow!("disk full")));
+        assert_eq!(outcome, RequestOutcome::Failed("disk full".to_string()));
+    }
+
+    #[test]
+    fn a_worker_keeps_serving_after_a_panicking_request() {
+        // The loop the worker runs is this sequence, so the second request after a
+        // panic is what proves the worker is still usable.
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let first = run_request(|| panic!("boom"));
+        let second = run_request(|| Ok(()));
+        std::panic::set_hook(previous);
+        assert!(matches!(first, RequestOutcome::Panicked(_)));
+        assert_eq!(second, RequestOutcome::Finished);
     }
 }

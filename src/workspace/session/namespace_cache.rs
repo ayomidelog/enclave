@@ -65,8 +65,11 @@ pub(crate) fn duplicate_for_child(pid: u32, starttime_ticks: u64) -> Result<Chil
         crate::perf::record_namespace_cache_hit();
     }
     if guard.len() > CACHE_LIMIT {
-        if let Some(oldest) = guard.keys().next().copied() {
-            guard.remove(&oldest);
+        // The map is not ordered, so this evicts an arbitrary entry rather than
+        // the least recently used one. That is enough: the entry only caches open
+        // descriptors, so an evicted key is reopened on its next use.
+        if let Some(victim) = guard.keys().next().copied() {
+            guard.remove(&victim);
         }
     }
     guard
