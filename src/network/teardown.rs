@@ -57,6 +57,9 @@ pub fn remove_veth(veth_host: &str) -> Result<()> {
         }
         let stderr = output.stderr_text();
         if !is_retryable_delete_error(&stderr) || attempt + 1 == MAX_ATTEMPTS {
+            // The decision was made from the text of the failure, so there is no
+            // errno to report; the attempt count and the delays still are.
+            crate::perf::record_cleanup_retry_exhausted(None);
             bail!("ip link delete {veth_host} failed: {stderr}");
         }
         tracing::debug!(
@@ -88,6 +91,7 @@ fn verify_veth_absent(veth_host: &str) -> Result<()> {
             return Ok(());
         }
     }
+    crate::perf::record_cleanup_retry_exhausted(None);
     bail!(
         "veth {veth_host} is still present in {} after deletion",
         NET_CLASS_DIR

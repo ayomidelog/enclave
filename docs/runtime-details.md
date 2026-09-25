@@ -41,6 +41,12 @@ Each workspace runs in its own network namespace with full port isolation and ou
   namespace-cache, helper-process, mount, unmount, cleanup-retry, and bounded request,
   per-phase, and registry-lock-wait latency histograms; detailed phase logs remain
   opt-in through `ENCLAVE_PERF=1`.
+- **Cleanup retries**: the retryable kernel states a teardown can meet are counted
+  as attempts, as the total delay they cost, and as the attempts that ran out without
+  recovering. The last errno the kernel gave is reported alongside them, so a busy
+  cgroup can be told apart from one that had already gone. Only the paths that read an
+  errno report one: a retry decided from the text of an `ip` failure leaves it at zero
+  rather than claiming a value the kernel never returned.
 - **Registry lock budget**: the registry lock is held only for the mutations
   themselves, never across the host work a lifecycle operation does, so the wait on
   it is the latency one request adds to every other one. `daemon.health`

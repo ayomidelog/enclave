@@ -146,6 +146,12 @@ pub fn remove_cgroup_path(path: &Path) -> Result<()> {
         }
     }
 
+    // The attempts are spent, so this is the retry that did not recover. The errno
+    // is the kernel's own answer for why the last attempt failed, which is what tells
+    // an operator whether the cgroup was still busy or had already gone.
+    crate::perf::record_cleanup_retry_exhausted(
+        last_error.as_ref().and_then(|err| err.raw_os_error()),
+    );
     match last_error {
         Some(err) => Err(err).with_context(|| {
             format!(

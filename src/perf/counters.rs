@@ -95,6 +95,33 @@ pub(crate) fn record_unmount() {
     UNMOUNT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
+/// How many retried cleanups ran out of attempts without recovering.
+///
+/// The retry counter says how often a transient kernel state was met; this says how
+/// often meeting it was not enough. The two together are what tells a retry that
+/// absorbed a race apart from one that only delayed a reported failure.
+static CLEANUP_RETRY_EXHAUSTED: AtomicU64 = AtomicU64::new(0);
+
+/// The errno of the most recent retryable failure, or 0 when none was seen.
+///
+/// Only the paths that read an errno from the kernel report one. A retry decided from
+/// the text of an `ip` failure has no errno to report, and reporting zero for it would
+/// claim a value the kernel never returned, so those record no errno rather than a
+/// wrong one.
+static CLEANUP_LAST_ERRNO: AtomicU64 = AtomicU64::new(0);
+
+/// Record that a retried cleanup exhausted its attempts.
+///
+/// The argument is the errno of the final retryable failure when the caller has one,
+/// which is the value an operator needs to tell a busy cgroup apart from a missing
+/// one. The attempt count and the delays are recorded by the retry sites themselves.
+pub(crate) fn record_cleanup_retry_exhausted(last_errno: Option<i32>) {
+    CLEANUP_RETRY_EXHAUSTED.fetch_add(1, Ordering::Relaxed);
+    if let Some(errno) = last_errno {
+        CLEANUP_LAST_ERRNO.store(errno as u64, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn record_cleanup_retry() {
     CLEANUP_RETRIES.fetch_add(1, Ordering::Relaxed);
 }
@@ -161,6 +188,8 @@ pub(crate) fn metrics() -> serde_json::Value {
         "unmounts": UNMOUNT_COUNT.load(Ordering::Relaxed),
         "cleanup_retries": CLEANUP_RETRIES.load(Ordering::Relaxed),
         "cleanup_retry_delay_us": CLEANUP_RETRY_DELAY_US.load(Ordering::Relaxed),
+        "cleanup_retry_exhausted": CLEANUP_RETRY_EXHAUSTED.load(Ordering::Relaxed),
+        "cleanup_last_errno": CLEANUP_LAST_ERRNO.load(Ordering::Relaxed),
         "host_commands": HOST_COMMANDS.load(Ordering::Relaxed),
         "host_command_timeouts": HOST_COMMAND_TIMEOUTS.load(Ordering::Relaxed),
         "host_command_failures": HOST_COMMAND_FAILURES.load(Ordering::Relaxed),
