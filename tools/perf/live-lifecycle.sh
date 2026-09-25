@@ -3,6 +3,10 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$script_dir/../.." && pwd)
+# For host_metadata: a lifecycle number is only comparable against another one
+# taken on a host of the same kernel, CPU, and filesystem, so the run publishes
+# what it was measured on.
+source "$script_dir/common.sh"
 # Prefer the release profile, for the same reason common.sh uses it: the debug
 # binary is more than ten times the size, and the cost of starting it three times
 # per workspace start lands entirely in the session phase of the measurement. A
@@ -75,6 +79,9 @@ cp "$script_dir/live-heavy.Enclavefile" "$work_dir/Enclavefile"
 cd "$work_dir"
 printf 'binary=%s workers=%s cleanup_workers=%s rootfs_source=%s\n' \
   "$binary" "$workers" "$cleanup_workers" "$rootfs_source"
+# The host the numbers came from, so a saved result can be compared with
+# another one rather than only read.
+host_metadata
 ENCLAVE_UP_WORKERS="$workers" ENCLAVE_CLEANUP_WORKERS="$cleanup_workers" \
   /usr/bin/time -f 'WORKSPACE_BOOT_COLD_SECONDS=%e' \
   "${runner[@]}" "$binary" --socket "$socket_path" up --cache-setup
