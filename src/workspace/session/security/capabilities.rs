@@ -1,16 +1,26 @@
+//! The capability and seccomp policy a workspace session runs under.
+//!
+//! Both an exec and a session start by dropping every capability the workspace
+//! does not need from the bounding set, and then installing a seccomp filter that
+//! returns `EPERM` for the syscalls which would let a process reach back into the
+//! host: mounting, namespace changes, kernel module and key management, tracing
+//! another process, and the newer filesystem and io_uring entry points.
+//!
+//! An exec keeps a small set of capabilities because a user command such as a
+//! package manager legitimately needs to change ownership and to bind a low port.
+//! A session keeps none.
+
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
 
 use anyhow::{Context, Result};
-use nix::mount::{mount, umount2, MntFlags, MsFlags};
 
-const CAP_CHOWN: u32 = 0;
+pub(super) const CAP_CHOWN: u32 = 0;
 const CAP_DAC_OVERRIDE: u32 = 1;
 const CAP_FOWNER: u32 = 3;
 const CAP_KILL: u32 = 5;
-const CAP_SETGID: u32 = 6;
-const CAP_SETUID: u32 = 7;
+pub(super) const CAP_SETGID: u32 = 6;
+pub(super) const CAP_SETUID: u32 = 7;
 const CAP_NET_BIND_SERVICE: u32 = 10;
 
 const CAP_HEADER_VERSION_3: u32 = 0x2008_0522;
@@ -18,17 +28,8 @@ const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
-const MASK_ROOT: &str = "/run/enclave/masked";
-const MASK_FILE_TARGETS: &[&str] = &[
-    "/proc/kallsyms",
-    "/proc/kcore",
-    "/proc/keys",
-    "/proc/modules",
-    "/proc/sched_debug",
-    "/proc/timer_list",
-];
-const MASK_DIR_TARGETS: &[&str] = &["/sys/kernel/debug", "/sys/kernel/security", "/sys/module"];
-const EXEC_CAPABILITIES: &[u32] = &[
+
+pub(super) const EXEC_CAPABILITIES: &[u32] = &[
     CAP_CHOWN,
     CAP_DAC_OVERRIDE,
     CAP_FOWNER,
@@ -52,161 +53,29 @@ struct CapUserData {
     inheritable: u32,
 }
 
-pub fn apply_exec_restrictions() -> Result<()> {
+/// The policy a workspace exec runs under: a small capability set, no new
+/// privileges, and a filter that leaves `clone3` available because the glibc and
+/// language runtimes a user command may start still call it.
+pub(crate) fn apply_exec_restrictions() -> Result<()> {
     apply_capability_policy(EXEC_CAPABILITIES)?;
     set_no_new_privs()?;
     install_seccomp_filter(true)
 }
 
-pub fn apply_session_restrictions() -> Result<()> {
+/// The policy a workspace session runs under: no capabilities at all, and a
+/// filter that also denies `clone3`.
+pub(crate) fn apply_session_restrictions() -> Result<()> {
     apply_capability_policy(&[])?;
     set_no_new_privs()?;
     install_seccomp_filter(false)
 }
 
-pub fn tighten_namespace_mounts() -> Result<()> {
-    if Path::new("/proc/sys").exists() {
-        remount_read_only_with_policy(Path::new("/proc/sys"))?;
-    }
-    if Path::new("/sys").exists() {
-        remount_read_only_with_policy(Path::new("/sys"))?;
-    }
-    if Path::new("/sys/fs/cgroup").exists() {
-        remount_read_only_with_policy(Path::new("/sys/fs/cgroup"))?;
-    }
-    Ok(())
-}
-
-pub fn mask_runtime_paths() -> Result<()> {
-    let file_root = Path::new(MASK_ROOT).join("files");
-    let dir_root = Path::new(MASK_ROOT).join("dirs");
-    fs::create_dir_all(&file_root)
-        .with_context(|| format!("failed to create {}", file_root.display()))?;
-    fs::create_dir_all(&dir_root)
-        .with_context(|| format!("failed to create {}", dir_root.display()))?;
-
-    for target in MASK_FILE_TARGETS {
-        let target = Path::new(target);
-        if !target.exists() {
-            continue;
-        }
-        let source = file_root.join(mask_name_for_path(target));
-        fs::write(&source, b"").with_context(|| format!("failed to write {}", source.display()))?;
-        bind_mask(&source, target)?;
-    }
-
-    for target in MASK_DIR_TARGETS {
-        let target = Path::new(target);
-        if !target.exists() {
-            continue;
-        }
-        let source = dir_root.join(mask_name_for_path(target));
-        fs::create_dir_all(&source)
-            .with_context(|| format!("failed to create {}", source.display()))?;
-        bind_mask(&source, target)?;
-    }
-
-    Ok(())
-}
-
-pub fn detach_old_root(old_root: &Path) -> Result<()> {
-    if !old_root.exists() {
-        return Ok(());
-    }
-    umount2(old_root, MntFlags::MNT_DETACH)
-        .with_context(|| format!("failed to detach old root {}", old_root.display()))?;
-    if let Err(err) = fs::remove_dir(old_root) {
-        if err.kind() != std::io::ErrorKind::NotFound {
-            return Err(err)
-                .with_context(|| format!("failed to remove old root {}", old_root.display()));
-        }
-    }
-    Ok(())
-}
-
-fn bind_remount_read_only(path: &Path) -> Result<()> {
-    mount(
-        Some(path),
-        path,
-        Option::<&str>::None,
-        MsFlags::MS_BIND | MsFlags::MS_REC,
-        Option::<&str>::None,
-    )
-    .with_context(|| format!("failed to bind-mount {}", path.display()))?;
-    mount(
-        Option::<&str>::None,
-        path,
-        Option::<&str>::None,
-        MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY | MsFlags::MS_REC,
-        Option::<&str>::None,
-    )
-    .with_context(|| format!("failed to remount {} read-only", path.display()))?;
-    Ok(())
-}
-
-fn remount_read_only_with_policy(path: &Path) -> Result<()> {
-    if let Err(err) = bind_remount_read_only(path) {
-        if should_ignore_readonly_remount_error(path, &err) {
-            tracing::warn!(
-                "workspace runtime could not remount {} read-only; continuing with remaining hardening: {err:#}",
-                path.display()
-            );
-            return Ok(());
-        }
-        return Err(err).with_context(|| format!("failed to remount {} read-only", path.display()));
-    }
-    Ok(())
-}
-
-fn should_ignore_readonly_remount_error(path: &Path, err: &anyhow::Error) -> bool {
-    matches!(path.to_str(), Some("/sys") | Some("/sys/fs/cgroup"))
-        && error_has_errno(err, libc::EPERM)
-}
-
-fn error_has_errno(err: &anyhow::Error, errno: i32) -> bool {
-    err.chain().any(|cause| {
-        cause
-            .downcast_ref::<std::io::Error>()
-            .and_then(|io_err| io_err.raw_os_error())
-            == Some(errno)
-            || cause
-                .downcast_ref::<nix::errno::Errno>()
-                .map(|nix_err| *nix_err as i32)
-                == Some(errno)
-    })
-}
-
-fn bind_mask(source: &Path, target: &Path) -> Result<()> {
-    mount(
-        Some(source),
-        target,
-        Option::<&str>::None,
-        MsFlags::MS_BIND,
-        Option::<&str>::None,
-    )
-    .with_context(|| {
-        format!(
-            "failed to bind mask {} over {}",
-            source.display(),
-            target.display()
-        )
-    })?;
-    mount(
-        Option::<&str>::None,
-        target,
-        Option::<&str>::None,
-        MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
-        Option::<&str>::None,
-    )
-    .with_context(|| {
-        format!(
-            "failed to remount masked path {} read-only",
-            target.display()
-        )
-    })?;
-    Ok(())
-}
-
+/// Drop everything outside `keep_caps` from the bounding set, then reduce the
+/// effective, permitted, and inheritable sets to exactly `keep_caps`.
+///
+/// The bounding set is the ceiling for what a process may ever acquire, so
+/// dropping from it first means the `capset` that follows cannot be undone by a
+/// later exec.
 fn apply_capability_policy(keep_caps: &[u32]) -> Result<()> {
     let keep: BTreeSet<u32> = keep_caps.iter().copied().collect();
     let last_cap = read_cap_last_cap().unwrap_or(40);
@@ -221,6 +90,7 @@ fn apply_capability_policy(keep_caps: &[u32]) -> Result<()> {
         }
     }
 
+    // `capset` takes the two 32-bit words that cover capabilities 0 through 63.
     let mut data = [
         CapUserData {
             effective: 0,
@@ -266,6 +136,14 @@ fn set_no_new_privs() -> Result<()> {
     Ok(())
 }
 
+/// Install the seccomp filter.
+///
+/// The first instruction loads the audit architecture and kills the process
+/// outright if it does not match `x86_64`: a filter built for one architecture
+/// must never be applied to a process running under another, because the syscall
+/// numbers would mean different calls. The remaining instructions compare the
+/// syscall number against the denied list, return `EPERM` for a match, and allow
+/// everything else.
 fn install_seccomp_filter(allow_clone3: bool) -> Result<()> {
     let deny_action = SECCOMP_RET_ERRNO | libc::EPERM as u32;
     let mut filter = vec![
@@ -315,7 +193,13 @@ fn install_seccomp_filter(allow_clone3: bool) -> Result<()> {
     Ok(())
 }
 
-fn denied_syscalls(allow_clone3: bool) -> Vec<u32> {
+/// The syscalls the filter returns `EPERM` for.
+///
+/// Every entry is a way to reach outside the workspace: mount and namespace
+/// manipulation, kernel modules, keys, tracing another process, the block layer,
+/// the newer mount API, io_uring, and the syslog. `clone3` is excluded from an
+/// exec because a user command may still start a runtime that uses it.
+pub(super) fn denied_syscalls(allow_clone3: bool) -> Vec<u32> {
     let mut syscalls = vec![
         libc::SYS_acct as u32,
         libc::SYS_add_key as u32,
@@ -377,6 +261,10 @@ fn jump(code: u16, k: u32, jt: u8, jf: u8) -> libc::sock_filter {
     libc::sock_filter { code, jt, jf, k }
 }
 
+/// The highest capability number this kernel defines, so the bounding set is
+/// cleared up to the real ceiling rather than a hard-coded guess. A kernel that
+/// does not expose the file falls back to 40, the value for the kernels Enclave
+/// supports.
 fn read_cap_last_cap() -> Option<u32> {
     fs::read_to_string("/proc/sys/kernel/cap_last_cap")
         .ok()?
@@ -384,14 +272,3 @@ fn read_cap_last_cap() -> Option<u32> {
         .parse::<u32>()
         .ok()
 }
-
-fn mask_name_for_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .trim_matches('/')
-        .replace('/', "__")
-        .replace('.', "_")
-}
-
-#[cfg(test)]
-#[path = "../../../tests/src/workspace/session/security.rs"]
-mod tests;
