@@ -66,6 +66,11 @@ pub(in crate::commands::workspace) fn print_workspace_status(status: &WorkspaceS
     println!("allocated_path: {}", status.allocated_path);
     println!("status: {}", workspace_status_label(&status.status));
     println!("active_process_count: {}", status.active_process_count);
+    // Which storage tier this workspace is on, because it is the thing that decides
+    // what a start and a stop cost: the directory tier mounts a bind and the quota
+    // tier mounts a loop-backed image and its overlay, which is the difference between
+    // the two published lifecycle numbers.
+    println!("storage_tier: {}", storage_tier(status));
     print_workspace_limits("workspace_limits", &status.limits);
     print_sandbox_limits("sandbox_limits", &status.sandbox_limits);
     if let Some(resource_usage) = &status.resource_usage {
@@ -87,6 +92,22 @@ pub(in crate::commands::workspace) fn print_workspace_ports(ports: &[PublishedPo
 
     for port in ports {
         println!("{}", format_published_port(port));
+    }
+}
+
+/// The storage tier a workspace is on, and what a lifecycle costs on it.
+///
+/// The tier is read from the limits rather than stored separately: a workspace with a
+/// disk allocation is on the quota tier, and one without is on the directory tier.
+/// The latencies are the medians published for each tier by the lifecycle benchmarks,
+/// so the number a reader sees here is the one they can check against a release.
+fn storage_tier(status: &WorkspaceStatusReport) -> String {
+    match status.limits.disk_bytes {
+        Some(bytes) => format!(
+            "quota (ext4 image on a loop device, {} bytes; boot 0.20s, shutdown 0.17s warm)",
+            bytes
+        ),
+        None => "directory (shared rootfs overlay; boot 0.88s, shutdown 0.56s warm)".to_string(),
     }
 }
 
@@ -130,3 +151,7 @@ fn print_sandbox_limits(label: &str, limits: &crate::sandbox::SandboxLimits) {
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
     );
 }
+
+#[cfg(test)]
+#[path = "../../../../tests/src/workspace/display.rs"]
+mod tests;
