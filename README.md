@@ -59,15 +59,17 @@ That didn't exist. So I built it.
 ## Latest Verified Lifecycle Timing
 
 On the bounded eight-workspace cached-rootfs benchmark (bootstrap preparation
-excluded), as the median of three consecutive runs:
+excluded), as the median of six consecutive runs:
 
 - cold workspace boot: `2.43s`
-- cold shutdown: `0.67s`
-- warm workspace boot: `1.97s`
-- warm shutdown: `0.50s`
+- cold shutdown: `0.64s`
+- warm workspace boot: `1.99s`
+- warm shutdown: `0.55s`
 
-The spread across those runs was 2.42–2.48s, 0.43–0.76s, 1.95–2.03s, and
-0.47–0.51s. These numbers are host-dependent. Reproduce them with:
+The host is shared with other work, so the spread is wide: cold boot ranged
+2.42–3.68s, cold shutdown 0.43–0.76s, warm boot 1.91–2.10s, and warm shutdown
+0.47–0.63s. Compare runs on the same machine rather than across machines.
+Reproduce them with:
 
 ```bash
 ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 ./tools/perf/live-lifecycle.sh

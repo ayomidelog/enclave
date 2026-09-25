@@ -116,15 +116,17 @@ It reuses a local cached rootfs, applies an eight-workspace memory/CPU/process
 budget, and excludes rootfs preparation from lifecycle timings.
 
 On the current bounded eight-workspace cached-rootfs validation, the medians of
-three consecutive runs are approximately:
+six consecutive runs are approximately:
 
-- cold workspace boot: `2.43s` (2.42–2.48s)
-- cold shutdown: `0.67s` (0.43–0.76s)
-- warm workspace boot: `1.97s` (1.95–2.03s)
-- warm shutdown: `0.50s` (0.47–0.51s)
+- cold workspace boot: `2.43s` (2.42–3.68s)
+- cold shutdown: `0.64s` (0.43–0.76s)
+- warm workspace boot: `1.99s` (1.91–2.10s)
+- warm shutdown: `0.55s` (0.47–0.63s)
 
-These measurements are host-dependent; use the repository benchmark to compare
-changes on the same machine.
+The validation host is shared with other work, which is what widens the ranges;
+the cold-boot outlier above was measured at a load average of 3.35 on four CPUs.
+These measurements are host-dependent, so use the repository benchmark to compare
+changes on the same machine rather than across machines.
 
 ## Stability Guarantees
 
