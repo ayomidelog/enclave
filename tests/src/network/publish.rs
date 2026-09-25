@@ -1,5 +1,224 @@
 use super::*;
 
+/// The threads that copy proxied connections, with their voluntary context
+/// switch counts.
+///
+/// A connection that is waiting for data either blocks once and stays blocked, or
+/// wakes on a timer to re-check whether it should stop. Only the second behaviour
+/// costs anything, and the kernel counts exactly one voluntary context switch per
+/// block-and-wake, so the total is a precise measure of polling that does not
+/// depend on wall time, CPU speed, or what other tests are doing. Process-wide
+/// CPU time cannot be used here because the test binary runs tests in parallel.
+///
+/// The kernel truncates a thread name to fifteen characters, so the match is on
+/// the truncated form; the accept thread is named after its port and cannot
+/// collide with it.
+fn connection_thread_switches() -> (usize, u64) {
+    const NAME_PREFIX: &str = "enclave-port-co";
+    let mut matched = 0usize;
+    let mut switches = 0u64;
+    let Ok(entries) = std::fs::read_dir("/proc/self/task") else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = std::fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        if !name.trim_end().starts_with(NAME_PREFIX) {
+            continue;
+        }
+        matched += 1;
+        let Ok(status) = std::fs::read_to_string(entry.path().join("status")) else {
+            continue;
+        };
+        for line in status.lines() {
+            if let Some(value) = line.strip_prefix("voluntary_ctxt_switches:") {
+                switches += value.trim().parse::<u64>().unwrap_or(0);
+            }
+        }
+    }
+    (matched, switches)
+}
+
+#[test]
+fn an_idle_connection_costs_no_cpu() {
+    // A connection with nothing to carry must not wake its thread. Reaping the
+    // idle timeout by polling with a short read timeout cost about 0.6 ms of CPU
+    // per connection per second, which is most of a core at the connection cap.
+    let service = TcpListener::bind("127.0.0.1:0").expect("bind the workspace service");
+    let service_port = service.local_addr().expect("service addr").port();
+    let acceptor = thread::spawn(move || {
+        let mut held = Vec::new();
+        for _ in 0..50 {
+            let (stream, _) = service.accept().expect("accept");
+            held.push(stream);
+        }
+        held
+    });
+
+    let publisher = PortPublisher::new();
+    let host_port = free_host_port();
+    publish_loopback_port(&publisher, host_port, service_port);
+
+    let mut clients = Vec::new();
+    for _ in 0..50 {
+        clients.push(TcpStream::connect(("127.0.0.1", host_port)).expect("connect"));
+    }
+    let _held = acceptor.join().expect("join the acceptor");
+
+    // Let the connections settle, then measure one second of doing nothing.
+    thread::sleep(Duration::from_millis(500));
+    let (matched, before) = connection_thread_switches();
+    assert_eq!(matched, 100, "expected two copy threads per connection");
+    thread::sleep(Duration::from_secs(1));
+    let (_, after) = connection_thread_switches();
+    let wakeups = after.saturating_sub(before);
+    assert!(
+        wakeups < 50,
+        "50 idle connections woke their threads {wakeups} times in one second"
+    );
+
+    drop(clients);
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+}
+
+#[test]
+fn withdrawing_a_port_ends_an_idle_connection() {
+    // The connection thread blocks in `read`, so a withdrawal only reaches it if
+    // the publisher shuts its socket down. Without that the client would stay
+    // connected to a port that is no longer published.
+    let service = TcpListener::bind("127.0.0.1:0").expect("bind the workspace service");
+    let service_port = service.local_addr().expect("service addr").port();
+    let acceptor = thread::spawn(move || {
+        let (stream, _) = service.accept().expect("accept the proxied connection");
+        stream
+    });
+
+    let publisher = PortPublisher::new();
+    let host_port = free_host_port();
+    publish_loopback_port(&publisher, host_port, service_port);
+
+    let mut client = TcpStream::connect(("127.0.0.1", host_port)).expect("connect to the port");
+    // Bound the read so a regression fails the test instead of hanging it.
+    client
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("set the client read timeout");
+    let _held = acceptor.join().expect("join the acceptor");
+
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+
+    let mut reply = Vec::new();
+    client
+        .read_to_end(&mut reply)
+        .expect("the withdrawn connection should close cleanly");
+    assert!(reply.is_empty(), "unexpected payload: {reply:?}");
+}
+
+/// An ephemeral port on the loopback interface, released before the caller uses
+/// it. The publisher binds by number rather than by handing back the socket, so
+/// the test has to name a port up front.
+fn free_host_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    listener.local_addr().expect("read the bound port").port()
+}
+
+fn publish_loopback_port(publisher: &PortPublisher, host_port: u16, service_port: u16) {
+    // A runtime pid equal to this process is what tells the proxy to reach the
+    // service over loopback instead of entering a workspace network namespace,
+    // which is what makes a published port testable without root.
+    let spec = PublishedPortSpec {
+        host_ip: "127.0.0.1".to_string(),
+        host_port,
+        workspace_port: service_port,
+        protocol: "tcp".to_string(),
+    };
+    let statuses = publisher
+        .apply_workspace_ports_strict(
+            "sb-publish",
+            "ws-publish",
+            std::process::id(),
+            "127.0.0.1",
+            std::slice::from_ref(&spec),
+        )
+        .expect("publish the port");
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(
+        statuses[0].state,
+        crate::workspace::PublishedPortState::Active
+    );
+}
+
+#[test]
+fn a_published_port_proxies_a_conversation_to_the_workspace_service() {
+    let service = TcpListener::bind("127.0.0.1:0").expect("bind the workspace service");
+    let service_port = service.local_addr().expect("service addr").port();
+    let echo = thread::spawn(move || {
+        let (mut stream, _) = service.accept().expect("accept the proxied connection");
+        let mut request = [0u8; 32];
+        let read = stream.read(&mut request).expect("read the request");
+        stream.write_all(&request[..read]).expect("write the echo");
+        stream.write_all(b"-done").expect("write the marker");
+        // Dropping the stream closes it, which is what ends the client's read.
+    });
+
+    let publisher = PortPublisher::new();
+    let host_port = free_host_port();
+    publish_loopback_port(&publisher, host_port, service_port);
+
+    let mut client = TcpStream::connect(("127.0.0.1", host_port)).expect("connect to the port");
+    client.write_all(b"hello").expect("write the request");
+    let mut reply = Vec::new();
+    client.read_to_end(&mut reply).expect("read the reply");
+    assert_eq!(reply, b"hello-done");
+
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+    assert!(!publisher.has_active_workspace_ports("sb-publish", "ws-publish"));
+    echo.join().expect("join the echo server");
+}
+
+#[test]
+fn clearing_published_ports_releases_the_host_port() {
+    // A stop proves the listeners were released by rebinding the port it held.
+    // That only holds if shutdown waits for the listener to close, not merely for
+    // the shutdown flag to be set.
+    let service = TcpListener::bind("127.0.0.1:0").expect("bind the workspace service");
+    let service_port = service.local_addr().expect("service addr").port();
+
+    let publisher = PortPublisher::new();
+    let host_port = free_host_port();
+    publish_loopback_port(&publisher, host_port, service_port);
+    assert!(publisher.has_active_workspace_ports("sb-publish", "ws-publish"));
+
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+    assert!(!publisher.has_active_workspace_ports("sb-publish", "ws-publish"));
+
+    let rebind = TcpListener::bind(("127.0.0.1", host_port));
+    assert!(
+        rebind.is_ok(),
+        "the published port is still held: {rebind:?}"
+    );
+}
+
+#[test]
+fn a_published_port_rejects_a_connection_it_cannot_proxy() {
+    // Nothing is listening on the workspace port, so the proxy must close the
+    // client rather than hold it. The client sees end of file.
+    let unavailable = free_host_port();
+
+    let publisher = PortPublisher::new();
+    let host_port = free_host_port();
+    publish_loopback_port(&publisher, host_port, unavailable);
+
+    let mut client = TcpStream::connect(("127.0.0.1", host_port)).expect("connect to the port");
+    let mut reply = Vec::new();
+    client
+        .read_to_end(&mut reply)
+        .expect("read the closed connection");
+    assert!(reply.is_empty(), "unexpected payload: {reply:?}");
+
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+}
+
 /// Poison `mutex` by panicking while holding it, the way a panicking request
 /// would. Returns whether the poison took effect.
 fn poison(mutex: &Mutex<impl Sized>) -> bool {

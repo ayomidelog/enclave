@@ -10,6 +10,7 @@ pub(super) struct ActivePublication {
     spec: PublishedPortSpec,
     workspace_ip: String,
     shutdown: Arc<AtomicBool>,
+    connections: Arc<ConnectionSet>,
     accept_thread: Option<JoinHandle<()>>,
 }
 
@@ -44,7 +45,9 @@ impl ActivePublication {
         );
 
         let shutdown = Arc::new(AtomicBool::new(false));
+        let live = Arc::new(ConnectionSet::new());
         let accept_shutdown = shutdown.clone();
+        let accept_live = Arc::clone(&live);
         let thread_name = format!("enclave-port-{}-{}", spec.host_port, spec.workspace_port);
         let workspace_port = spec.workspace_port;
         let accept_thread = thread::Builder::new()
@@ -56,6 +59,7 @@ impl ActivePublication {
                     runtime_pid,
                     workspace_port,
                     connections,
+                    accept_live,
                 )
             })
             .context("failed to spawn published-port accept thread")?;
@@ -64,6 +68,7 @@ impl ActivePublication {
             spec,
             workspace_ip: workspace_ip.to_string(),
             shutdown,
+            connections: live,
             accept_thread: Some(accept_thread),
         })
     }
@@ -74,6 +79,10 @@ impl ActivePublication {
 
     pub(super) fn shutdown(&mut self) {
         self.shutdown.store(true, Ordering::SeqCst);
+        // A connection thread blocks in `read`, so shutting its sockets down is
+        // what lets it notice the withdrawal. Without this the thread would stay
+        // parked until its peer closed, holding its connection slot.
+        self.connections.shutdown_all();
         if let Some(handle) = self.accept_thread.take() {
             let _ = handle.join();
         }

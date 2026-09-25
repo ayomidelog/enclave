@@ -31,12 +31,99 @@ impl ConnectionActivity {
     }
 }
 
+/// The live connections of one published port.
+///
+/// A connection thread blocks in `read` so that an idle connection costs no CPU,
+/// which leaves the socket as the only way to end one: a port withdrawal and an
+/// idle reap both work by shutting the connection down, and the blocked read
+/// returns as soon as they do. The set holds a duplicate of both sockets for
+/// that purpose rather than the raw descriptors, because the kernel reuses a
+/// descriptor number as soon as it is closed and shutting down a reused number
+/// would end an unrelated connection.
+pub(crate) struct ConnectionSet {
+    live: Mutex<Vec<LiveConnection>>,
+    next_id: AtomicU64,
+}
+
+struct LiveConnection {
+    id: u64,
+    activity: Arc<ConnectionActivity>,
+    client: TcpStream,
+    workspace: TcpStream,
+}
+
+impl ConnectionSet {
+    pub(crate) fn new() -> Self {
+        Self {
+            live: Mutex::new(Vec::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    /// Register a connection so it can be woken later.
+    ///
+    /// Failing to duplicate a socket is not fatal. The connection still carries
+    /// data; it simply ends when its peer does instead of being woken early.
+    pub(crate) fn register(
+        &self,
+        activity: Arc<ConnectionActivity>,
+        client: &TcpStream,
+        workspace: &TcpStream,
+    ) -> Option<u64> {
+        let client = client.try_clone().ok()?;
+        let workspace = workspace.try_clone().ok()?;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.live().push(LiveConnection {
+            id,
+            activity,
+            client,
+            workspace,
+        });
+        Some(id)
+    }
+
+    pub(crate) fn release(&self, id: u64) {
+        self.live().retain(|connection| connection.id != id);
+    }
+
+    /// End every connection that has moved no bytes for `idle_timeout`.
+    pub(crate) fn shutdown_idle(&self, idle_timeout: Duration) {
+        for connection in self.live().iter() {
+            if connection.activity.idle_for() >= idle_timeout {
+                connection.shutdown();
+            }
+        }
+    }
+
+    /// End every connection, which wakes any thread blocked on its socket.
+    pub(crate) fn shutdown_all(&self) {
+        for connection in self.live().iter() {
+            connection.shutdown();
+        }
+    }
+
+    fn live(&self) -> std::sync::MutexGuard<'_, Vec<LiveConnection>> {
+        // The set is a list of sockets, and the worst a stale entry can do is
+        // shut down a socket that is already gone, so a panic while the lock is
+        // held must not cost the daemon its port handling.
+        self.live.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+impl LiveConnection {
+    fn shutdown(&self) {
+        let _ = self.client.shutdown(Shutdown::Both);
+        let _ = self.workspace.shutdown(Shutdown::Both);
+    }
+}
+
 pub(crate) fn run_accept_loop(
     listener: TcpListener,
     shutdown: Arc<AtomicBool>,
     runtime_pid: u32,
     workspace_port: u16,
     connections: ConnectionBudget,
+    live: Arc<ConnectionSet>,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         // Wait for a connection instead of polling. Sleeping on `WouldBlock`
@@ -45,6 +132,9 @@ pub(crate) fn run_accept_loop(
         if !wait_for_accept(&listener, shutdown.as_ref()) {
             return;
         }
+        // The wait above bounds how often this runs, so an idle connection is
+        // reaped within one poll interval of going quiet.
+        live.shutdown_idle(CONNECTION_IDLE_TIMEOUT);
         match listener.accept() {
             Ok((stream, _)) => {
                 let Some(permit) = connections.try_acquire() else {
@@ -57,11 +147,18 @@ pub(crate) fn run_accept_loop(
                     continue;
                 };
                 let connection_shutdown = Arc::clone(&shutdown);
+                let connection_live = Arc::clone(&live);
                 if let Err(err) = thread::Builder::new()
                     .name("enclave-port-conn".to_string())
                     .spawn(move || {
                         let _permit = permit;
-                        handle_connection(stream, runtime_pid, workspace_port, connection_shutdown);
+                        handle_connection(
+                            stream,
+                            runtime_pid,
+                            workspace_port,
+                            connection_shutdown,
+                            connection_live,
+                        );
                     })
                 {
                     tracing::warn!("failed to spawn published-port connection worker: {err}");
@@ -119,9 +216,12 @@ pub(crate) fn handle_connection(
     runtime_pid: u32,
     workspace_port: u16,
     shutdown: Arc<AtomicBool>,
+    live: Arc<ConnectionSet>,
 ) {
-    let _ = client_stream.set_read_timeout(Some(CONNECTION_POLL_INTERVAL));
-    let _ = client_stream.set_write_timeout(Some(CONNECTION_POLL_INTERVAL));
+    // Reads block until data arrives, so an idle connection costs nothing. A
+    // write keeps a timeout so a peer that stops reading cannot hold a copy
+    // thread indefinitely; the connection is dropped when it expires.
+    let _ = client_stream.set_write_timeout(Some(CONNECTION_WRITE_TIMEOUT));
     let mut workspace_stream = match connect_to_workspace_service(runtime_pid, workspace_port) {
         Ok(stream) => stream,
         Err(err) => {
@@ -134,8 +234,7 @@ pub(crate) fn handle_connection(
             return;
         }
     };
-    let _ = workspace_stream.set_read_timeout(Some(CONNECTION_POLL_INTERVAL));
-    let _ = workspace_stream.set_write_timeout(Some(CONNECTION_POLL_INTERVAL));
+    let _ = workspace_stream.set_write_timeout(Some(CONNECTION_WRITE_TIMEOUT));
 
     let mut client_reader = match client_stream.try_clone() {
         Ok(stream) => stream,
@@ -153,6 +252,7 @@ pub(crate) fn handle_connection(
     };
 
     let activity = Arc::new(ConnectionActivity::new());
+    let registration = live.register(Arc::clone(&activity), &client_stream, &workspace_stream);
     let upstream_shutdown = Arc::clone(&shutdown);
     let upstream_activity = Arc::clone(&activity);
     let upstream = thread::spawn(move || {
@@ -175,6 +275,9 @@ pub(crate) fn handle_connection(
     );
     let _ = client_stream.shutdown(Shutdown::Write);
     let _ = upstream.join();
+    if let Some(id) = registration {
+        live.release(id);
+    }
 }
 
 /// Copy until the peer closes, the publisher shuts down, or the connection has

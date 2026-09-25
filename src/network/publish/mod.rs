@@ -18,11 +18,17 @@ mod proxy;
 mod publication;
 
 use limiter::{ConnectionBudget, ConnectionLimiter};
-use proxy::run_accept_loop;
+use proxy::{run_accept_loop, ConnectionSet};
 use publication::{shutdown_publications, ActivePublication, PublishMode, WorkspacePublishKey};
 
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// How long a write to one side of a proxied connection may make no progress.
+///
+/// Reads block without a timeout so that an idle connection costs no CPU, which
+/// leaves the write as the only direction that can stall indefinitely. A peer
+/// that stops reading therefore ends its connection when this expires instead of
+/// holding a copy thread and a connection slot forever.
+const CONNECTION_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a proxied connection may move no bytes before it is closed.
 ///
 /// Published ports are ordinary TCP services, so a connection that goes quiet
