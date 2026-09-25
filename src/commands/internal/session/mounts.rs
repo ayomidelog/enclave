@@ -110,9 +110,16 @@ pub(crate) fn mount_post_pivot_filesystems(
     workspace_idmap_option: &str,
     disk_backed_tmp: bool,
 ) -> Result<()> {
+    let proc_timer = crate::perf::Timer::new("session.mounts.proc");
     mount_proc_if_needed()?;
+    drop(proc_timer);
+    let devpts_timer = crate::perf::Timer::new("session.mounts.devpts");
     mount_devpts_if_needed()?;
+    drop(devpts_timer);
+    let sys_timer = crate::perf::Timer::new("session.mounts.sys");
     bind_sys_if_needed(old_root)?;
+    drop(sys_timer);
+    let tmp_timer = crate::perf::Timer::new("session.mounts.tmp");
     mount_workspace_tmp_if_needed(
         old_root,
         workspace_fs,
@@ -120,8 +127,11 @@ pub(crate) fn mount_post_pivot_filesystems(
         workspace_idmap_option,
         disk_backed_tmp,
     )?;
+    drop(tmp_timer);
+    let runtime_timer = crate::perf::Timer::new("session.mounts.runtime");
     mount_runtime_tmpfs_if_needed(Path::new("/run/enclave/auth"))?;
     mount_runtime_tmpfs_if_needed(Path::new("/run/enclave/env"))?;
+    drop(runtime_timer);
     Ok(())
 }
 

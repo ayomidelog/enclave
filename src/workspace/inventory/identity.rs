@@ -33,12 +33,6 @@ pub enum ResourceIdentity {
     Veth {
         interface: String,
     },
-    /// One Enclave-owned anti-spoofing rule, identified by what it matches.
-    FirewallRule {
-        chain: String,
-        interface: String,
-        address: String,
-    },
     /// A file the workspace's runtime wrote.
     Path {
         path: PathBuf,
@@ -54,7 +48,6 @@ impl ResourceIdentity {
             Self::Mount { .. } => ResourceKind::Mount,
             Self::LoopDevice { .. } => ResourceKind::LoopDevice,
             Self::Veth { .. } => ResourceKind::Veth,
-            Self::FirewallRule { .. } => ResourceKind::FirewallRule,
             Self::Path { .. } => ResourceKind::Path,
         }
     }
@@ -74,11 +67,6 @@ impl ResourceIdentity {
                 backing_image,
             } => format!("loop_device:{device}:{}", backing_image.display()),
             Self::Veth { interface } => format!("veth:{interface}"),
-            Self::FirewallRule {
-                chain,
-                interface,
-                address,
-            } => format!("firewall_rule:{chain}:{interface}:{address}"),
             Self::Path { path } => format!("path:{}", path.display()),
         }
     }
@@ -110,13 +98,6 @@ impl ResourceIdentity {
                     .unwrap_or(true)
             }
             Self::Veth { interface } => crate::network::teardown::veth_is_present(interface),
-            Self::FirewallRule {
-                chain,
-                interface,
-                address,
-            } => crate::network::nat::anti_spoof_chains_for(interface, address)
-                .map(|chains| chains.iter().any(|present| *present == chain))
-                .unwrap_or(true),
             Self::Path { path } => path.exists(),
         }
     }
@@ -135,11 +116,6 @@ impl ResourceIdentity {
                 backing_image,
             } => format!("loop device {device} backing {}", backing_image.display()),
             Self::Veth { interface } => format!("interface {interface}"),
-            Self::FirewallRule {
-                chain,
-                interface,
-                address,
-            } => format!("{chain} anti-spoof rule for {interface} ({address})"),
             Self::Path { path } => format!("file {}", path.display()),
         }
     }
@@ -154,7 +130,6 @@ pub enum ResourceKind {
     Mount,
     LoopDevice,
     Veth,
-    FirewallRule,
     Path,
 }
 
@@ -167,7 +142,6 @@ impl ResourceKind {
             Self::Mount => "mount",
             Self::LoopDevice => "loop_device",
             Self::Veth => "veth",
-            Self::FirewallRule => "firewall_rule",
             Self::Path => "path",
         }
     }

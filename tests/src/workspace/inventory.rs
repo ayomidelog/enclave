@@ -150,5 +150,5 @@ fn the_surviving_summary_names_each_resource_by_kind() {
 fn resource_kinds_have_stable_report_labels() {
     assert_eq!(ResourceKind::Process.as_str(), "process");
     assert_eq!(ResourceKind::LoopDevice.as_str(), "loop_device");
-    assert_eq!(ResourceKind::FirewallRule.as_str(), "firewall_rule");
+    assert_eq!(ResourceKind::Veth.as_str(), "veth");
 }

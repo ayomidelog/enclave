@@ -1,9 +1,17 @@
 use super::*;
 
 pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArgs) -> Result<()> {
+    // Each step here is inside the new mount namespace, where a failure can only
+    // be reported as an opaque path or mount error. Timing them separately is
+    // what makes a slow workspace start attributable to the root filesystem, the
+    // overlay, the pivot, the workspace bind mount, or the post-pivot mounts
+    // instead of "session readiness".
+    let validate = crate::perf::Timer::new("session.bootstrap.validate");
     let rootfs = validate_workspace_rootfs(Path::new(&args.rootfs))?;
     let old_root_name = workspace_old_root_name(&args.workspace_id)?;
     let pivoted_old_root = PathBuf::from("/").join(&old_root_name);
+    drop(validate);
+    let root = crate::perf::Timer::new("session.bootstrap.root");
     let (new_root, host_old_root) = if args.root_overlay_merged.is_empty() {
         let host_old_root = workspace_old_root_path(&rootfs, &args.workspace_id)?;
         fs::create_dir_all(&host_old_root)
@@ -20,21 +28,28 @@ pub(crate) fn run_workspace_session_bootstrap(args: WorkspaceSessionBootstrapArg
             .with_context(|| format!("failed to create {}", host_old_root.display()))?;
         (merged, host_old_root)
     };
+    drop(root);
 
+    let pivot = crate::perf::Timer::new("session.bootstrap.pivot");
     pivot_into_rootfs(&new_root, &host_old_root)?;
     std::env::set_current_dir("/").context("failed to chdir to / after pivot_root")?;
+    drop(pivot);
+    let workspace = crate::perf::Timer::new("session.bootstrap.workspace");
     mount_workspace_source(
         &pivoted_old_root,
         Path::new(&args.workspace_fs),
         Path::new(&args.mount_target),
         &args.workspace_idmap_option,
     )?;
+    drop(workspace);
+    let post = crate::perf::Timer::new("session.bootstrap.post_pivot");
     mount_post_pivot_filesystems(
         &pivoted_old_root,
         Path::new(&args.workspace_fs),
         &args.workspace_idmap_option,
         args.disk_backed_tmp,
     )?;
+    drop(post);
     run_workspace_session_loop_inner(&pivoted_old_root, Path::new(&args.ready_file))
 }
 

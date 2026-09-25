@@ -158,7 +158,10 @@ pub(crate) fn verify_workspace_destroyed(
                 veth_absent,
                 format!("interface {veth_host} is still present"),
             );
-            match crate::network::nat::anti_spoof_chains_for(&veth_host, ip) {
+            let firewall_timer = crate::perf::Timer::new("certificate.firewall");
+            let chains = crate::network::nat::anti_spoof_chains_for(&veth_host, ip);
+            drop(firewall_timer);
+            match chains {
                 Ok(chains) if chains.is_empty() => {}
                 Ok(chains) => certificate.record(
                     "firewall",
