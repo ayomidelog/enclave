@@ -3,42 +3,109 @@ use super::*;
 pub fn ensure_workspace_storage_unmounted(workspace: &WorkspaceMetadata) -> Result<()> {
     let workspace_root = Path::new(&workspace.workspace_path);
     let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
-    let mountpoints = snapshot.at_or_below(workspace_root);
-
     let owner_is_dead = workspace_owner_is_dead(workspace);
-    for path in mountpoints {
-        unmount_workspace_path(&path, owner_is_dead)?;
+    let state_dir = crate::fsutil::enclave_state_root(workspace_root);
+    for entry in snapshot.at_or_below_entries(workspace_root) {
+        if !is_enclave_owned(entry, state_dir.as_deref()) {
+            continue;
+        }
+        unmount_workspace_path(&entry.mountpoint, owner_is_dead)?;
     }
     verify_no_mounts_below(workspace_root)?;
     verify_disk_image_loop_detached(workspace)?;
     Ok(())
 }
 
+/// Whether Enclave may unmount this mount.
+///
+/// Without a provable state directory Enclave cannot tell its own mounts from an
+/// operator's, so it unmounts nothing. Whatever is left is then reported by
+/// `verify_no_mounts_below` rather than detached blindly.
+fn is_enclave_owned(entry: &crate::fsutil::MountInfoEntry, state_dir: Option<&Path>) -> bool {
+    state_dir.is_some_and(|state_dir| entry.is_enclave_owned(state_dir))
+}
+
+/// The mounts at or below `root`, described and split by who created them.
+///
+/// Enclave's own surviving mounts are a cleanup failure. A mount Enclave did not
+/// create is not Enclave's to remove, so it is reported instead of detached: the
+/// operator put it there, and Enclave cannot put it back.
+#[cfg(test)]
+pub(crate) fn mounts_below(
+    snapshot: &crate::fsutil::MountInfoSnapshot,
+    root: &Path,
+) -> (Vec<String>, Vec<String>) {
+    let state_dir = crate::fsutil::enclave_state_root(root);
+    let mut owned = Vec::new();
+    let mut foreign = Vec::new();
+    for entry in snapshot.at_or_below_entries(root) {
+        if is_enclave_owned(entry, state_dir.as_deref()) {
+            owned.push(describe_mount(entry));
+        } else {
+            // A foreign mount is not Enclave's to detach, so the processes
+            // holding it are not an actionable part of the report; naming the
+            // mount and its source is what tells the operator where to look.
+            foreign.push(entry.describe());
+        }
+    }
+    (owned, foreign)
+}
+
+fn describe_mount(entry: &crate::fsutil::MountInfoEntry) -> String {
+    let holders = mount_holders(&entry.mountpoint);
+    if holders.is_empty() {
+        entry.describe()
+    } else {
+        format!("{} (holders: {})", entry.describe(), holders.join(","))
+    }
+}
+
+/// One sentence naming the mounts that survived, grouped by who created them.
+pub(crate) fn remaining_mount_detail(owned: &[String], foreign: &[String]) -> String {
+    let mut detail = Vec::new();
+    if !owned.is_empty() {
+        detail.push(format!(
+            "{} Enclave mount(s) survived unmount: {}",
+            owned.len(),
+            owned.join("; ")
+        ));
+    }
+    if !foreign.is_empty() {
+        detail.push(format!(
+            "{} mount(s) were not created by Enclave and were left in place: {}",
+            foreign.len(),
+            foreign.join("; ")
+        ));
+    }
+    detail.join("; ")
+}
+
 /// Re-read mountinfo after unmounting instead of trusting `umount2` alone.
 /// A mount that is still busy in another namespace leaves a live entry, and
 /// deleting the workspace afterwards would leak it permanently.
 pub(crate) fn verify_no_mounts_below(root: &Path) -> Result<()> {
-    let remaining = crate::fsutil::MountInfoSnapshot::load()?.at_or_below(root);
-    if remaining.is_empty() {
+    let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
+    let owned = snapshot.owned_at_or_below(root);
+    let foreign = snapshot.foreign_at_or_below(root);
+    if !foreign.is_empty() {
+        tracing::warn!(
+            "{} mount(s) below {} were not created by Enclave and were left in place: {}",
+            foreign.len(),
+            root.display(),
+            foreign.join("; ")
+        );
+    }
+    // Only Enclave's own mounts are Enclave's failure. A foreign mount is still
+    // there because someone else put it there, and detaching it would destroy
+    // state Enclave did not create.
+    if owned.is_empty() {
         return Ok(());
     }
-    let holders = remaining
-        .iter()
-        .map(|path| {
-            let holders = mount_holders(path);
-            if holders.is_empty() {
-                path.display().to_string()
-            } else {
-                format!("{} (holders: {})", path.display(), holders.join(","))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
     bail!(
-        "{} workspace mount(s) still present below {} after unmount: {}",
-        remaining.len(),
+        "{} Enclave mount(s) still present below {} after unmount: {}",
+        owned.len(),
         root.display(),
-        holders
+        remaining_mount_detail(&owned, &foreign)
     )
 }
 
@@ -51,9 +118,13 @@ pub(crate) fn ensure_workspace_storage_unmounted_many(
     let mut mountpoints = Vec::new();
     for workspace in workspaces {
         let root = Path::new(&workspace.workspace_path);
+        let state_dir = crate::fsutil::enclave_state_root(root);
         let owner_is_dead = workspace_owner_is_dead(workspace);
-        for path in snapshot.at_or_below(root) {
-            mountpoints.push((path, owner_is_dead));
+        for entry in snapshot.at_or_below_entries(root) {
+            if !is_enclave_owned(entry, state_dir.as_deref()) {
+                continue;
+            }
+            mountpoints.push((entry.mountpoint.clone(), owner_is_dead));
         }
     }
     mountpoints.sort_by(|left, right| {
@@ -69,18 +140,25 @@ pub(crate) fn ensure_workspace_storage_unmounted_many(
     }
     let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
     for workspace in workspaces {
-        let remaining = snapshot.at_or_below(Path::new(&workspace.workspace_path));
-        if !remaining.is_empty() {
-            bail!(
-                "workspace '{}' still has {} mount(s) below {} after unmount: {}",
+        let root = Path::new(&workspace.workspace_path);
+        let owned = snapshot.owned_at_or_below(root);
+        let foreign = snapshot.foreign_at_or_below(root);
+        if !foreign.is_empty() {
+            tracing::warn!(
+                "workspace '{}': {} mount(s) below {} were not created by Enclave and were left in place: {}",
                 workspace.id,
-                remaining.len(),
+                foreign.len(),
                 workspace.workspace_path,
-                remaining
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                foreign.join("; ")
+            );
+        }
+        if !owned.is_empty() {
+            bail!(
+                "workspace '{}' still has {} Enclave mount(s) below {} after unmount: {}",
+                workspace.id,
+                owned.len(),
+                workspace.workspace_path,
+                remaining_mount_detail(&owned, &foreign)
             );
         }
     }
@@ -90,23 +168,37 @@ pub(crate) fn ensure_workspace_storage_unmounted_many(
     Ok(())
 }
 
+/// What a sweep of the sandboxes tree for mounts a previous run left behind found.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct StaleMountSweep {
+    /// Enclave's own mounts that were unmounted.
+    pub unmounted: usize,
+    /// Mounts under the tree that Enclave did not create, described for a report.
+    pub foreign: Vec<String>,
+}
+
 pub(crate) fn unmount_mounts_at_or_below_excluding(
     root: &Path,
     excluded_roots: &[PathBuf],
-) -> Result<usize> {
-    let mountpoints = crate::fsutil::MountInfoSnapshot::load()?.at_or_below(root);
-    let mut unmounted = 0usize;
-    for path in mountpoints {
+) -> Result<StaleMountSweep> {
+    let snapshot = crate::fsutil::MountInfoSnapshot::load()?;
+    let state_dir = crate::fsutil::enclave_state_root(root);
+    let mut sweep = StaleMountSweep::default();
+    for entry in snapshot.at_or_below_entries(root) {
         if excluded_roots
             .iter()
-            .any(|excluded| path.starts_with(excluded))
+            .any(|excluded| entry.mountpoint.starts_with(excluded))
         {
             continue;
         }
-        unmount_workspace_path(&path, true)?;
-        unmounted += 1;
+        if !is_enclave_owned(entry, state_dir.as_deref()) {
+            sweep.foreign.push(describe_mount(entry));
+            continue;
+        }
+        unmount_workspace_path(&entry.mountpoint, true)?;
+        sweep.unmounted += 1;
     }
-    Ok(unmounted)
+    Ok(sweep)
 }
 
 pub(crate) fn workspace_owner_is_dead(workspace: &WorkspaceMetadata) -> bool {

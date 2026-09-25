@@ -34,6 +34,10 @@ pub struct DoctorCheck {
 pub struct DoctorRepairReport {
     pub registry: crate::registry::RepairReport,
     pub unmounted_stale_mounts: usize,
+    /// Mounts under the state directory that Enclave did not create and refused
+    /// to unmount, described as `<mountpoint> (source <source>)`.
+    #[serde(default)]
+    pub foreign_stale_mounts: Vec<String>,
     pub reconciled_workspace_mounts: usize,
     #[serde(default)]
     pub removed_stale_workspace_cgroups: usize,
@@ -146,10 +150,18 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         crate::workspace::ensure_workspace_storage_unmounted(&workspace)?;
         reconciled_workspace_mounts += 1;
     }
-    let unmounted_stale_mounts = crate::workspace::unmount_mounts_at_or_below_excluding(
+    let stale_mounts = crate::workspace::unmount_mounts_at_or_below_excluding(
         &state_dir.join("sandboxes"),
         &active_roots,
     )?;
+    if !stale_mounts.foreign.is_empty() {
+        tracing::warn!(
+            "{} mount(s) under {} were not created by Enclave and were left in place: {}",
+            stale_mounts.foreign.len(),
+            state_dir.join("sandboxes").display(),
+            stale_mounts.foreign.join("; ")
+        );
+    }
     let ownership = cgroups::cgroup_ownership(state_dir)?;
     let removed_stale_workspace_cgroups =
         cgroups::remove_empty_workspace_cgroups(Path::new(cgroups::CGROUP_ROOT), &ownership)?;
@@ -185,7 +197,8 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
 
     Ok(DoctorRepairReport {
         registry,
-        unmounted_stale_mounts,
+        unmounted_stale_mounts: stale_mounts.unmounted,
+        foreign_stale_mounts: stale_mounts.foreign,
         reconciled_workspace_mounts,
         removed_stale_workspace_cgroups,
         removed_stale_firewall_rules,
@@ -209,6 +222,6 @@ pub(crate) use firewall::stale_anti_spoof_rules;
 #[cfg(test)]
 pub(crate) use journal::check_operation_journal;
 #[cfg(test)]
-pub(crate) use mounts::check_orphaned_mounts;
-#[cfg(test)]
 pub(crate) use mounts::check_sandbox_rootfs_mounts as check_sandbox_rootfs;
+#[cfg(test)]
+pub(crate) use mounts::{check_orphaned_mounts, classify_sandbox_mounts};

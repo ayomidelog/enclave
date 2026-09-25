@@ -74,6 +74,10 @@ pub(crate) use tmp::ensure_workspace_tmp_layout;
 pub(crate) use tmp::reset_workspace_tmp;
 pub(crate) use tmp::workspace_tmp_path;
 pub(crate) use unmount::ensure_workspace_storage_unmounted_many;
+#[cfg(test)]
+pub(crate) use unmount::mounts_below;
+#[cfg(test)]
+pub(crate) use unmount::remaining_mount_detail;
 pub(crate) use unmount::unmount_mounts_at_or_below_excluding;
 pub(crate) use unmount::verify_disk_image_loop_detached;
 

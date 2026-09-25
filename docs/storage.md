@@ -112,6 +112,8 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 
 Use `enclave doctor --repair` after a host reboot, daemon crash, or interrupted cleanup. It validates daemon ownership, removes stale nested workspace mounts before filesystem reconciliation, clears dead namespace state, and reconciles registry records with safe on-disk sandbox and workspace data. It does not remove a directory while it or one of its descendants is still mounted.
 
+Enclave unmounts only mounts it created, and it decides that from the mount itself rather than from its path. Every mount Enclave makes below the state directory is one of three things: an OverlayFS mount, a bind mount whose mount root lies inside the state directory, or a loop device backed by a file inside the state directory. A mount matching none of those is treated as foreign. `doctor` reports foreign mounts separately, `doctor --repair` leaves them in place, and a workspace or sandbox destroy refuses to delete a directory while a foreign mount is below it, because removing the directory would recurse into that mount and delete files Enclave did not create. `enclave doctor --repair` reports what it left behind in `foreign_stale_mounts`.
+
 ## Auth data
 
 - Provider tokens are stored on the host at `<state_dir>/auth/<provider>.token`.

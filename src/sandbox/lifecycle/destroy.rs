@@ -110,6 +110,23 @@ pub fn destroy_sandbox_with_mode(
                 detail: format!("{error:#}"),
             });
         }
+        // A mount under the sandbox that Enclave did not create, for example a
+        // tmpfs an operator placed there, would be walked into by the directory
+        // removal below. Refuse instead: only the operator can decide when that
+        // mount goes.
+        if let Ok(snapshot) = crate::fsutil::MountInfoSnapshot::load() {
+            let foreign = snapshot.foreign_at_or_below(&sandbox_dir);
+            if !foreign.is_empty() {
+                retained.push(RetainedResource {
+                    resource: "foreign_mounts".to_string(),
+                    detail: format!(
+                        "{} mount(s) below the sandbox were not created by Enclave and were left in place: {}",
+                        foreign.len(),
+                        foreign.join("; ")
+                    ),
+                });
+            }
+        }
         let sandbox_cgroup = PathBuf::from("/sys/fs/cgroup")
             .join(crate::sandbox::cgroup::sandbox_cgroup_name(&metadata.id));
         if let Err(error) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_cgroup) {

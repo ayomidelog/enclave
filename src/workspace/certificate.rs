@@ -196,22 +196,31 @@ pub(crate) fn verify_workspace_cleanup(
 
     match crate::fsutil::MountInfoSnapshot::load() {
         Ok(snapshot) => {
-            let remaining = snapshot.at_or_below(Path::new(&workspace.workspace_path));
-            certificate.mounts_absent = remaining.is_empty();
+            let root = Path::new(&workspace.workspace_path);
+            // The certificate answers for the mounts Enclave created. A mount
+            // Enclave did not create is not a resource this workspace owned, so
+            // it is reported rather than counted as an Enclave cleanup failure.
+            let owned = snapshot.owned_at_or_below(root);
+            let foreign = snapshot.foreign_at_or_below(root);
+            certificate.mounts_absent = owned.is_empty();
             certificate.record(
                 "mounts",
                 certificate.mounts_absent,
                 format!(
-                    "{} mount(s) remain below {}: {}",
-                    remaining.len(),
-                    workspace.workspace_path,
-                    remaining
-                        .iter()
-                        .map(|path| path.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    "{} Enclave mount(s) remain below {}",
+                    owned.len(),
+                    workspace.workspace_path
                 ),
             );
+            if !foreign.is_empty() {
+                tracing::warn!(
+                    "workspace '{}': {} mount(s) below {} were not created by Enclave and were left in place: {}",
+                    workspace.id,
+                    foreign.len(),
+                    workspace.workspace_path,
+                    foreign.join("; ")
+                );
+            }
         }
         Err(error) => {
             certificate.mounts_absent = false;

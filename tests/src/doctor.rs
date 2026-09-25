@@ -168,6 +168,49 @@ fn check_orphaned_mounts_does_not_panic() {
 }
 
 #[test]
+fn orphaned_mount_check_counts_enclave_leftovers_and_names_foreign_mounts() {
+    let state_dir = Path::new("/srv/enclave");
+    let sandboxes = state_dir.join("sandboxes");
+    // One Enclave overlay left behind, one Enclave overlay still in use by a
+    // running workspace, and one tmpfs the operator placed under a workspace.
+    let snapshot = crate::fsutil::MountInfoSnapshot::parse(concat!(
+        "100 1 0:50 / /srv/enclave/sandboxes/sb/workspaces/gone/home-merged rw - overlay overlay rw\n",
+        "101 1 0:51 / /srv/enclave/sandboxes/sb/workspaces/live/home-merged rw - overlay overlay rw\n",
+        "102 1 0:60 / /srv/enclave/sandboxes/sb/workspaces/live/backup rw - tmpfs tmpfs rw\n"
+    ));
+    let active_roots = vec![PathBuf::from("/srv/enclave/sandboxes/sb/workspaces/live")];
+
+    let (orphaned, foreign) = classify_sandbox_mounts(&snapshot, &sandboxes, &active_roots);
+    assert_eq!(
+        orphaned.len(),
+        1,
+        "only the leftover overlay is orphaned: {orphaned:?}"
+    );
+    assert!(orphaned[0].contains("gone/home-merged"), "{orphaned:?}");
+    assert_eq!(foreign.len(), 1, "the tmpfs is foreign: {foreign:?}");
+    assert!(
+        foreign[0].contains("backup") && foreign[0].contains("source tmpfs"),
+        "{foreign:?}"
+    );
+}
+
+#[test]
+fn a_foreign_mount_under_a_workspace_is_not_reported_as_an_enclave_leftover() {
+    let state_dir = Path::new("/srv/enclave");
+    let sandboxes = state_dir.join("sandboxes");
+    let snapshot = crate::fsutil::MountInfoSnapshot::parse(concat!(
+        "200 1 8:1 / /srv/enclave/sandboxes/sb/workspaces/ws/backup rw - ext4 /dev/sda1 rw\n"
+    ));
+
+    let (orphaned, foreign) = classify_sandbox_mounts(&snapshot, &sandboxes, &[]);
+    assert!(
+        orphaned.is_empty(),
+        "a mount Enclave did not create is not an Enclave leftover: {orphaned:?}"
+    );
+    assert_eq!(foreign.len(), 1, "{foreign:?}");
+}
+
+#[test]
 fn check_sandbox_rootfs_reports_an_active_sandbox_without_a_rootfs_mount() {
     use crate::registry::{with_registry_mut, RegistrySandbox};
     use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};

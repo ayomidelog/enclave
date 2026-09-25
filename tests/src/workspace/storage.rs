@@ -315,3 +315,41 @@ fn unmount_error_reports_errno_in_errno_field() {
     assert!(formatted.contains("errno=EBUSY(16)"));
     assert!(!formatted.contains("errno=/tmp/enclave/ws/fs"));
 }
+
+#[test]
+fn a_mount_below_a_workspace_that_enclave_did_not_create_is_reported_not_owned() {
+    let root = "/srv/enclave/sandboxes/sb/workspaces/ws";
+    let raw = format!(
+        "100 1 8:1 {root}/fs {root}/fs rw - ext4 /dev/sda1 rw\n\
+         200 1 0:60 / {root}/operator-backup rw,nosuid - tmpfs tmpfs rw\n"
+    );
+    let snapshot = crate::fsutil::MountInfoSnapshot::parse(&raw);
+
+    let (owned, foreign) = mounts_below(&snapshot, Path::new(root));
+    assert_eq!(
+        owned.len(),
+        1,
+        "the state-backed bind is Enclave's own: {owned:?}"
+    );
+    assert_eq!(foreign.len(), 1, "the tmpfs is foreign: {foreign:?}");
+    assert!(
+        foreign[0].contains("operator-backup") && foreign[0].contains("source tmpfs"),
+        "foreign mount should be named with its source: {foreign:?}"
+    );
+}
+
+#[test]
+fn remaining_mount_detail_separates_enclave_leftovers_from_foreign_mounts() {
+    let detail = remaining_mount_detail(
+        &["/srv/enclave/sandboxes/sb/workspaces/ws/fs (source /dev/loop3)".to_string()],
+        &["/srv/enclave/sandboxes/sb/workspaces/ws/backup (source tmpfs)".to_string()],
+    );
+    assert!(
+        detail.contains("1 Enclave mount(s) survived unmount"),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("were not created by Enclave and were left in place"),
+        "{detail}"
+    );
+}

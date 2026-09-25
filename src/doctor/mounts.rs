@@ -70,85 +70,106 @@ pub(crate) fn check_sandbox_rootfs_mounts(state_dir: &Path) -> DoctorCheck {
 pub(crate) fn check_orphaned_mounts(state_dir: &Path) -> DoctorCheck {
     let name = "orphaned_mounts";
     let sandboxes_dir = state_dir.join("sandboxes");
+    let snapshot = match crate::fsutil::MountInfoSnapshot::load() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return DoctorCheck::warn(
+                name,
+                &format!("failed to read /proc/self/mountinfo: {error:#}"),
+            )
+        }
+    };
+    if snapshot.at_or_below_entries(&sandboxes_dir).is_empty() {
+        return DoctorCheck::ok(name, "no enclave-related mounts found");
+    }
 
-    match fs::read_to_string("/proc/mounts") {
-        Ok(mounts) => {
-            let orphaned: Vec<&str> = mounts
-                .lines()
-                .filter_map(|line| {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        let mount_point = parts[1];
-                        if Path::new(mount_point).starts_with(&sandboxes_dir) {
-                            Some(mount_point)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+    let active_roots = active_mount_roots(state_dir);
+    let (orphaned, foreign) = classify_sandbox_mounts(&snapshot, &sandboxes_dir, &active_roots);
+    if orphaned.is_empty() && foreign.is_empty() {
+        return DoctorCheck::ok(
+            name,
+            &format!(
+                "{} active enclave mount(s), all accounted for",
+                snapshot.at_or_below_entries(&sandboxes_dir).len()
+            ),
+        );
+    }
 
-            if orphaned.is_empty() {
-                DoctorCheck::ok(name, "no enclave-related mounts found")
-            } else {
-                // A running sandbox or workspace keeps several mounts below its
-                // own directory: the sandbox rootfs, the workspace disk image,
-                // and the home and root overlays. All of those are expected.
-                let active_roots: Vec<PathBuf> = with_registry(state_dir, |reg| {
-                    let mut paths = Vec::new();
-                    for sandbox in reg.sandboxes.values() {
-                        // Shared-base rootfs overlays stay mounted for the whole
-                        // sandbox lifetime, so they are expected at any status.
-                        paths.push(PathBuf::from(&sandbox.metadata.rootfs_path));
-                        if sandbox.metadata.status.rootfs_is_mounted() {
-                            paths.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
-                        }
-                        for workspace in sandbox.workspaces.values() {
-                            if crate::workspace::workspace_runtime_is_active(workspace) {
-                                paths.push(PathBuf::from(&workspace.workspace_path));
-                            }
-                        }
-                    }
-                    Ok(paths)
-                })
-                .unwrap_or_default();
+    let mut problems = Vec::new();
+    if !orphaned.is_empty() {
+        problems.push(format!(
+            "{} orphaned mount(s) detected: {}",
+            orphaned.len(),
+            orphaned.join(", ")
+        ));
+    }
+    if !foreign.is_empty() {
+        problems.push(format!(
+            "{} mount(s) under the state directory were not created by Enclave and are left in place: {}",
+            foreign.len(),
+            foreign.join(", ")
+        ));
+    }
+    DoctorCheck::warn(name, &problems.join("; "))
+}
 
-                let truly_orphaned: Vec<&&str> = orphaned
-                    .iter()
-                    .filter(|mount_point| {
-                        let mount_point = Path::new(mount_point);
-                        !active_roots
-                            .iter()
-                            .any(|root| mount_point.starts_with(root))
-                    })
-                    .collect();
-
-                if truly_orphaned.is_empty() {
-                    DoctorCheck::ok(
-                        name,
-                        &format!(
-                            "{} active enclave mount(s), all accounted for",
-                            orphaned.len()
-                        ),
-                    )
-                } else {
-                    DoctorCheck::warn(
-                        name,
-                        &format!(
-                            "{} orphaned mount(s) detected: {}",
-                            truly_orphaned.len(),
-                            truly_orphaned
-                                .iter()
-                                .map(|s| **s)
-                                .collect::<Vec<&str>>()
-                                .join(", ")
-                        ),
-                    )
+/// The mount points a running sandbox or workspace legitimately keeps mounted.
+///
+/// A running sandbox or workspace keeps several mounts below its own directory:
+/// the sandbox rootfs, the workspace disk image, and the home and root overlays.
+/// All of those are expected.
+fn active_mount_roots(state_dir: &Path) -> Vec<PathBuf> {
+    with_registry(state_dir, |reg| {
+        let mut paths = Vec::new();
+        for sandbox in reg.sandboxes.values() {
+            // Shared-base rootfs overlays stay mounted for the whole sandbox
+            // lifetime, so they are expected at any status.
+            paths.push(PathBuf::from(&sandbox.metadata.rootfs_path));
+            if sandbox.metadata.status.rootfs_is_mounted() {
+                paths.push(PathBuf::from(&sandbox.metadata.mounted_rootfs_path));
+            }
+            for workspace in sandbox.workspaces.values() {
+                if crate::workspace::workspace_runtime_is_active(workspace) {
+                    paths.push(PathBuf::from(&workspace.workspace_path));
                 }
             }
         }
-        Err(err) => DoctorCheck::warn(name, &format!("failed to read /proc/mounts: {err}")),
+        Ok(paths)
+    })
+    .unwrap_or_default()
+}
+
+/// Split the mounts below the sandboxes tree into Enclave's own leftovers and the
+/// mounts Enclave did not create.
+///
+/// A mount below an active root belongs to neither list. Everything else Enclave
+/// created is an orphan, and everything Enclave did not create is reported
+/// separately: it is still why the path cannot be cleaned up, but it is not
+/// Enclave's mount to remove, so reporting it as an Enclave leftover would send
+/// the operator looking for a bug that is not there.
+pub(crate) fn classify_sandbox_mounts(
+    snapshot: &crate::fsutil::MountInfoSnapshot,
+    sandboxes_dir: &Path,
+    active_roots: &[PathBuf],
+) -> (Vec<String>, Vec<String>) {
+    let state_root = crate::fsutil::enclave_state_root(sandboxes_dir);
+    let mut orphaned = Vec::new();
+    let mut foreign = Vec::new();
+    for entry in snapshot.at_or_below_entries(sandboxes_dir) {
+        if !state_root
+            .as_deref()
+            .is_some_and(|root| entry.is_enclave_owned(root))
+        {
+            foreign.push(entry.describe());
+            continue;
+        }
+        if active_roots
+            .iter()
+            .any(|root| entry.mountpoint.starts_with(root))
+        {
+            continue;
+        }
+        orphaned.push(entry.describe());
     }
+    (orphaned, foreign)
 }

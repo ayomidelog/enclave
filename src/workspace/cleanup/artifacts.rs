@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
@@ -66,6 +66,23 @@ pub(crate) fn cleanup_workspace_artifacts(
             resource: "mounts".to_string(),
             detail: format!("{error:#}"),
         });
+    }
+    // A mount Enclave did not create, sitting below the workspace, is not a
+    // resource Enclave may release, but deleting the workspace directory would
+    // recurse into it and remove the files behind it. Refuse instead: the
+    // operator placed that mount, so the operator decides when it goes.
+    if let Ok(snapshot) = crate::fsutil::MountInfoSnapshot::load() {
+        let foreign = snapshot.foreign_at_or_below(Path::new(&workspace.workspace_path));
+        if !foreign.is_empty() {
+            retained.push(RetainedResource {
+                resource: "foreign_mounts".to_string(),
+                detail: format!(
+                    "{} mount(s) below the workspace were not created by Enclave and were left in place: {}",
+                    foreign.len(),
+                    foreign.join("; ")
+                ),
+            });
+        }
     }
 
     if !retained.is_empty() && !mode.is_force() {

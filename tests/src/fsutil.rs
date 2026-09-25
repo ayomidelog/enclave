@@ -154,6 +154,115 @@ fn mountinfo_snapshot_orders_nested_mounts_deepest_first() {
     assert!(snapshot.contains(Path::new("/tmp/enclave/ws/fs")));
 }
 
+fn parsed_entry(line: &str) -> MountInfoEntry {
+    MountInfoSnapshot::parse(line)
+        .at_or_below_entries(Path::new("/"))
+        .into_iter()
+        .next()
+        .cloned()
+        .expect("mountinfo line should parse")
+}
+
+#[test]
+fn mountinfo_entry_keeps_the_mount_source_and_root() {
+    let entry = parsed_entry(concat!(
+        "49 29 8:1 /root/.local/state/enclave/sandboxes/sb/rootfs ",
+        "/root/.local/state/enclave/sandboxes/sb/runtime/rootfs.mnt ",
+        "rw,relatime - ext4 /dev/sda1 rw,discard\n"
+    ));
+    assert_eq!(
+        entry.root,
+        PathBuf::from("/root/.local/state/enclave/sandboxes/sb/rootfs")
+    );
+    assert_eq!(
+        entry.mountpoint,
+        PathBuf::from("/root/.local/state/enclave/sandboxes/sb/runtime/rootfs.mnt")
+    );
+    assert_eq!(entry.filesystem_type, "ext4");
+    assert_eq!(entry.source, PathBuf::from("/dev/sda1"));
+}
+
+#[test]
+fn mountinfo_parser_skips_lines_without_the_separator() {
+    let snapshot = MountInfoSnapshot::parse("not a mountinfo line\n\n");
+    assert!(snapshot.at_or_below_entries(Path::new("/")).is_empty());
+    assert!(!snapshot.contains(Path::new("/")));
+}
+
+#[test]
+fn enclave_owns_overlay_mounts_and_binds_from_the_state_directory() {
+    let state_dir = Path::new("/srv/enclave");
+
+    // The sandbox rootfs overlay, and a workspace home overlay.
+    for line in [
+        "100 1 0:50 / /srv/enclave/sandboxes/sb/rootfs rw - overlay overlay rw",
+        "101 1 0:51 / /srv/enclave/sandboxes/sb/workspaces/ws/home-merged rw - overlay overlay rw",
+    ] {
+        assert!(
+            parsed_entry(line).is_enclave_owned(state_dir),
+            "overlay mount should be Enclave's: {line}"
+        );
+    }
+
+    // A bind mount of a directory inside the state tree: the mount root records
+    // where it was bound from, and the source is only the underlying device.
+    let bind = parsed_entry(concat!(
+        "102 1 8:1 /srv/enclave/sandboxes/sb/rootfs ",
+        "/srv/enclave/sandboxes/sb/runtime/rootfs.mnt rw - ext4 /dev/sda1 rw"
+    ));
+    assert!(bind.is_enclave_owned(state_dir));
+}
+
+#[test]
+fn enclave_refuses_a_mount_it_cannot_attribute_to_itself() {
+    let state_dir = Path::new("/srv/enclave");
+
+    // An operator's tmpfs placed under a workspace path.
+    let foreign = parsed_entry(concat!(
+        "200 1 0:60 / /srv/enclave/sandboxes/sb/workspaces/ws/foreign ",
+        "rw,nosuid - tmpfs tmpfs rw"
+    ));
+    assert!(!foreign.is_enclave_owned(state_dir));
+
+    // A host device mounted at the filesystem root is not a bind of the state
+    // tree even though it sits below a workspace path.
+    let device = parsed_entry(concat!(
+        "201 1 8:1 / /srv/enclave/sandboxes/sb/workspaces/ws/backup ",
+        "rw - ext4 /dev/sda1 rw"
+    ));
+    assert!(!device.is_enclave_owned(state_dir));
+
+    // A loop device whose backing file cannot be read is treated as foreign: an
+    // unattributable mount is never detached.
+    let loop_device = parsed_entry(concat!(
+        "202 1 7:9 / /srv/enclave/sandboxes/sb/workspaces/ws/fs ",
+        "rw - ext4 /dev/loop9 rw"
+    ));
+    assert!(!loop_device.is_enclave_owned(state_dir));
+}
+
+#[test]
+fn enclave_state_root_follows_the_sandbox_and_workspace_layouts() {
+    assert_eq!(
+        enclave_state_root(Path::new("/srv/enclave/sandboxes")),
+        Some(PathBuf::from("/srv/enclave"))
+    );
+    assert_eq!(
+        enclave_state_root(Path::new("/srv/enclave/sandboxes/sb/workspaces/ws")),
+        Some(PathBuf::from("/srv/enclave"))
+    );
+    assert_eq!(
+        enclave_state_root(Path::new("/srv/enclave/sandboxes/sb")),
+        Some(PathBuf::from("/srv/enclave"))
+    );
+    assert_eq!(
+        enclave_state_root(Path::new("/srv/enclave/sandboxes/sb/workspaces/ws/fs")),
+        Some(PathBuf::from("/srv/enclave"))
+    );
+    assert_eq!(enclave_state_root(Path::new("/tmp/elsewhere/ws")), None);
+    assert_eq!(enclave_state_root(Path::new("/")), None);
+}
+
 #[test]
 fn reflink_copy_file_preserves_content_or_reports_unsupported_filesystem() {
     let dir = std::env::temp_dir().join(format!("enclave-fsutil-reflink-{}", std::process::id()));
