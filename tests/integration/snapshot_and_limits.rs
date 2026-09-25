@@ -706,3 +706,92 @@ fn snapshot_restore_recovers_quota_backed_workspace_state() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+/// Loop devices on the host whose backing file is the given image.
+///
+/// The kernel exposes the backing file for each loop device in sysfs, so this
+/// reads the kernel's own record rather than parsing command output.
+fn loop_devices_backing(image: &Path) -> Vec<String> {
+    let mut devices = Vec::new();
+    let Ok(entries) = fs::read_dir("/sys/class/block") else {
+        return devices;
+    };
+    for entry in entries.flatten() {
+        let Ok(backing) = fs::read_to_string(entry.path().join("loop/backing_file")) else {
+            continue;
+        };
+        let backing = backing.trim();
+        if !backing.is_empty() && image.ends_with(backing) {
+            devices.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    devices
+}
+
+/// A quota-backed workspace is a disk image attached to a loop device. A stop has
+/// to release that device, or every stop-and-start cycle consumes one: the host
+/// has a finite number of them, and a device left attached to a deleted image
+/// cannot be recovered without host-side cleanup.
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn stopping_a_quota_workspace_releases_its_loop_device() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-loop-release");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-loop-release-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let limits = WorkspaceLimits {
+        disk_bytes: Some(64 * 1024 * 1024),
+        ..WorkspaceLimits::default()
+    };
+    let workspace =
+        create_workspace(&state, &sandbox.id, "quota", limits).expect("create workspace");
+    start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+
+    let image = Path::new(&workspace.workspace_path).join("fs.img");
+    let attached = loop_devices_backing(&image);
+    assert!(
+        !attached.is_empty(),
+        "a running quota-backed workspace must have its image attached to a loop device"
+    );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+
+    let survivors = loop_devices_backing(&image);
+    assert!(
+        survivors.is_empty(),
+        "stop left loop device(s) {survivors:?} attached to {}",
+        image.display()
+    );
+
+    // A second cycle proves the device was released rather than reused, which is
+    // what a device left attached would look like from the outside.
+    start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace again");
+    assert!(
+        !loop_devices_backing(&image).is_empty(),
+        "the restarted workspace must attach its image to a loop device again"
+    );
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace again");
+    assert!(
+        loop_devices_backing(&image).is_empty(),
+        "the second stop left a loop device attached to {}",
+        image.display()
+    );
+
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
