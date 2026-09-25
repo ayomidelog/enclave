@@ -98,6 +98,40 @@ fn workspace_requests_take_the_workspace_scope() {
     let _ = fs::remove_dir_all(dir);
 }
 
+/// A long-running transfer must not hold a lifecycle lease.
+///
+/// A lease is held for the whole time its operation runs, and a copy or an exec
+/// can run for minutes. If either took one, a stop issued while it was running
+/// would wait for it, which turns a slow transfer into a lifecycle deadline
+/// failure for an operation that has nothing to do with it.
+///
+/// A snapshot export is deliberately not in this list. It reads the workspace
+/// filesystem rather than streaming through it, so a stop that unmounted storage
+/// underneath it would corrupt the archive it is writing; it takes the lease and
+/// accepts that a stop waits. A copy makes the opposite trade: the storage is
+/// mounted for its duration, and if a stop takes it away the copy fails rather
+/// than the stop being delayed.
+#[test]
+fn long_running_transfers_do_not_take_a_lifecycle_lease() {
+    let dir = state_dir("transfer");
+    let params = json!({"sandbox": "box", "workspace": "ws"});
+
+    for action in [
+        Action::WorkspaceCp,
+        Action::WorkspaceExec,
+        Action::WorkspaceRuntime,
+        Action::WorkspaceLogs,
+    ] {
+        assert_eq!(
+            scope_for(&dir, action, &params).unwrap(),
+            None,
+            "{action:?} must not take a lease; a lease is held for the whole operation"
+        );
+    }
+
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn whole_host_requests_take_the_global_scope() {
     let dir = state_dir("global");
