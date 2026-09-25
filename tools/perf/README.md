@@ -11,6 +11,7 @@ user-visible CLI and records the host metadata needed to compare runs.
 ./tools/perf/bench.sh stats --iterations 30
 ./tools/perf/bench.sh ps --iterations 30
 ./tools/perf/bench.sh doctor --iterations 10
+./tools/perf/bench.sh lock-wait --iterations 50
 ./tools/perf/bench.sh workspace-list --iterations 30
 ./tools/perf/bench.sh registry --iterations 1000
 ./tools/perf/bench.sh many-files
@@ -18,6 +19,25 @@ user-visible CLI and records the host metadata needed to compare runs.
 Set `ENCLAVE_PERF_MANY_FILES=100000` before the benchmark for the full
 metadata-heavy fixture; the default 1000-file run is intended as a quick smoke
 test.
+
+The lock-wait benchmark contends for the registry lock and reports the wait the
+daemon observed against its budget:
+
+```bash
+./tools/perf/bench.sh lock-wait --iterations 50
+```
+
+The registry lock is held only for the mutations themselves, never across the host
+work a lifecycle operation does, so a wait on it is another request committing its
+own record. The tail is what matters: while one request holds the registry, every
+other request in the daemon is stalled behind it, so a holder that does slow work
+inside the lock shows up in this p99 and nowhere else. The budget is fifty
+milliseconds, which is roughly one durable write on this host.
+
+The count is capped at 50 because the daemon rate limits a uid to 120 requests per
+two seconds and every CLI invocation sends a ping before its action. A run that hit
+the cap anyway reports the number of refused requests and skips the verdict rather
+than reporting a p99 taken from the few requests that got through.
 
 Capture syscall counts for a focused command with:
 

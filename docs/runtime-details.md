@@ -37,7 +37,17 @@ Each workspace runs in its own network namespace with full port isolation and ou
 - **Clean teardown**: Stopping/destroying a workspace removes its veth pair and releases its IP.
 - **Collision-resistant interface names**: Host-side veth names include the workspace identity, and temporary peer names stay within Linux's 15-character interface-name limit.
 - **Compact IPAM**: The daemon reconciles the registry-facing used-IP set into a bounded bitmap for constant-time first-free allocation and restart-safe reconstruction.
-- **Runtime metrics**: `daemon.health` includes request, transfer, file, cache, namespace-cache, helper-process, mount, unmount, cleanup-retry, registry-lock-wait, and bounded request plus per-phase latency histogram counters; detailed phase logs remain opt-in through `ENCLAVE_PERF=1`.
+- **Runtime metrics**: `daemon.health` includes request, transfer, file, cache,
+  namespace-cache, helper-process, mount, unmount, cleanup-retry, and bounded request,
+  per-phase, and registry-lock-wait latency histograms; detailed phase logs remain
+  opt-in through `ENCLAVE_PERF=1`.
+- **Registry lock budget**: the registry lock is held only for the mutations
+  themselves, never across the host work a lifecycle operation does, so the wait on
+  it is the latency one request adds to every other one. `daemon.health`
+  reports that wait as a p99 with a documented budget of 50 ms and a boolean saying
+  whether the observed p99 is inside it. A p99 above the budget means a holder is
+  doing something inside the lock that belongs outside it. Measure it with
+  `./tools/perf/bench.sh lock-wait`.
 
 ### Additional network guards
 

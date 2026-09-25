@@ -44,10 +44,31 @@ pub(super) static PHASE_LATENCY: [AtomicU64; 8] = [
 ];
 pub(super) static NAMED_PHASE_LATENCY: OnceLock<Mutex<BTreeMap<&'static str, [u64; 8]>>> =
     OnceLock::new();
+pub(super) static REGISTRY_LOCK_WAIT: [AtomicU64; 8] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
 
 /// Bucket bounds for request latency, where sub-millisecond resolution matters.
 pub(super) const LATENCY_BUCKETS_US: [u64; 8] =
     [100, 500, 1_000, 5_000, 10_000, 50_000, 250_000, u64::MAX];
+
+/// Bucket bounds for how long a registry lock is waited on.
+///
+/// A lock wait is a stall: while one request holds the registry, every other
+/// lifecycle request in the daemon is waiting on it, so the tail of this
+/// distribution is the latency one slow operation adds to unrelated ones. The
+/// bounds are the same as the request ladder, because a wait of a hundred
+/// microseconds is normal and a wait of fifty milliseconds is the case worth
+/// seeing. The counter this sits beside is a running sum, which can only answer
+/// the average and hides exactly that tail.
+pub(super) const LOCK_WAIT_BUCKETS_US: [u64; 8] = LATENCY_BUCKETS_US;
 
 /// Bucket bounds for phase latency, where a phase is milliseconds to hundreds of
 /// milliseconds.
