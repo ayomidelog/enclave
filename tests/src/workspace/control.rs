@@ -3,6 +3,7 @@ use super::*;
 use std::collections::BTreeMap;
 use std::fs;
 
+use crate::registry::RegistrySandbox;
 use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
 use crate::workspace::types::NamespaceRefs;
 use crate::workspace::{CleanupMode, WorkspaceLimits};
