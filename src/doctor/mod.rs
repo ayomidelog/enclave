@@ -208,7 +208,7 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
     })
 }
 #[cfg(test)]
-#[path = "../../tests/src/doctor.rs"]
+#[path = "../../tests/src/doctor/mod.rs"]
 mod tests;
 
 // The checks live in their own modules; the doctor tests reach them through the
