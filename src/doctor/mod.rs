@@ -1,3 +1,17 @@
+//! Comparing what Enclave believes it created against what is on the host.
+//!
+//! Two descriptions of the same thing exist at all times: the desired state, which is
+//! the registry and the per-directory metadata, and the observed state, which is the
+//! host: the processes, mounts, cgroups, network interfaces, firewall rules, loop
+//! devices, and published listeners that are actually there. Every check here answers
+//! one question about one resource and reports a disagreement; none of them infers what
+//! an operator meant, because a check that guessed would turn a difference it does not
+//! understand into a change to the host.
+//!
+//! A check never signals a process or removes anything. Repair is the separate half: it
+//! follows a stated precedence rule rather than picking a side, and what it cannot
+//! reconcile it reports instead of overwriting.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
