@@ -3,7 +3,11 @@ use super::*;
 pub fn stop_session(pid: u32, expected_starttime_ticks: Option<u64>) -> Result<()> {
     let result = stop_sessions_batch(&[(pid, expected_starttime_ticks)])?;
     if result.failed_pids.contains(&pid) {
-        bail!("workspace session pid {} did not exit after SIGKILL", pid);
+        bail!(
+            "workspace session pid {} did not exit after SIGTERM and SIGKILL within {}",
+            pid,
+            crate::deadlines::runtime_kill_grace().describe_timeout()
+        );
     }
     Ok(())
 }

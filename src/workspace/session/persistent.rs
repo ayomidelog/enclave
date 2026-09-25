@@ -206,7 +206,8 @@ fn start_helper(
     drop(fds);
     drop(pidfd);
 
-    let start_timeout = crate::deadlines::helper_start().get();
+    let helper_start = crate::deadlines::helper_start();
+    let start_timeout = helper_start.get();
     let readiness_pidfd = open_process_pidfd(child.id());
     let started = Instant::now();
     while started.elapsed() < start_timeout {
@@ -239,7 +240,8 @@ fn start_helper(
     let _ = fs::remove_file(&socket);
     let log_tail = fs::read_to_string(&helper_log).unwrap_or_default();
     bail!(
-        "persistent workspace session helper did not become ready; log: {}\n{}",
+        "persistent workspace session helper did not become ready within {}; log: {}\n{}",
+        helper_start.describe_timeout(),
         helper_log.display(),
         log_tail
     )
