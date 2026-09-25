@@ -132,6 +132,61 @@ else
   printf 'RUNTIME_DID_NOT_SURVIVE=no\n'
 fi
 
-run workspace stop pause-live w1 >/dev/null
+# A pause leaves every resource in place, so the stop and the destroy that follow
+# one are a different path from the ones that follow a normal stop. The sandbox
+# cgroup is frozen, and a signal sent to a runtime inside a frozen cgroup is not
+# delivered until it thaws, so the daemon has to thaw before it stops. The
+# workspace is still running here because a pause of a sandbox with nothing to
+# freeze is a no-op, and a no-op would make the checks below vacuous.
+sandbox_id=$(basename "$(ls -d "$state_dir"/sandboxes/pause-live-* 2>/dev/null | head -1)")
+sandbox_cgroup=/sys/fs/cgroup/enclave-sb-$sandbox_id
+counter=$(counter_file)
+
+run pause pause-live >/dev/null
+if [[ $(cat "$sandbox_cgroup/cgroup.freeze" 2>/dev/null) != 1 ]]; then
+  printf 'FAIL: pausing a sandbox with a running workspace did not freeze its cgroup\n' >&2
+  exit 1
+fi
+printf 'sandbox_cgroup_frozen=yes\n'
+
+stop_after_pause=$(measure run stop pause-live)
+printf 'STOP_AFTER_PAUSE_SECONDS=%s\n' "$stop_after_pause"
+if [[ -e "$sandbox_cgroup" ]]; then
+  printf 'FAIL: stopping a paused sandbox left its cgroup behind\n' >&2
+  exit 1
+fi
+printf 'paused_stop_released_cgroup=yes\n'
+if [[ ! -f "$counter" ]]; then
+  printf 'FAIL: stopping a paused sandbox removed the workspace files\n' >&2
+  exit 1
+fi
+printf 'paused_stop_kept_workspace_files=yes\n'
+
+# The same sandbox comes back up, which is what makes the stop a stop rather than
+# a destroy.
+run start pause-live >/dev/null
+if [[ ! -f "$counter" ]]; then
+  printf 'FAIL: the workspace files were not there after restarting the sandbox\n' >&2
+  exit 1
+fi
+printf 'paused_stop_sandbox_restarts=yes\n'
+
+# A destroy of a paused sandbox has to release the frozen cgroup as well as the
+# files, and the sandbox cgroup is the evidence: a child cgroup cannot be removed
+# while its own children or their processes remain. The workspace is started again
+# so that the pause has something to freeze.
+run workspace start pause-live w1 >/dev/null
+run pause pause-live >/dev/null
+run destroy --force pause-live >/dev/null
+if [[ -e "$sandbox_cgroup" ]]; then
+  printf 'FAIL: destroying a paused sandbox left its cgroup behind\n' >&2
+  exit 1
+fi
+printf 'paused_destroy_released_cgroup=yes\n'
+if compgen -G "$state_dir/sandboxes/pause-live-*" > /dev/null; then
+  printf 'FAIL: destroying a paused sandbox left its directory behind\n' >&2
+  exit 1
+fi
+printf 'paused_destroy_removed_directory=yes\n'
 printf 'PAUSE_LIFECYCLE_TEST=%s\n' "$status"
 [[ "$status" == passed ]]

@@ -90,7 +90,17 @@ runtime alive rather than releasing it:
 It reports the pause and resume times and proves the tier's two claims: the
 counter a workspace is incrementing does not move while the sandbox is paused,
 and it continues afterwards, which is what makes the run a resume rather than a
-restart. It also checks that the runtime pid is the same on both sides.
+restart. It also checks that the runtime pid is the same on both sides and that the
+sandbox cgroup is actually frozen, because a pause of a sandbox with nothing to
+freeze is a no-op and the counter alone would not tell the two apart.
+
+It then drives the two lifecycle operations that follow a pause, which take a
+different path from the ones that follow a normal stop: a signal sent to a runtime
+inside a frozen cgroup is not delivered until the cgroup thaws, so the daemon has to
+thaw before it stops. The run pauses, stops, and requires the sandbox cgroup to be
+gone and the workspace files to still be there; it starts the same sandbox again to
+show the stop was a stop rather than a destroy; and it pauses again and destroys,
+requiring the cgroup and the sandbox directory to be gone.
 
 The three suites are separate files because each measures a different lifecycle
 tier on a different code path. Publishing one number for all of them would invite
