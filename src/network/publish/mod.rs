@@ -53,5 +53,5 @@ pub use publisher::{PortPublisher, PublishedPortOwner};
 use proxy::{copy_until_shutdown, ConnectionActivity};
 
 #[cfg(test)]
-#[path = "../../../tests/src/network/publish.rs"]
+#[path = "../../../tests/src/network/publish/mod.rs"]
 mod tests;
