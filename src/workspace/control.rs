@@ -72,5 +72,5 @@ pub(crate) struct WorkspaceRuntimeStart {
 }
 
 #[cfg(test)]
-#[path = "../../tests/src/workspace/control.rs"]
+#[path = "../../tests/src/workspace/control/mod.rs"]
 mod tests;
