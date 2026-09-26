@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The source path is the script's own directory, so the analysis does not depend on
+# the working directory the check is run from.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
 source "$(dirname "$0")/common.sh"
 require_binary
 

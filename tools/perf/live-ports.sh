@@ -14,6 +14,8 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$script_dir/../.." && pwd)
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
 source "$script_dir/common.sh"
 
 binary=${ENCLAVE_BINARY:-$repo_dir/target/release/enclave}
@@ -270,11 +272,11 @@ printf 'no_interface_left_after_failed_start=yes\n'
 kill "$holder" >/dev/null 2>&1 || true
 wait "$holder" 2>/dev/null || true
 for _ in $(seq 1 50); do
-  port_is_held ${host_ports[0]} || break
+  port_is_held "${host_ports[0]}" || break
   sleep 0.1
 done
-if port_is_held ${host_ports[0]}; then
-  printf 'FAIL: the holder did not release host port %s\n' ${host_ports[0]} >&2
+if port_is_held "${host_ports[0]}"; then
+  printf 'FAIL: the holder did not release host port %s\n' "${host_ports[0]}" >&2
   exit 1
 fi
 

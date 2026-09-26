@@ -14,7 +14,9 @@
 # host.
 #
 # Usage: privileged-suite.sh [cargo-test-args...]
-#   ENCLAVE_INTEGRATION_TEST   run only the test binary whose name contains this
+#   ENCLAVE_SUITE   the ignored test binary to run (default: integration_suite).
+#                   The stress suite needs the same host, so it goes through the
+#                   same checks: ENCLAVE_SUITE=stress_suite.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -127,6 +129,16 @@ fi
 
 # One test at a time. The suite drives a real daemon and real host resources, so
 # two tests running together would compete for the same bridge, the same loop
-# devices, and the same cgroup root.
-printf 'running the privileged integration suite\n'
-exec "$cargo_bin" test --test integration_suite -- --ignored --test-threads=1 "$@"
+# devices, and the same cgroup root. A caller that passes its own --test-threads
+# keeps it: libtest rejects a second one rather than letting it override, so
+# forwarding the arguments as documented would otherwise fail on the duplicate.
+serial_args=(--ignored --test-threads=1)
+for argument in "$@"; do
+  case $argument in
+    --test-threads*) serial_args=(--ignored) ;;
+  esac
+done
+
+suite=${ENCLAVE_SUITE:-integration_suite}
+printf 'running the privileged %s\n' "$suite"
+exec "$cargo_bin" test --test "$suite" -- "${serial_args[@]}" "$@"

@@ -12,6 +12,8 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd "$script_dir/../.." && pwd)
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
 source "$script_dir/common.sh"
 
 binary=${ENCLAVE_BINARY:-$repo_dir/target/release/enclave}

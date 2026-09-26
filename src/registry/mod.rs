@@ -77,7 +77,7 @@ pub struct MetadataDisagreement {
     /// The workspace the disagreement is about, or nothing for the sandbox's own
     /// record.
     pub workspace_id: Option<String>,
-    /// Each field that differed, as field: registry=<value> disk=<value>.
+    /// Each field that differed, as `field: registry=<value> disk=<value>`.
     pub differences: Vec<String>,
     /// The copy repair adopted. The on-disk copy always wins, because a lifecycle
     /// step writes it before it commits the registry record.

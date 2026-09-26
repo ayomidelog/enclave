@@ -6,6 +6,8 @@ repo_dir=$(cd "$script_dir/../.." && pwd)
 # For host_metadata: a lifecycle number is only comparable against another one
 # taken on a host of the same kernel, CPU, and filesystem, so the run publishes
 # what it was measured on.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
 source "$script_dir/common.sh"
 # Prefer the release profile, for the same reason common.sh uses it: the debug
 # binary is more than ten times the size, and the cost of starting it three times
