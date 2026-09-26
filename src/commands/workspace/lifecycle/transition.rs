@@ -50,13 +50,13 @@ pub(in crate::commands::workspace) fn run_workspace_stop(
     print_operation_id();
     // The daemon only reports a stop as successful once every mandatory host
     // resource has been verified released, so the certificate is the evidence
-    // behind that success rather than a restatement of it.
+    // behind that success rather than a restatement of it. The verification line
+    // is therefore printed only after the check that it describes: printing it
+    // first would claim the cleanup was verified on a run where it was not, and
+    // the operator would read the claim and the failure next to each other.
     if let Some(certificate) = response.get("certificate") {
         let certificate: crate::workspace::WorkspaceCleanupCertificate =
             serde_json::from_value(certificate.clone())?;
-        println!(
-            "cleanup verified: runtime exited, cgroup removed, mounts released, loop device detached, runtime files removed, network and ports released"
-        );
         if !certificate.is_complete() {
             bail!(
                 "workspace '{}' cleanup is incomplete: {}",
@@ -64,6 +64,9 @@ pub(in crate::commands::workspace) fn run_workspace_stop(
                 certificate.failure_summary()
             );
         }
+        println!(
+            "cleanup verified: runtime exited, cgroup removed, mounts released, loop device detached, runtime files removed, network and ports released"
+        );
     }
     Ok(())
 }
