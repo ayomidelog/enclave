@@ -100,6 +100,23 @@ fn workspace_id_hash(workspace_id: &str) -> u32 {
     }) & 0x00ff_ffff
 }
 
+/// Whether the interface `name` is attached to Enclave's bridge.
+///
+/// This is what tells Enclave's own interface from a foreign one that happens to
+/// hold the same name, which is the difference between replacing a leftover and
+/// deleting something Enclave did not create. The bridge is a file: every member
+/// has a directory under `<bridge>/brif`, so the question is one stat rather than a
+/// listing or a process.
+pub(crate) fn is_bridge_member(name: &str) -> bool {
+    std::fs::symlink_metadata(
+        std::path::Path::new(crate::network::NET_CLASS_DIR)
+            .join(crate::network::bridge::BRIDGE_NAME)
+            .join("brif")
+            .join(name),
+    )
+    .is_ok()
+}
+
 /// Whether an interface with this name exists on the host right now.
 ///
 /// The kernel exposes one directory per interface, which is the same information a link
