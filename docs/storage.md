@@ -97,6 +97,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - A resize that cannot finish restores the image to the size it had, so a workspace is never left with an image that disagrees with its filesystem.
 - Resizing a running workspace temporarily stops and restarts its runtime through the normal lifecycle cleanup and hardening path. Every reason a request could be refused is checked before that stop, so a refused resize leaves the workspace running.
 - A sandbox has no image of its own: its rootfs is a shared lower layer on the host filesystem. A sandbox disk size is therefore a budget, `enclave resize <sandbox> --disk-mb N`, measured against the sum of its workspaces' `disk_mb` allocations. It is enforced where an allocation is granted, so a workspace cannot be created or grown past it, and a budget below what the sandbox already allocates is refused rather than stored.
+- `--no-disk-budget` removes the budget so its workspaces may allocate any size, and `--no-memory-limit` removes a memory limit. Both are flags rather than a size of zero, which is refused as a size that cannot work.
 - If `workspace_dir` is configured, Enclave mounts that directory instead.
 - Host-backed `workspace_dir`/`path` workspaces do not use the quota-backed root overlay and remain subject to the host directory's storage policy.
 - In both cases, `/home` is presented through an idmapped bind mount rather than a raw host bind.

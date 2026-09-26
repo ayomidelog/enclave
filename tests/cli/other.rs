@@ -83,6 +83,93 @@ fn workspace_resize_accepts_either_limit_and_requires_one() {
     );
 }
 
+/// A limit can be removed, and only by the flag that says so.
+#[test]
+fn workspace_resize_can_remove_the_memory_limit() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "workspace",
+        "resize",
+        "sb",
+        "ws",
+        "--no-memory-limit",
+    ]);
+    let Commands::Workspace { command } = cli.command else {
+        panic!("expected workspace command");
+    };
+    let WorkspaceCommands::Resize(args) = command else {
+        panic!("expected workspace resize command");
+    };
+    assert!(args.no_memory_limit);
+    assert_eq!(args.memory_mb, None);
+
+    // A size and the flag together contradict each other.
+    assert!(
+        Cli::try_parse_from([
+            "enclave",
+            "workspace",
+            "resize",
+            "sb",
+            "ws",
+            "--memory-mb",
+            "512",
+            "--no-memory-limit",
+        ])
+        .is_err(),
+        "a size and a removal must not both be given"
+    );
+
+    // Zero is not how a limit is removed; it is a size that cannot work.
+    let cli = Cli::parse_from([
+        "enclave",
+        "workspace",
+        "resize",
+        "sb",
+        "ws",
+        "--memory-mb",
+        "0",
+    ]);
+    let Commands::Workspace { command } = cli.command else {
+        panic!("expected workspace command");
+    };
+    let WorkspaceCommands::Resize(args) = command else {
+        panic!("expected workspace resize command");
+    };
+    assert_eq!(args.memory_mb, Some(0));
+    assert!(!args.no_memory_limit);
+}
+
+#[test]
+fn sandbox_resize_can_remove_the_memory_limit_and_the_disk_budget() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "resize",
+        "sb",
+        "--no-memory-limit",
+        "--no-disk-budget",
+    ]);
+    let Commands::Resize(args) = cli.command else {
+        panic!("expected sandbox resize command");
+    };
+    assert!(args.no_memory_limit);
+    assert!(args.no_disk_budget);
+    assert_eq!(args.memory_mb, None);
+    assert_eq!(args.disk_mb, None);
+
+    assert!(
+        Cli::try_parse_from([
+            "enclave",
+            "resize",
+            "sb",
+            "--disk-mb",
+            "512",
+            "--no-disk-budget"
+        ])
+        .is_err(),
+        "a budget and its removal must not both be given"
+    );
+}
+
 /// A sandbox resize takes the same shape: any one limit, at least one.
 #[test]
 fn sandbox_resize_parses_each_limit_and_requires_one() {

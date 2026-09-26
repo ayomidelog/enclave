@@ -75,7 +75,11 @@ pub(super) fn run_workspace_resize(
     if let Some(disk_mb) = args.disk_mb {
         params.insert("disk_mb".to_string(), json!(disk_mb));
     }
-    if let Some(memory_mb) = args.memory_mb {
+    if args.no_memory_limit {
+        // A field carrying `null` is how the daemon is told to remove a limit. It is
+        // sent explicitly rather than by omission, which means the opposite.
+        params.insert("memory_mb".to_string(), serde_json::Value::Null);
+    } else if let Some(memory_mb) = args.memory_mb {
         params.insert("memory_mb".to_string(), json!(memory_mb));
     }
     let response = send_managed(

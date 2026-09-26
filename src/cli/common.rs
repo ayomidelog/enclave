@@ -76,7 +76,7 @@ pub struct DestroyArgs {
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("target")
-        .args(["memory_mb", "disk_mb", "max_procs"])
+        .args(["memory_mb", "disk_mb", "max_procs", "no_memory_limit", "no_disk_budget"])
         .required(true)
         .multiple(true)
 ))]
@@ -84,14 +84,20 @@ pub struct SandboxResizeArgs {
     #[arg(value_parser = parse_entity_name)]
     pub sandbox: String,
     /// Aggregate memory limit for the sandbox in MiB. Omit to leave memory alone.
-    #[arg(long, value_name = "MIB")]
+    #[arg(long, value_name = "MIB", conflicts_with = "no_memory_limit")]
     pub memory_mb: Option<u64>,
     /// Total disk budget for the sandbox's workspaces in MiB. Omit to leave it alone.
-    #[arg(long, value_name = "MIB")]
+    #[arg(long, value_name = "MIB", conflicts_with = "no_disk_budget")]
     pub disk_mb: Option<u64>,
     /// Maximum aggregate processes in the sandbox. Omit to leave it alone.
     #[arg(long, value_name = "COUNT")]
     pub max_procs: Option<u64>,
+    /// Remove the sandbox memory limit.
+    #[arg(long)]
+    pub no_memory_limit: bool,
+    /// Remove the sandbox disk budget, so its workspaces may allocate any size.
+    #[arg(long)]
+    pub no_disk_budget: bool,
 }
 
 #[derive(Args, Debug)]

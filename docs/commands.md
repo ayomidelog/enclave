@@ -107,7 +107,7 @@ enclave list
 enclave stats
 enclave ps
 enclave ps --local    # alias: --project
-enclave resize  <sandbox> [--memory-mb N] [--disk-mb N] [--max-procs N]
+enclave resize  <sandbox> [--memory-mb N | --no-memory-limit] [--disk-mb N | --no-disk-budget] [--max-procs N]
 enclave status  <sandbox>
 enclave remove  <sandbox-id>
 enclave wipe
@@ -120,7 +120,7 @@ enclave wipe
 | `stop` | Stop all workspaces in the sandbox, then stop the sandbox. |
 | `pause` | Freeze the sandbox cgroup while preserving workspace processes, namespaces, mounts, and storage for fast resume. |
 | `resume` | Thaw a paused sandbox and best-effort restore its published ports. Port conflicts are reported without stopping workspaces. |
-| `resize` | Change a sandbox's resource limits. Each target is optional and an omitted one is left alone. Memory and process limits are cgroup values and are applied to a running sandbox without restarting it. `--disk-mb` sets the total disk budget the sandbox's workspaces are measured against, since a sandbox rootfs is a shared lower layer rather than an image of its own; a budget below what the workspaces already allocate is refused, naming the total. |
+| `resize` | Change a sandbox's resource limits. Each target is optional and an omitted one is left alone. Memory and process limits are cgroup values and are applied to a running sandbox without restarting it. `--disk-mb` sets the total disk budget the sandbox's workspaces are measured against, since a sandbox rootfs is a shared lower layer rather than an image of its own; a budget below what the workspaces already allocate is refused, naming the total. `--no-memory-limit` and `--no-disk-budget` remove a limit rather than setting one, and are spelled as flags because a size of zero is a mistake rather than a request to remove anything. |
 | `destroy` | Stop and permanently delete a sandbox and all its workspaces. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List all sandboxes. |
 | `stats` | Show live stats for all running workspaces across all sandboxes. |
@@ -208,7 +208,7 @@ Read-only requests such as `workspace status` are not journaled and print no id.
 
 ```bash
 enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
-enclave workspace resize  <sandbox> <workspace> [--disk-mb N] [--memory-mb N]
+enclave workspace resize  <sandbox> <workspace> [--disk-mb N] [--memory-mb N | --no-memory-limit]
 enclave workspace cp      <sandbox> <workspace> <src> <dst>
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>

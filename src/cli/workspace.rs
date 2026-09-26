@@ -44,7 +44,7 @@ pub struct WorkspaceCreateArgs {
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("target")
-        .args(["disk_mb", "memory_mb"])
+        .args(["disk_mb", "memory_mb", "no_memory_limit"])
         .required(true)
         .multiple(true)
 ))]
@@ -59,8 +59,14 @@ pub struct WorkspaceResizeArgs {
     #[arg(long, value_name = "MIB")]
     pub disk_mb: Option<u64>,
     /// Target memory limit in MiB. Omit to leave memory alone.
-    #[arg(long, value_name = "MIB")]
+    #[arg(long, value_name = "MIB", conflicts_with = "no_memory_limit")]
     pub memory_mb: Option<u64>,
+    /// Remove the memory limit, leaving the workspace bounded only by the host.
+    ///
+    /// Spelled as its own flag rather than as a size, because a size of zero is a
+    /// mistake rather than a request to remove the limit and is refused as one.
+    #[arg(long)]
+    pub no_memory_limit: bool,
 }
 
 #[derive(Args, Debug)]

@@ -60,6 +60,8 @@ pub(crate) fn run_resize(socket: &Path, args: SandboxResizeArgs) -> Result<()> {
         memory_mb,
         disk_mb,
         max_procs,
+        no_memory_limit,
+        no_disk_budget,
     } = args;
     tracing::info!("resizing sandbox '{}'...", sandbox);
     // Only the limits the operator named are sent. A field carrying `null` means
@@ -68,10 +70,16 @@ pub(crate) fn run_resize(socket: &Path, args: SandboxResizeArgs) -> Result<()> {
     // limit".
     let mut params = serde_json::Map::new();
     params.insert("sandbox".to_string(), json!(sandbox));
-    if let Some(memory_mb) = memory_mb {
+    // `null` is how the daemon is told to remove a limit, so a cleared limit is sent
+    // explicitly rather than by omission, which means the opposite.
+    if no_memory_limit {
+        params.insert("memory_mb".to_string(), serde_json::Value::Null);
+    } else if let Some(memory_mb) = memory_mb {
         params.insert("memory_mb".to_string(), json!(memory_mb));
     }
-    if let Some(disk_mb) = disk_mb {
+    if no_disk_budget {
+        params.insert("disk_mb".to_string(), serde_json::Value::Null);
+    } else if let Some(disk_mb) = disk_mb {
         params.insert("disk_mb".to_string(), json!(disk_mb));
     }
     if let Some(max_procs) = max_procs {
