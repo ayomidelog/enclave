@@ -151,6 +151,21 @@ assert_ports_held started
 run pause ports-live >/dev/null
 assert_ports_released paused
 
+# A paused sandbox must keep its ports withdrawn across a daemon restart. Pausing
+# withdraws the listeners so the operator can bind the port the sandbox declared;
+# the workspaces keep their running status, so a restart that republished every
+# running workspace would take the port back with no command having asked for it.
+# The daemon is restarted rather than a second pause issued because the republish
+# only happens at startup.
+run daemon stop >/dev/null 2>&1 || true
+for _ in $(seq 1 100); do
+  [[ ! -S "$socket_path" ]] && break
+  sleep 0.1
+done
+"${runner[@]}" "$binary" --socket "$socket_path" daemon start \
+  --state-dir "$state_dir" --pid-file "$pid_file" --wait-secs 20 >/dev/null
+assert_ports_released paused_across_restart
+
 run resume ports-live >/dev/null
 assert_ports_held resumed
 
