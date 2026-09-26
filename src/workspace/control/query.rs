@@ -142,7 +142,18 @@ pub(crate) fn collect_all_used_ip_octets(
     // the two knows about is an address that can be handed out twice. Unioning the
     // two is what makes the allocator see the other daemon's workspaces.
     let mut used = network::collect_used_ips(ips);
-    used.extend(network::host_veth_octets());
+    // An interface on the bridge that names one of this daemon's own workspaces is
+    // this daemon's, and a start replaces its own leftover rather than routing around
+    // it, so the hash of every workspace here is excluded from the host's answer. A
+    // live workspace's address is already in `used` from its record, which is why this
+    // only ever frees a leftover.
+    let own_hashes = registry
+        .sandboxes
+        .values()
+        .flat_map(|sandbox| sandbox.workspaces.values())
+        .map(|workspace| network::veth::workspace_hash(&workspace.id))
+        .collect::<std::collections::BTreeSet<_>>();
+    used.extend(network::host_veth_octets_held_by_others(&own_hashes));
     used
 }
 

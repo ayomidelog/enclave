@@ -147,10 +147,28 @@ where
 /// this daemon's own next start replaces rather than routes around. Only a member of
 /// the bridge is evidence of an address something else is holding.
 ///
+/// An interface whose name carries one of `own_hashes` is this daemon's own, for the
+/// workspace that hash is derived from, because the hash is a function of the
+/// workspace id and of nothing else. When the registry does not currently expect it,
+/// it is a leftover: the address it was built for is not one any record names. That
+/// happens when a teardown was forced or a registry was repaired away, and the next
+/// start of that workspace replaces the interface rather than building its pair under
+/// a second name. Counting it would instead hand the workspace a different address
+/// and leave the leftover on the bridge forever, holding an octet that no record
+/// names and no command releases.
+///
+/// A workspace id ends in twelve random hex characters, so two daemons naming a
+/// workspace the same thing still produce different ids, and therefore different
+/// hashes. A hash in this daemon's registry is not another daemon's to produce.
+///
+/// A live workspace's address is in the registry, so excluding its interface here
+/// takes nothing away: the caller has already counted that octet. Only a leftover is
+/// freed by this, and only for the workspace that owns it.
+///
 /// Reading this is one directory listing, and it makes the allocator refuse an
 /// address another daemon's workspace is holding rather than trusting a registry
 /// that cannot see it.
-pub fn host_veth_octets() -> BTreeSet<u8> {
+pub fn host_veth_octets_held_by_others(own_hashes: &BTreeSet<String>) -> BTreeSet<u8> {
     let Ok(entries) = std::fs::read_dir(NET_CLASS_DIR) else {
         return BTreeSet::new();
     };
@@ -159,6 +177,7 @@ pub fn host_veth_octets() -> BTreeSet<u8> {
         .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
         .filter(|name| veth::is_enclave_veth_name(name))
         .filter(|name| veth::is_bridge_member(name))
+        .filter(|name| veth::hash_from_name(name).is_some_and(|hash| !own_hashes.contains(hash)))
         .filter_map(|name| veth::octet_from_veth_name(&name))
         .collect()
 }

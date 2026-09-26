@@ -101,3 +101,47 @@ fn an_enclave_interface_name_yields_the_octet_it_carries() {
         assert_eq!(octet_from_veth_name(foreign), None, "{foreign}");
     }
 }
+
+/// The hash in a host interface name attributes the interface to a workspace.
+///
+/// This is what lets a start tell its own leftover from an interface another daemon
+/// built: the hash is a function of the workspace id, so it is readable out of the
+/// name, and the octet is deliberately not compared because a leftover carries an
+/// address no record names any more.
+#[test]
+fn the_hash_in_a_name_attributes_it_to_its_workspace() {
+    for workspace in ["workspace-1", "dev-5d57a02b5f7e", "session-abc-def"] {
+        let (host, _) = veth_names(22, workspace);
+        assert_eq!(
+            hash_from_name(&host),
+            Some(workspace_hash(workspace).as_str())
+        );
+        // The same workspace under a different address is still the same workspace:
+        // that is the case a leftover is, so the octet must not be part of the
+        // attribution.
+        let (other, _) = veth_names(40, workspace);
+        assert_eq!(hash_from_name(&other), hash_from_name(&host));
+    }
+
+    let (mine, _) = veth_names(22, "workspace-1");
+    let (theirs, _) = veth_names(22, "workspace-2");
+    assert_ne!(hash_from_name(&mine), hash_from_name(&theirs));
+}
+
+#[test]
+fn a_name_that_is_not_enclaves_carries_no_hash() {
+    for foreign in [
+        "eth0",
+        "veth0",
+        "veth-12",
+        "veth-12-nothex",
+        "veth-abc-123456",
+        "veth-1234-123456",
+        "veth-12-12345",
+        "veth-12-1234567",
+        "docker0",
+        "",
+    ] {
+        assert_eq!(hash_from_name(foreign), None, "{foreign}");
+    }
+}

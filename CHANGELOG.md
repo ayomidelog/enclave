@@ -102,6 +102,16 @@
 
 ### Fixed
 
+- A workspace start replaces its own leftover interface instead of building a second
+  one beside it. A teardown that was forced, or a record that repair removed, can leave
+  an interface on the bridge that no registry entry names any more. The allocator
+  counted every bridge member's octet as taken, so the next start of that workspace was
+  handed a different address, built `veth-<new octet>-<hash>`, and left the old
+  interface holding an octet that nothing could release. The interface name carries a
+  hash of the workspace id, which is what attributes it to the workspace it belongs to,
+  so the allocator now excludes this daemon's own interfaces and reuses the address —
+  which is what makes the start replace the leftover. Another daemon's workspaces are
+  still counted, because their hashes are not in this registry.
 - A destructive command whose confirmation prompt could not be read no longer exits
   zero. `wipe` and `workspace wipe` read the two answers from standard input, and a
   command run with no input read end of file and reported success without deleting

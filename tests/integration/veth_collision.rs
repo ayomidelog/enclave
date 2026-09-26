@@ -205,6 +205,10 @@ fn a_leftover_workspace_interface_is_replaced_by_the_next_start() {
         "failed to attach the leftover to the bridge: {}",
         String::from_utf8_lossy(&attached.stderr)
     );
+    // The fixture is on the bridge the rest of the host shares, so it is removed
+    // however the test ends. A panic before the start below would otherwise leave an
+    // interface holding an address that no record names, which nothing would release.
+    let _fixture = LeftoverFixture { name: name.clone() };
 
     // The start replaces it instead of failing, and the workspace is usable.
     let restarted = start_workspace(&state, &sandbox.id, &workspace.id)
@@ -214,9 +218,41 @@ fn a_leftover_workspace_interface_is_replaced_by_the_next_start() {
         interface_exists(&name),
         "the start did not build its own interface"
     );
+    // The leftover was replaced rather than routed around: the pair the test built is
+    // gone, which is also what proves the address was reused instead of a second one
+    // being taken. Deleting the host end destroys both ends, so the peer is the evidence
+    // that the interface now on the bridge is not the one the test built.
+    assert!(
+        !interface_exists("leftover-peer"),
+        "the start left the fixture's pair in place; the leftover was not replaced"
+    );
+    assert_eq!(
+        restarted.assigned_ip.as_deref(),
+        Some(assigned.as_str()),
+        "the workspace must keep its address rather than be given another one"
+    );
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     drop(cleanup);
+}
+
+/// The leftover pair this test builds, removed however the test ends.
+///
+/// The pair is attached to the bridge Enclave shares with every other workspace on
+/// the host, and a workspace veth on the bridge names an address that is in use. A run
+/// that panics between building it and the start that replaces it would leave that
+/// address held by an interface no record names, so the fixture takes itself away.
+struct LeftoverFixture {
+    name: String,
+}
+
+impl Drop for LeftoverFixture {
+    fn drop(&mut self) {
+        // Both ends, by name: deleting the host end destroys the pair, and naming the
+        // peer as well covers a run that failed between creating the two.
+        let _ = ip(&["link", "del", &self.name]);
+        let _ = ip(&["link", "del", "leftover-peer"]);
+    }
 }
