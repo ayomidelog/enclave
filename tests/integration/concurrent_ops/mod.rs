@@ -11,9 +11,14 @@
 //! resize racing a stop has to leave the image and the filesystem inside it agreeing; a
 //! restore racing a destroy has to leave either a workspace that works or no workspace at
 //! all. The helpers they share are here.
+//!
+//! A third pair is here for the same reason: a wipe destroys every workspace while a
+//! start brings one up, and the outcome has to be a workspace that is either fully gone
+//! or fully running rather than one caught between the two.
 
 mod resize_stop;
 mod restore_destroy;
+mod wipe_start;
 
 use std::fs;
 use std::path::Path;
