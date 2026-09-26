@@ -59,21 +59,22 @@ pub(in crate::commands::workspace) fn run_workspace_wipe(
         return Ok(());
     }
 
-    if !confirm_destructive_action(
-        &format!(
-            "this will permanently delete all {} workspaces across all sandboxes.{}",
-            workspaces.len(),
-            if args.force {
-                " force mode removes the records even when host resources cannot be released."
-            } else {
-                ""
-            }
-        ),
-        "delete all workspace",
-    )? {
-        println!("aborted");
-        return Ok(());
-    }
+    require_confirmation(
+        confirm_destructive_action(
+            &format!(
+                "this will permanently delete all {} workspaces across all sandboxes.{}",
+                workspaces.len(),
+                if args.force {
+                    " force mode removes the records even when host resources cannot be released."
+                } else {
+                    ""
+                }
+            ),
+            "delete all workspace",
+        )?,
+        "workspace wipe",
+        "Run it from a terminal, or remove the workspaces one at a time with `enclave workspace remove`.",
+    )?;
 
     let response = send_managed(ctx.socket, "workspace.wipe", json!({ "force": args.force }))?;
     let report: crate::workspace::BatchDestroyReport = serde_json::from_value(response)?;

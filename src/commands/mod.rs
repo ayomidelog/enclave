@@ -36,7 +36,9 @@ use serde_json::json;
 
 use crate::cli::{Cli, Commands, InternalCommands};
 
-pub(crate) use confirm::{confirm_destructive_action, report_retained_resources};
+pub(crate) use confirm::{
+    confirm_destructive_action, report_retained_resources, require_confirmation,
+};
 pub(crate) use send::{print_operation_id, send, send_managed};
 pub(crate) use transition::print_state_transition;
 

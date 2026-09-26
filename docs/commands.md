@@ -383,4 +383,14 @@ enclave registry repair [--strict]
 |---------|-------------|
 | `repair` | Scan and repair the registry. `--strict` removes entries with missing on-disk state. |
 
-> **Destructive commands** (`wipe`, `workspace wipe`) require two-step confirmation before executing.
+ > **Destructive commands** (`wipe`, `workspace wipe`) require two-step confirmation before executing.
+
+The confirmation is read from standard input, so a destructive command with no
+terminal fails rather than doing nothing: it exits non-zero and reports that nothing
+was deleted. Answering a prompt with anything other than the required phrase aborts
+the command and exits zero. To run one from a script, supply the answers on standard
+input:
+
+```bash
+printf 'y\ndelete all sandboxes\n' | enclave wipe --force
+```

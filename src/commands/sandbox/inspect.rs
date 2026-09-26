@@ -19,7 +19,7 @@ use crate::sandbox::{RootfsTier, SandboxListItem, SandboxStatusReport};
 
 use super::super::{
     confirm_destructive_action, daemon, print_operation_id, print_state_transition,
-    report_retained_resources, send, send_managed,
+    report_retained_resources, require_confirmation, send, send_managed,
 };
 
 /// What `sandbox.wipe` removed, failed on, and had to leave behind.
@@ -162,21 +162,22 @@ pub(crate) fn run_wipe(socket: &Path, args: WipeArgs) -> Result<()> {
         return Ok(());
     }
 
-    if !confirm_destructive_action(
-        &format!(
-            "this will permanently delete all {} sandboxes and their workspaces.{}",
-            sandboxes.len(),
-            if args.force {
-                " force mode removes the records even when host resources cannot be released."
-            } else {
-                ""
-            }
-        ),
-        "delete all sandboxes",
-    )? {
-        println!("aborted");
-        return Ok(());
-    }
+    require_confirmation(
+        confirm_destructive_action(
+            &format!(
+                "this will permanently delete all {} sandboxes and their workspaces.{}",
+                sandboxes.len(),
+                if args.force {
+                    " force mode removes the records even when host resources cannot be released."
+                } else {
+                    ""
+                }
+            ),
+            "delete all sandboxes",
+        )?,
+        "wipe",
+        "Run it from a terminal, or destroy the sandboxes one at a time with `enclave destroy`.",
+    )?;
 
     let response = send_managed(socket, "sandbox.wipe", json!({ "force": args.force }))?;
     let report: SandboxWipeReport = serde_json::from_value(response)?;

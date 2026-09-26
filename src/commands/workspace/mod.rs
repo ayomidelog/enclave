@@ -33,7 +33,7 @@ use crate::workspace::{
 
 use super::{
     confirm_destructive_action, daemon, print_operation_id, print_state_transition,
-    report_retained_resources, send, send_managed,
+    report_retained_resources, require_confirmation, send, send_managed,
 };
 
 use exec::{resolve_workspace_target_from_optional, run_workspace_exec};

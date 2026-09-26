@@ -102,6 +102,12 @@
 
 ### Fixed
 
+- A destructive command whose confirmation prompt could not be read no longer exits
+  zero. `wipe` and `workspace wipe` read the two answers from standard input, and a
+  command run with no input read end of file and reported success without deleting
+  anything, so a script took the exit status for a completed teardown. It now fails
+  and says nothing was deleted, while an operator who answers the prompts with
+  something other than the required phrases still aborts successfully.
 - A stop no longer clears the record of a runtime that is still inside the `exec`
   that makes it the runtime. A process carries its launcher's command line until
   that exec finishes, and reads as having none at all while it is in progress, so a
