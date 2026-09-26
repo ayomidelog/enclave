@@ -1,21 +1,4 @@
-//! What a daemon killed in the middle of a lifecycle operation leaves behind.
-//!
-//! Every other test in this directory drives the lifecycle in-process, which is why none
-//! of them can test a crash: there is no second process to kill. These run the real
-//! daemon in its own state directory and kill it with SIGKILL, which is the one
-//! interruption the daemon cannot catch and answer for itself. What is asserted is not
-//! that the interrupted operation succeeded, because it cannot: it is that the state the
-//! next daemon start inherits is one it can recover from without an operator.
-//!
-//! The kill point is chosen from the operation's own journal rather than from a delay.
-//! A journal record names the phase it is in before that phase does its work, so waiting
-//! for a phase and then killing lands inside the phase every time, on a fast host and a
-//! slow one alike. A delay would land wherever the host happened to be, which is the same
-//! thing as not choosing.
-//!
-//! What recovery owes is a settled state that agrees with the host. The workspace is
-//! either running with a live runtime or stopped with nothing of its own left on the
-//! host, and either way nothing is left running that no record describes.
+//! The fixture a crash test builds and the assertion it ends with.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,9 +7,9 @@ use std::time::{Duration, Instant};
 
 use enclave::operation::{load, OperationStatus};
 
-use super::support::{
-    loop_devices_backing, prepare_cached_rootfs, root_only, sandbox_dir, session_processes_for,
-    state_dir, workspace_cgroup_path, workspace_dir, TestDaemon,
+use super::super::support::{
+    loop_devices_backing, prepare_cached_rootfs, sandbox_dir, session_processes_for, state_dir,
+    workspace_cgroup_path, workspace_dir, TestDaemon,
 };
 
 /// Every mount under the workspaces of a state directory.
@@ -117,17 +100,20 @@ fn journal_records(state_dir: &Path) -> Vec<(String, OperationStatus, String)> {
 }
 
 /// What a crash test starts from: a daemon, a sandbox, and one workspace.
-struct CrashFixture {
-    state: PathBuf,
-    socket_dir: PathBuf,
-    sandbox_name: String,
-    workspace_name: String,
-    daemon: TestDaemon,
+pub(super) struct CrashFixture {
+    // The test modules that share this fixture drive the daemon and read the
+    // names directly, so the fields are visible across the suite rather than
+    // behind an accessor for each one.
+    pub(super) state: PathBuf,
+    pub(super) socket_dir: PathBuf,
+    pub(super) sandbox_name: String,
+    pub(super) workspace_name: String,
+    pub(super) daemon: TestDaemon,
 }
 
 impl CrashFixture {
     /// Build the fixture and leave the daemon running with the workspace stopped.
-    fn new(label: &str) -> Self {
+    pub(super) fn new(label: &str) -> Self {
         Self::build(label, None)
     }
 
@@ -136,7 +122,7 @@ impl CrashFixture {
     /// The quota tier is a different kind of storage: the workspace owns an ext4
     /// image on a loop device rather than a directory, so a crash while it is being
     /// torn down leaves kernel state a directory-backed workspace never has.
-    fn quota(label: &str, disk_mb: u32) -> Self {
+    pub(super) fn quota(label: &str, disk_mb: u32) -> Self {
         Self::build(label, Some(disk_mb))
     }
 
@@ -189,15 +175,15 @@ impl CrashFixture {
         }
     }
 
-    fn sandbox_dir(&self) -> PathBuf {
+    pub(super) fn sandbox_dir(&self) -> PathBuf {
         sandbox_dir(&self.state, &self.sandbox_name)
     }
 
-    fn workspace_dir(&self) -> PathBuf {
+    pub(super) fn workspace_dir(&self) -> PathBuf {
         workspace_dir(&self.sandbox_dir(), &self.workspace_name)
     }
 
-    fn sandbox_id(&self) -> String {
+    pub(super) fn sandbox_id(&self) -> String {
         self.sandbox_dir()
             .file_name()
             .expect("the sandbox directory has a name")
@@ -205,7 +191,7 @@ impl CrashFixture {
             .into_owned()
     }
 
-    fn workspace_id(&self) -> String {
+    pub(super) fn workspace_id(&self) -> String {
         self.workspace_dir()
             .file_name()
             .expect("the workspace directory has a name")
@@ -220,7 +206,7 @@ impl CrashFixture {
     /// the pid file the session writes from inside its namespace puts the kill
     /// inside the window this test is about: a runtime that is running and a
     /// record that does not name it yet.
-    fn wait_for_session(&self, timeout: Duration) -> bool {
+    pub(super) fn wait_for_session(&self, timeout: Duration) -> bool {
         let pid_file = self.workspace_dir().join("runtime").join("session.pid");
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -239,7 +225,7 @@ impl CrashFixture {
     /// anti-spoofing rules are installed, and the launch cannot commit until all of
     /// that is done. Waiting for it is what puts the kill inside the window where
     /// the host holds network state the record does not describe yet.
-    fn wait_for_veth(&self, timeout: Duration) -> bool {
+    pub(super) fn wait_for_veth(&self, timeout: Duration) -> bool {
         let sandbox_id = self.sandbox_id();
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
@@ -252,12 +238,12 @@ impl CrashFixture {
     }
 
     /// Run one CLI command against the fixture's daemon.
-    fn cli_ok(&self, args: &[&str]) {
+    pub(super) fn cli_ok(&self, args: &[&str]) {
         self.daemon.cli_ok(args);
     }
 
     /// Run a command in the background so the test can kill the daemon while it runs.
-    fn spawn(&self, args: &[&str]) -> Child {
+    pub(super) fn spawn(&self, args: &[&str]) -> Child {
         self.daemon.spawn(args)
     }
 }
@@ -274,7 +260,7 @@ impl Drop for CrashFixture {
 }
 
 /// Wait for a spawned CLI command to finish, so a test does not leave a process behind.
-fn reap(mut child: Child) {
+pub(super) fn reap(mut child: Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         if child.try_wait().expect("poll the CLI").is_some() {
@@ -293,7 +279,7 @@ fn reap(mut child: Child) {
 /// one holds no runtime, no cgroup, no storage mount, and no interface. The journal has
 /// to be terminal, because the restart is the one moment that closes what a dead daemon
 /// left open.
-fn assert_recovered(fixture: &CrashFixture) {
+pub(super) fn assert_recovered(fixture: &CrashFixture) {
     let sandbox_id = fixture.sandbox_id();
     let workspace_id = fixture.workspace_id();
     let sandbox_path = fixture.sandbox_dir();
@@ -363,256 +349,5 @@ fn assert_recovered(fixture: &CrashFixture) {
         stdout.contains("status: stopped") || stdout.contains("status: running"),
         "the workspace is not in a settled state: {stdout}{}",
         String::from_utf8_lossy(&status.stderr)
-    );
-}
-
-/// A daemon killed while a workspace is starting must leave a state the next start
-/// recovers from.
-///
-/// The launch is the phase that has already created the runtime, its cgroup, the
-/// interface, and the storage mounts by the time it is reached, so a crash there is the
-/// case with the most to release. Recovery rolls the transition back rather than resuming
-/// it, because the identity a half-finished launch recorded may not be the process that
-/// is actually running.
-#[test]
-#[ignore = "requires root privileges and namespace/mount support"]
-fn a_daemon_killed_during_a_workspace_launch_recovers() {
-    if !root_only() {
-        return;
-    }
-
-    let mut fixture = CrashFixture::new("launch");
-    let child = fixture.spawn(&[
-        "workspace",
-        "start",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    assert!(
-        fixture
-            .daemon
-            .wait_for_phase("workspace.start", "launch_runtime", Duration::from_secs(20)),
-        "the start never reached its launch phase, so killing here would test nothing"
-    );
-    assert!(
-        fixture.wait_for_session(Duration::from_secs(20)),
-        "the launch never produced a session, so there is no runtime to leave behind"
-    );
-    fixture.daemon.kill();
-    reap(child);
-    fixture.daemon.start();
-
-    assert_recovered(&fixture);
-}
-
-/// A daemon killed between a workspace's runtime launching and its metadata committing
-/// must leave a state the next start recovers from.
-///
-/// This is the narrowest window in the lifecycle and the one with the most to get wrong:
-/// the runtime exists and is running, and the registry still says the workspace is
-/// starting. A recovery that trusted the record would leave a runtime nothing describes;
-/// one that trusted the process would adopt a runtime whose identity was never committed.
-/// What the daemon does instead is roll back, which is what this asserts.
-#[test]
-#[ignore = "requires root privileges and namespace/mount support"]
-fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
-    if !root_only() {
-        return;
-    }
-
-    let mut fixture = CrashFixture::new("commit");
-    let child = fixture.spawn(&[
-        "workspace",
-        "start",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    assert!(
-        fixture.daemon.wait_for_phase(
-            "workspace.start",
-            "commit_runtime_metadata",
-            Duration::from_secs(20)
-        ),
-        "the start never reached its commit phase, so killing here would test nothing"
-    );
-    fixture.daemon.kill();
-    reap(child);
-    fixture.daemon.start();
-
-    assert_recovered(&fixture);
-}
-
-/// A daemon killed while a workspace is stopping must leave a state the next start
-/// recovers from.
-///
-/// The stop phase is reached after the runtime has been signalled and before its cgroup,
-/// its interface, its firewall rules, and its storage mounts have been released, so a
-/// crash there leaves host state that the record still describes. Recovery reads that
-/// record and finishes the teardown.
-#[test]
-#[ignore = "requires root privileges and namespace/mount support"]
-fn a_daemon_killed_during_a_workspace_stop_recovers() {
-    if !root_only() {
-        return;
-    }
-
-    let mut fixture = CrashFixture::new("stop");
-    fixture.cli_ok(&[
-        "workspace",
-        "start",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    let child = fixture.spawn(&[
-        "workspace",
-        "stop",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    assert!(
-        fixture.daemon.wait_for_phase(
-            "workspace.stop",
-            "cleanup_resources",
-            Duration::from_secs(20)
-        ),
-        "the stop never reached its cleanup phase, so killing here would test nothing"
-    );
-    fixture.daemon.kill();
-    reap(child);
-    fixture.daemon.start();
-
-    assert_recovered(&fixture);
-}
-
-/// A daemon killed while a sandbox is stopping must leave a state the next start
-/// recovers from.
-///
-/// A sandbox stop unmounts the rootfs and removes the sandbox cgroup, and it records
-/// both before doing them. A crash between the two leaves a sandbox whose record says
-/// stopping, and recovery completes the stop rather than reporting a sandbox that is
-/// half way down.
-#[test]
-#[ignore = "requires root privileges and namespace/mount support"]
-fn a_daemon_killed_during_a_sandbox_stop_recovers() {
-    if !root_only() {
-        return;
-    }
-
-    let mut fixture = CrashFixture::new("sandbox-stop");
-    let child = fixture.spawn(&["stop", &fixture.sandbox_name]);
-    assert!(
-        fixture
-            .daemon
-            .wait_for_phase("sandbox.stop", "unmount_rootfs", Duration::from_secs(20)),
-        "the sandbox stop never reached its unmount phase, so killing here would test nothing"
-    );
-    fixture.daemon.kill();
-    reap(child);
-    fixture.daemon.start();
-
-    // The sandbox is the unit here, so the assertion is about the sandbox: it has to be
-    // in a settled state, and its cgroup and rootfs mount have to match that state.
-    let status = fixture.daemon.cli(&["status", &fixture.sandbox_name]);
-    let stdout = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(
-        stdout.contains("status: stopped") || stdout.contains("status: running"),
-        "the sandbox is not in a settled state: {stdout}{}",
-        String::from_utf8_lossy(&status.stderr)
-    );
-    let sandbox_id = fixture.sandbox_id();
-    let cgroup = Path::new("/sys/fs/cgroup").join(format!("enclave-sb-{sandbox_id}"));
-    if stdout.contains("status: stopped") {
-        assert!(
-            !cgroup.exists(),
-            "a stopped sandbox still has its cgroup {}",
-            cgroup.display()
-        );
-    }
-    assert_recovered(&fixture);
-}
-
-/// A daemon killed while a workspace's networking is being set up must leave a state
-/// the next start recovers from.
-///
-/// The network phase runs inside the launch and has no journal phase of its own, so
-/// the kill is timed from the interface appearing on the host. By then the veth
-/// exists and the anti-spoofing rules are being installed, and the record still does
-/// not name a runtime. A recovery that only rolled the record back would leave the
-/// interface and its rules behind, because nothing else on the host knows they are
-/// the workspace's.
-#[test]
-#[ignore = "requires root privileges and namespace/mount support"]
-fn a_daemon_killed_during_network_setup_recovers() {
-    if !root_only() {
-        return;
-    }
-
-    let mut fixture = CrashFixture::new("network");
-    let child = fixture.spawn(&[
-        "workspace",
-        "start",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    assert!(
-        fixture.wait_for_veth(Duration::from_secs(20)),
-        "the start never created an interface, so killing here would test nothing"
-    );
-    fixture.daemon.kill();
-    reap(child);
-    fixture.daemon.start();
-
-    assert_recovered(&fixture);
-}
-
-/// A daemon killed while a quota-backed workspace is stopping must release the loop
-/// device as well as the mount.
-///
-/// The quota tier is the one whose storage is a real filesystem: the stop unmounts
-/// the image and then detaches the loop device behind it. A crash between the two
-/// leaves the image attached with the record already rolled back, so nothing that
-/// reads the registry can find it again.
-#[test]
-#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
-fn a_daemon_killed_during_a_quota_workspace_stop_recovers() {
-    if !root_only() {
-        return;
-    }
-
-    let mut fixture = CrashFixture::quota("quota-stop", 64);
-    let image = fixture.workspace_dir().join("fs.img");
-    fixture.cli_ok(&[
-        "workspace",
-        "start",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    assert!(
-        !loop_devices_backing(&image).is_empty(),
-        "the running quota workspace has to own a loop device for this to test anything"
-    );
-
-    let child = fixture.spawn(&[
-        "workspace",
-        "stop",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    assert!(
-        fixture.daemon.wait_for_phase(
-            "workspace.stop",
-            "cleanup_resources",
-            Duration::from_secs(20)
-        ),
-        "the stop never reached its cleanup phase, so killing here would test nothing"
-    );
-    fixture.daemon.kill();
-    reap(child);
-    fixture.daemon.start();
-
-    assert_recovered(&fixture);
-    assert!(
-        loop_devices_backing(&image).is_empty(),
-        "recovery left the workspace image attached to a loop device"
     );
 }
