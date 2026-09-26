@@ -83,15 +83,24 @@ fn bootstrap_debootstrap(
     let cache_dir = rootfs_cache_dir(state_dir);
     cache::ensure(&cache_dir)?;
     let suite_cache = cache_dir.join(suite);
-    if cache::contains(&cache_dir, suite, &suite_cache) {
+    let verdict = cache::evaluate(&cache_dir, suite, &suite_cache);
+    if verdict.is_hit() {
         tracing::info!(
-            "sandbox '{}': using cached rootfs for suite '{}' from {}",
+            "sandbox '{}': using cached rootfs for suite '{}' from {} ({})",
             name,
             suite,
-            suite_cache.display()
+            suite_cache.display(),
+            verdict.describe()
         );
         return Ok(BootstrapOutcome::shared(suite_cache));
     }
+    tracing::info!(
+        "sandbox '{}': the cached rootfs for suite '{}' at {} will not be reused: {}",
+        name,
+        suite,
+        suite_cache.display(),
+        verdict.describe()
+    );
 
     let log_path = sandbox_dir.join("debootstrap.log");
     tracing::info!(
@@ -132,25 +141,42 @@ fn bootstrap_cached_rootfs(name: &str, suite: &str, state_dir: &Path) -> Result<
     let cache_dir = rootfs_cache_dir(state_dir);
     cache::ensure(&cache_dir)?;
     let suite_cache = cache_dir.join(suite);
-    if cache::contains(&cache_dir, suite, &suite_cache) {
+    let suite_verdict = cache::evaluate(&cache_dir, suite, &suite_cache);
+    if suite_verdict.is_hit() {
         tracing::info!(
-            "sandbox '{}' bootstrap: using cached rootfs for suite '{}' from {}",
+            "sandbox '{}' bootstrap: using cached rootfs for suite '{}' from {} ({})",
             name,
             suite,
-            suite_cache.display()
+            suite_cache.display(),
+            suite_verdict.describe()
         );
         return Ok(BootstrapOutcome::shared(suite_cache));
     }
+    tracing::info!(
+        "sandbox '{}' bootstrap: the suite cache for '{}' at {} will not be reused: {}",
+        name,
+        suite,
+        suite_cache.display(),
+        suite_verdict.describe()
+    );
 
     let generic_cache = cache_dir.join("base");
-    if cache::contains(&cache_dir, "base", &generic_cache) {
+    let generic_verdict = cache::evaluate(&cache_dir, "base", &generic_cache);
+    if generic_verdict.is_hit() {
         tracing::info!(
-            "sandbox '{}' bootstrap: using generic cached rootfs from {}",
+            "sandbox '{}' bootstrap: using generic cached rootfs from {} ({})",
             name,
-            generic_cache.display()
+            generic_cache.display(),
+            generic_verdict.describe()
         );
         return Ok(BootstrapOutcome::shared(generic_cache));
     }
+    tracing::info!(
+        "sandbox '{}' bootstrap: the generic cache at {} will not be reused: {}",
+        name,
+        generic_cache.display(),
+        generic_verdict.describe()
+    );
 
     bail!(
         "cached rootfs not found. Populate either:\n  \
