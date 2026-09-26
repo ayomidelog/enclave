@@ -98,7 +98,7 @@ Workspace runtime tracks both the PID and the process start-time ticks (`/proc/<
 
 Workspace and sandbox resource limits use a dual approach:
 
-1. **rlimit (workspace-local)**: `cpu_seconds`, `memory_mb`, `max_procs`, and `max_open_files` are applied to the workspace session process via `prlimit` / `RLIMIT_*`.
+1. **rlimit (workspace-local)**: `cpu_seconds`, `memory_mb`, `max_procs`, and `max_open_files` are applied to the workspace session process via `prlimit` / `RLIMIT_*`. `memory_mb` is the one of these that can be changed on a running workspace, and changing it writes both layers: the cgroup is rewritten and the session process's `RLIMIT_AS` is moved with it, so a raised limit is usable without a restart. Only the soft limit is written, leaving the hard limit unlimited, so a limit can still be lowered and raised again afterwards.
 2. **cgroup v2 (aggregate and steady-share)**: when the unified hierarchy is mounted at `/sys/fs/cgroup`, Enclave creates a sandbox parent cgroup plus per-workspace child cgroups and writes `memory.max`, `cpu.max`, and `pids.max`.
 
 This split is intentional:
@@ -112,6 +112,8 @@ When cgroup v2 is not available, Enclave still applies the workspace-local `RLIM
 ## Daemon Recovery
 
 On startup, the daemon reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. This handles daemon crashes, host reboots, and OOM-killed workspace sessions without requiring manual cleanup.
+
+A workspace left in a transitional state by an interrupted operation is resolved deterministically rather than guessed at: an interrupted start is rolled back and an interrupted stop is completed, and neither is resumed, because resuming a half-started runtime would adopt a process whose identity the record does not prove. A start whose own record was already written when the daemon died is the case where that identity *is* proved — the launch records the runtime PID, its start time, and its namespace references before it commits the registry — so the next daemon adopts that record and completes the start instead of rolling it back, and it still signals nothing on the strength of a PID alone. A stop and a destroy also verify the host before recording success — runtime PID and start time, cgroup, mounts, loop device, interface, firewall rules, namespace references, and files — so a recorded state is evidence rather than a claim. Nothing is deleted through a mount Enclave did not create, and a PID is only signalled when its start time, and where it exists its namespace inode, still match what was recorded.
 
 The registry repair command (`enclave registry repair --strict`) can be used for deeper cleanup of stale on-disk state.
 

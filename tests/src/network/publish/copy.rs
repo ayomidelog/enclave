@@ -1,0 +1,108 @@
+//! The loop that moves bytes between the two ends of a proxied connection.
+
+use super::*;
+
+/// A reader that never produces data and never reaches end of file.
+struct SilentReader;
+
+/// A reader that yields one byte and then goes silent.
+struct OneByteThenSilent {
+    remaining: usize,
+}
+
+impl Read for SilentReader {
+    fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::new(io::ErrorKind::WouldBlock, "silent"))
+    }
+}
+
+impl Read for OneByteThenSilent {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.remaining == 0 || buffer.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "silent"));
+        }
+        self.remaining -= 1;
+        buffer[0] = 7;
+        Ok(1)
+    }
+}
+
+#[test]
+fn copy_until_shutdown_stops_without_waiting_for_eof() {
+    let shutdown = AtomicBool::new(true);
+    let activity = ConnectionActivity::new();
+    let mut reader = std::io::Cursor::new(vec![1u8, 2, 3]);
+    let mut output = Vec::new();
+    copy_until_shutdown(
+        &mut reader,
+        &mut output,
+        &shutdown,
+        &activity,
+        Duration::from_secs(60),
+    )
+    .expect("copy");
+    assert!(output.is_empty());
+}
+
+#[test]
+fn copy_until_shutdown_copies_available_data() {
+    let shutdown = AtomicBool::new(false);
+    let activity = ConnectionActivity::new();
+    let mut reader = std::io::Cursor::new(vec![1u8, 2, 3]);
+    let mut output = Vec::new();
+    copy_until_shutdown(
+        &mut reader,
+        &mut output,
+        &shutdown,
+        &activity,
+        Duration::from_secs(60),
+    )
+    .expect("copy");
+    assert_eq!(output, vec![1, 2, 3]);
+}
+
+#[test]
+fn copy_until_shutdown_closes_a_connection_that_goes_idle() {
+    let shutdown = AtomicBool::new(false);
+    let activity = ConnectionActivity::new();
+    let mut reader = SilentReader;
+    let mut output = Vec::new();
+    let idle_timeout = Duration::from_millis(30);
+
+    let started = std::time::Instant::now();
+    copy_until_shutdown(&mut reader, &mut output, &shutdown, &activity, idle_timeout)
+        .expect("copy");
+    let elapsed = started.elapsed();
+
+    assert!(output.is_empty());
+    // The activity clock starts a hair before this test's timer, so allow a
+    // small slack rather than comparing the two clocks exactly.
+    assert!(
+        elapsed >= idle_timeout.saturating_sub(Duration::from_millis(5)),
+        "closed before the idle timeout: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "took too long: {elapsed:?}"
+    );
+}
+
+#[test]
+fn copy_until_shutdown_keeps_an_active_connection_open() {
+    let shutdown = AtomicBool::new(false);
+    let activity = ConnectionActivity::new();
+    let mut reader = OneByteThenSilent { remaining: 1 };
+    let mut output = Vec::new();
+
+    // The single byte resets the idle clock, so the byte is copied before the
+    // connection is reaped for going quiet.
+    copy_until_shutdown(
+        &mut reader,
+        &mut output,
+        &shutdown,
+        &activity,
+        Duration::from_millis(30),
+    )
+    .expect("copy");
+    assert_eq!(output, vec![7]);
+}

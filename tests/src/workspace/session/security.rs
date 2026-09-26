@@ -1,6 +1,11 @@
-use super::*;
-use anyhow::anyhow;
+use std::collections::BTreeSet;
 use std::path::Path;
+
+use anyhow::anyhow;
+
+use super::capabilities::{denied_syscalls, CAP_CHOWN, CAP_SETGID, CAP_SETUID, EXEC_CAPABILITIES};
+use super::masking::{MASK_DIR_TARGETS, MASK_FILE_TARGETS};
+use super::readonly::should_ignore_readonly_remount_error;
 
 #[test]
 fn denied_syscalls_include_escape_primitives() {

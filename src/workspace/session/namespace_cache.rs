@@ -65,8 +65,11 @@ pub(crate) fn duplicate_for_child(pid: u32, starttime_ticks: u64) -> Result<Chil
         crate::perf::record_namespace_cache_hit();
     }
     if guard.len() > CACHE_LIMIT {
-        if let Some(oldest) = guard.keys().next().copied() {
-            guard.remove(&oldest);
+        // The map is not ordered, so this evicts an arbitrary entry rather than
+        // the least recently used one. That is enough: the entry only caches open
+        // descriptors, so an evicted key is reopened on its next use.
+        if let Some(victim) = guard.keys().next().copied() {
+            guard.remove(&victim);
         }
     }
     guard
@@ -124,17 +127,26 @@ fn duplicate_inheritable(file: &File) -> Result<File> {
     let duplicate = file
         .try_clone()
         .context("failed to duplicate namespace descriptor")?;
-    let fd = duplicate.as_raw_fd();
+    make_inheritable(&duplicate)?;
+    Ok(duplicate)
+}
+
+/// Clear `FD_CLOEXEC` so a descriptor survives the `exec` that starts a helper.
+///
+/// Descriptors created with `O_CLOEXEC` — including the `pidfd_open` result used
+/// to detect that a workspace runtime has exited — are otherwise closed by
+/// `exec`, leaving the helper with a stale descriptor number.
+pub(crate) fn make_inheritable(file: &File) -> Result<()> {
+    let fd = file.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("failed to inspect namespace descriptor flags");
+        return Err(std::io::Error::last_os_error()).context("failed to inspect descriptor flags");
     }
     if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error())
-            .context("failed to make namespace descriptor inheritable");
+            .context("failed to make descriptor inheritable");
     }
-    Ok(duplicate)
+    Ok(())
 }
 
 pub(crate) fn raw_fds(fds: &ChildNamespaceFds) -> [RawFd; 6] {

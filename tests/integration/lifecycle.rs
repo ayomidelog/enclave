@@ -1,37 +1,21 @@
+//! Sandbox and workspace lifecycle baselines.
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
 use enclave::sandbox::{
-    create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
+    create_sandbox, destroy_sandbox, sandbox_status, start_sandbox, stop_sandbox, BootstrapMethod,
+    RootfsTier,
 };
+
 use enclave::workspace::{
     create_workspace, destroy_workspace, exec_workspace_command, start_workspace, stop_workspace,
-    WorkspaceLimits,
+    WorkspaceLimits, WorkspaceStatus,
 };
 
-fn root_only() -> bool {
-    unsafe { libc::geteuid() == 0 }
-}
-
-fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
-    let cache = state_dir.join("sandboxes").join("rootfs-cache").join(suite);
-    fs::create_dir_all(cache.join("bin")).expect("create bin");
-    fs::create_dir_all(cache.join("etc")).expect("create etc");
-    fs::create_dir_all(cache.join("usr")).expect("create usr");
-    fs::create_dir_all(cache.join("usr/bin")).expect("create usr bin");
-    fs::copy("/usr/bin/busybox", cache.join("bin/busybox")).expect("copy busybox");
-    std::os::unix::fs::symlink("busybox", cache.join("bin/sh")).expect("link shell");
-    std::os::unix::fs::symlink("../../bin/busybox", cache.join("usr/bin/env")).expect("link env");
-}
-
-fn state_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("{}-{}", name, std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create state dir");
-    dir
-}
+use super::support::{is_mountpoint, prepare_cached_rootfs, root_only, state_dir};
 
 #[test]
 #[ignore = "requires root privileges and namespace/mount support"]
@@ -54,9 +38,127 @@ fn sandbox_lifecycle_create_start_stop_destroy() {
     .expect("create sandbox");
     assert!(Path::new(&sandbox.rootfs_path).exists());
 
+    // The base-image tier is a durable choice made at creation, not something the
+    // daemon observes: a shared overlay and a private copy have the same shape on
+    // disk, and the overlay is mounted only while the sandbox is running. A tier
+    // that were probed would therefore read differently before and after a start,
+    // which is what the check below rules out.
+    let before_start = sandbox_status(&state, &sandbox.id).expect("read status");
+    assert_eq!(before_start.rootfs_tier, RootfsTier::SharedOverlay);
+    let base = before_start
+        .rootfs_lower_path
+        .as_deref()
+        .expect("a shared-overlay sandbox names its shared base");
+    assert!(
+        Path::new(base).starts_with(state.join("sandboxes").join("rootfs-cache")),
+        "the shared base {base} is not the cached rootfs the sandbox was created from"
+    );
+    assert!(!Path::new(base).starts_with(&sandbox.sandbox_path));
+
     let started = start_sandbox(&state, &sandbox.id).expect("start sandbox");
     assert!(Path::new(&started.mounted_rootfs_path).exists());
+    assert_eq!(
+        sandbox_status(&state, &sandbox.id)
+            .expect("read status while running")
+            .rootfs_tier,
+        before_start.rootfs_tier,
+        "the base-image tier must not change when the sandbox starts"
+    );
 
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    assert_eq!(
+        sandbox_status(&state, &sandbox.id)
+            .expect("read status while stopped")
+            .rootfs_tier,
+        before_start.rootfs_tier,
+        "the base-image tier must not change when the sandbox stops"
+    );
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// A sandbox whose rootfs bind mount is missing must not hand a workspace an
+/// empty root.
+///
+/// The bind mount the session receives is host state, and the registry cannot
+/// show whether it is present: a stop/start cycle or an interrupted teardown can
+/// leave the sandbox recorded as running with no rootfs mounted. Before the
+/// pre-flight existed the workspace started against an empty directory and was
+/// still reported as running, which is a silent failure rather than a reported
+/// one.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn workspace_start_repairs_a_missing_sandbox_rootfs_mount() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-rootfs-bind");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-rootfs-bind-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    let running = start_sandbox(&state, &sandbox.id).expect("start sandbox");
+    let workspace = create_workspace(&state, &sandbox.id, "dev", WorkspaceLimits::default())
+        .expect("create workspace");
+
+    // Detach the bind mount the daemon owns, leaving the sandbox recorded as
+    // running with no root filesystem attached.
+    let mounted_rootfs = std::ffi::CString::new(running.mounted_rootfs_path.as_str())
+        .expect("rootfs path has no interior nul");
+    let rc = unsafe { libc::umount2(mounted_rootfs.as_ptr(), 0) };
+    assert_eq!(
+        rc,
+        0,
+        "detaching the sandbox rootfs bind failed: {}",
+        std::io::Error::last_os_error()
+    );
+    assert!(
+        !is_mountpoint(&running.mounted_rootfs_path),
+        "the bind mount must be gone before the workspace start"
+    );
+
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    assert_eq!(started.status, WorkspaceStatus::Running);
+    assert!(
+        is_mountpoint(&running.mounted_rootfs_path),
+        "the pre-flight must restore the sandbox rootfs bind mount"
+    );
+
+    // The workspace must see the sandbox rootfs rather than an empty directory.
+    let result = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "test -x /bin/sh && test -d /usr && echo rootfs-ok".to_string(),
+        ],
+    )
+    .expect("execute the workspace rootfs probe");
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+    assert!(
+        result.stdout.contains("rootfs-ok"),
+        "stdout={}",
+        result.stdout
+    );
+
+    // The sandbox cgroup cannot be removed while a workspace cgroup sits under
+    // it, so the workspace goes first.
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);

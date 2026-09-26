@@ -1,4 +1,5 @@
 pub mod bridge;
+mod cleanup;
 pub mod dns;
 pub mod ipam;
 pub mod nat;
@@ -11,10 +12,31 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 static HOST_NETWORKING_READY: AtomicBool = AtomicBool::new(false);
 static HOST_NETWORKING_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Where the kernel exposes one directory per network interface.
+///
+/// Interface presence is answered from here rather than by running a tool: it is
+/// the same information `ip link` prints, it costs one `stat`, and it cannot be
+/// confused by the wording of a command's output. Both the teardown path and the
+/// doctor read it, so the path is defined once.
+pub(crate) const NET_CLASS_DIR: &str = "/sys/class/net";
+
+/// The iptables binary this host will use, detected once.
+///
+/// The capability report asks this rather than probing on its own, so the answer is
+/// the one the lifecycle will actually use and the probe is paid for once.
+pub(crate) fn iptables_binary() -> Result<String> {
+    nat::detect_iptables()
+}
+
+pub use cleanup::{
+    teardown_workspace_network, teardown_workspace_networks, NetworkCleanupFailure,
+    NetworkCleanupReport,
+};
 
 pub fn ensure_host_networking() -> Result<()> {
     let _guard = HOST_NETWORKING_LOCK
@@ -30,17 +52,33 @@ pub fn ensure_host_networking() -> Result<()> {
     Ok(())
 }
 
-pub fn setup_workspace_network(
+/// Attach a workspace network at an address the caller already reserved.
+///
+/// A reservation is what makes concurrent starts safe: the address is chosen
+/// while the registry lock is held, so two workspaces starting at the same time
+/// cannot both take the first free one. The address is validated against the
+/// Enclave subnet here because it comes from persisted state rather than from
+/// this call.
+pub fn setup_reserved_workspace_network(
     pid: u32,
-    used_ips: &BTreeSet<u8>,
+    reserved_ip: &str,
     workspace_rootfs: &Path,
     workspace_id: &str,
 ) -> Result<String> {
+    // The bridge and the NAT rules are shared by every workspace, so this is a
+    // no-op after the first start. It is timed because it is on the critical path
+    // of every start and a regression here would look like a slow veth setup.
+    let host_ready = crate::perf::Timer::new("network.host_ready");
     ensure_host_networking()?;
-    let ip = ipam::allocate_ip(used_ips)?;
-    attach_workspace_network(pid, &ip, workspace_rootfs, workspace_id)?;
-
-    Ok(ip)
+    drop(host_ready);
+    if ipam::parse_host_octet(reserved_ip).is_none() {
+        bail!(
+            "reserved workspace address {reserved_ip} is not inside the Enclave subnet {}",
+            ipam::SUBNET_CIDR
+        );
+    }
+    attach_workspace_network(pid, reserved_ip, workspace_rootfs, workspace_id)?;
+    Ok(reserved_ip.to_string())
 }
 
 fn attach_workspace_network(
@@ -53,77 +91,37 @@ fn attach_workspace_network(
     let (veth_host, veth_peer) = veth::veth_names(host_octet, workspace_id);
 
     let result: Result<()> = (|| {
+        let veth = crate::perf::Timer::new("network.veth");
         veth::setup_workspace_networking(pid, ip, &veth_host, &veth_peer)
             .with_context(|| format!("failed to set up networking for workspace (ip={ip})"))?;
-        nat::ensure_workspace_anti_spoofing(&veth_host, ip)
-            .with_context(|| format!("failed to install anti-spoofing rules for {}", veth_host))?;
+        drop(veth);
 
+        let rules = crate::perf::Timer::new("network.rules");
+        nat::ensure_workspace_anti_spoofing(&veth_host, ip, workspace_id)
+            .with_context(|| format!("failed to install anti-spoofing rules for {}", veth_host))?;
+        drop(rules);
+
+        let dns = crate::perf::Timer::new("network.dns");
         dns::provision_resolv_conf(workspace_rootfs)
             .with_context(|| "failed to provision DNS for workspace")?;
         dns::provision_etc_hosts(workspace_rootfs)
             .with_context(|| "failed to provision /etc/hosts for workspace")?;
         dns::provision_apt_sandbox_override(workspace_rootfs)
             .with_context(|| "failed to provision apt sandbox override for workspace")?;
+        drop(dns);
         Ok(())
     })();
     if let Err(err) = result {
-        if let Err(cleanup_err) = nat::remove_workspace_anti_spoofing(&veth_host, ip) {
-            tracing::warn!(
-                "failed to remove anti-spoofing rules for {} during rollback: {cleanup_err:#}",
-                veth_host
-            );
+        let cleanup = teardown_workspace_network(ip, workspace_id);
+        if cleanup.is_complete() {
+            return Err(err);
         }
-        teardown::remove_veth(&veth_host);
-        return Err(err);
+        return Err(err.context(format!(
+            "workspace network rollback incomplete: {cleanup:?}"
+        )));
     }
 
     Ok(())
-}
-
-pub fn teardown_workspace_network(assigned_ip: &str, workspace_id: &str) {
-    if let Some(host_octet) = ipam::parse_host_octet(assigned_ip) {
-        let (veth_host, _) = veth::veth_names(host_octet, workspace_id);
-        if let Err(err) = nat::remove_workspace_anti_spoofing(&veth_host, assigned_ip) {
-            tracing::warn!(
-                "failed to remove anti-spoofing rules for {}: {err:#}",
-                veth_host
-            );
-        }
-        teardown::remove_veth(&veth_host);
-    }
-}
-
-/// Tear down several workspace networks concurrently. The bridge and NAT are
-/// shared resources, but veth and anti-spoofing cleanup is workspace-local.
-pub fn teardown_workspace_networks(workspaces: &[(String, String)]) {
-    if workspaces.is_empty() {
-        return;
-    }
-    let worker_count = std::env::var("ENCLAVE_CLEANUP_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get().clamp(1, 4))
-                .unwrap_or(4)
-        })
-        .min(workspaces.len());
-    let queue = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::VecDeque::from_iter(workspaces.iter().cloned()),
-    ));
-    std::thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let queue = std::sync::Arc::clone(&queue);
-            scope.spawn(move || loop {
-                let Some((ip, id)) = queue.lock().ok().and_then(|mut queue| queue.pop_front())
-                else {
-                    return;
-                };
-                teardown_workspace_network(&ip, &id);
-            });
-        }
-    });
 }
 
 pub fn collect_used_ips<'a, I>(ips: I) -> BTreeSet<u8>
@@ -131,6 +129,57 @@ where
     I: Iterator<Item = &'a str>,
 {
     ips.filter_map(ipam::parse_host_octet).collect()
+}
+
+/// The host octets that another daemon's Enclave workspaces are already using.
+///
+/// The registry is not the only record of which addresses are taken. A second
+/// daemon with its own state directory allocates from its own empty pool, and both
+/// daemons attach to the same bridge, so the two can hand the same address to two
+/// workspaces without either registry disagreeing with the other. The address
+/// itself is inside a network namespace and invisible from the host, but the
+/// interface name is not: a host veth is named for the octet it carries, so an
+/// interface on the bridge names an octet that is in use, whoever created it.
+///
+/// The bridge membership is the part that makes this an answer rather than a guess.
+/// A named interface that is not on the bridge is not necessarily another daemon's
+/// workspace: it is also the shape of a leftover from a start that failed, which
+/// this daemon's own next start replaces rather than routes around. Only a member of
+/// the bridge is evidence of an address something else is holding.
+///
+/// An interface whose name carries one of `own_hashes` is this daemon's own, for the
+/// workspace that hash is derived from, because the hash is a function of the
+/// workspace id and of nothing else. When the registry does not currently expect it,
+/// it is a leftover: the address it was built for is not one any record names. That
+/// happens when a teardown was forced or a registry was repaired away, and the next
+/// start of that workspace replaces the interface rather than building its pair under
+/// a second name. Counting it would instead hand the workspace a different address
+/// and leave the leftover on the bridge forever, holding an octet that no record
+/// names and no command releases.
+///
+/// A workspace id ends in twelve random hex characters, so two daemons naming a
+/// workspace the same thing still produce different ids, and therefore different
+/// hashes. A hash in this daemon's registry is not another daemon's to produce.
+///
+/// A live workspace's address is in the registry, so excluding its interface here
+/// takes nothing away: the caller has already counted that octet. Only a leftover is
+/// freed by this, and only for the workspace that owns it.
+///
+/// Reading this is one directory listing, and it makes the allocator refuse an
+/// address another daemon's workspace is holding rather than trusting a registry
+/// that cannot see it.
+pub fn host_veth_octets_held_by_others(own_hashes: &BTreeSet<String>) -> BTreeSet<u8> {
+    let Ok(entries) = std::fs::read_dir(NET_CLASS_DIR) else {
+        return BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| veth::is_enclave_veth_name(name))
+        .filter(|name| veth::is_bridge_member(name))
+        .filter(|name| veth::hash_from_name(name).is_some_and(|hash| !own_hashes.contains(hash)))
+        .filter_map(|name| veth::octet_from_veth_name(&name))
+        .collect()
 }
 
 pub fn cleanup_host_networking() {
@@ -153,3 +202,7 @@ pub fn cleanup_host_networking() {
         HOST_NETWORKING_READY.store(false, Ordering::SeqCst);
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/network/cleanup.rs"]
+mod tests;

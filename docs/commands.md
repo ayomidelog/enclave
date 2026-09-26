@@ -1,5 +1,27 @@
 # Command Reference
 
+## Lifecycle responses
+
+Every command that changes lifecycle state (`create`, `start`, `stop`, `pause`,
+`resume`, `destroy`, `remove`, and the `workspace` equivalents) prints two things
+beyond its own result: the operation id the daemon ran the request as, and the
+state change it made.
+
+```
+$ enclave workspace stop mybox dev
+stopped workspace
+state: running -> stopped
+operation 8bd51a0a-cb7d-4ee2-b006-af17108dc01a
+cleanup verified: runtime exited, cgroup removed, mounts released, loop device detached, runtime files removed, network and ports released
+```
+
+The operation id ties the command to its journal record under
+`<state-dir>/operations/`, to its log lines, and to its phase timings, so a
+single run can be traced end to end. The transition is the daemon's own answer to
+"what did this change": a stop that found the workspace already stopped prints no
+transition line, because it changed nothing.
+
+
 ## Daemon
 
 ```bash
@@ -16,12 +38,12 @@ enclave doctor [--repair]
 |---------|-------------|
 | `daemon run` | Run the daemon in the foreground. |
 | `daemon start` | Start the daemon in the background and wait for it to be ready. |
-| `daemon status` | Check if the daemon is running. |
+| `daemon status` | Check if the daemon is running, and report the lifecycle operation running now and the last one that ran. |
 | `daemon stop` | Stop the daemon. |
 | `ping` | Send a ping to the daemon and print the response. |
 | `health` | Print daemon health information (state dir, uptime, etc.). |
-| `doctor` | Run diagnostic checks: registry consistency, orphaned mounts, stale cgroups, and cgroup v2 availability. |
-| `doctor --repair` | Reconcile registry and filesystem state, remove stale workspace mounts and namespace state, and validate daemon ownership. Requires a running daemon unless global `--start-daemon` is supplied. |
+| `doctor` | Run diagnostic checks: registry consistency, orphaned and nested workspace cgroups, orphaned mounts and sandbox rootfs mounts, workspace networking (veth interfaces, NAT rules, and anti-spoofing rules), loop devices backing workspace images, orphan runtimes whose metadata is gone, the operation journal, host capabilities, and published host ports no running workspace is using. Mounts and interfaces Enclave did not create are reported separately and left in place. |
+| `doctor --repair` | Reconcile registry and filesystem state, resolve an interrupted lifecycle transition (complete an interrupted stop, roll back an interrupted start), remove stale workspace mounts and namespace state, retire firewall rules for interfaces that are gone, and validate daemon ownership. Only mounts and rules Enclave created are released; anything it cannot attribute to itself is reported and left alone. Requires a running daemon unless global `--start-daemon` is supplied. |
 
 Destructive commands do not start a stopped daemon automatically. Start it with `enclave daemon start`, or opt in for one invocation with the global `--start-daemon` flag:
 
@@ -75,7 +97,7 @@ enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/rele
 ## Sandbox
 
 ```bash
-enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs]
+enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs] [--memory-mb N] [--cpu-percent N] [--max-procs N] [--disk-mb N]
 enclave start   <sandbox>
 enclave stop    <sandbox>
 enclave pause   <sandbox>
@@ -85,6 +107,7 @@ enclave list
 enclave stats
 enclave ps
 enclave ps --local    # alias: --project
+enclave resize  <sandbox> [--memory-mb N | --no-memory-limit] [--disk-mb N | --no-disk-budget] [--max-procs N]
 enclave status  <sandbox>
 enclave remove  <sandbox-id>
 enclave wipe
@@ -97,6 +120,7 @@ enclave wipe
 | `stop` | Stop all workspaces in the sandbox, then stop the sandbox. |
 | `pause` | Freeze the sandbox cgroup while preserving workspace processes, namespaces, mounts, and storage for fast resume. |
 | `resume` | Thaw a paused sandbox and best-effort restore its published ports. Port conflicts are reported without stopping workspaces. |
+| `resize` | Change a sandbox's resource limits. Each target is optional and an omitted one is left alone. Memory and process limits are cgroup values and are applied to a running sandbox without restarting it. `--disk-mb` sets the total disk budget the sandbox's workspaces are measured against, since a sandbox rootfs is a shared lower layer rather than an image of its own; a budget below what the workspaces already allocate is refused, naming the total. `--no-memory-limit` and `--no-disk-budget` remove a limit rather than setting one, and are spelled as flags because a size of zero is a mistake rather than a request to remove anything. |
 | `destroy` | Stop and permanently delete a sandbox and all its workspaces. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List all sandboxes. |
 | `stats` | Show live stats for all running workspaces across all sandboxes. |
@@ -106,11 +130,85 @@ enclave wipe
 | `remove` | Remove a sandbox entry from the registry (does not delete files). |
 | `wipe` | Destroy all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 
+## Lifecycle Tiers
+
+The lifecycle commands are not interchangeable, and their costs differ by an order
+of magnitude. Each row states what survives the command and what has to be rebuilt.
+
+| Command | Processes | Mounts | Memory | Published ports | Rebuild cost |
+|---------|-----------|--------|--------|-----------------|--------------|
+| `pause` / `resume` | preserved | preserved | preserved | withdrawn on pause, restored on resume | near zero |
+| `workspace stop` / `start` | rebuilt | rebuilt | lost | withdrawn on stop, restored on start | full workspace start |
+| `workspace create` / `destroy` | n/a | n/a | n/a | n/a | filesystem plus start |
+| `sandbox stop` / `start` | every workspace rebuilt | rebuilt | lost | withdrawn | every workspace start |
+| `down` / `up` | rebuilt | rebuilt | lost | restored | sandbox plus every workspace |
+| `up --rebuild` | rebuilt | rebuilt | lost | restored | rootfs bootstrap plus setup |
+
+`pause` is the fast path: it freezes the sandbox cgroup in place, so nothing is
+torn down or recreated. `stop` releases every host resource the workspace owned
+and reports a verified cleanup certificate, so it is the right choice when a
+workspace must not keep holding memory, mounts, or a loop device.
+
+### Measured latencies
+
+Medians of eight runs of each command against a cached 127 MB Debian bookworm
+rootfs (5237 files), one sandbox and one workspace, on the validation host:
+
+| Command | Median | Range |
+|---------|--------|-------|
+| `create` (sandbox, cached rootfs) | `0.11s` | 0.08–0.17s |
+| `workspace create` | `0.23s` | 0.20–0.76s |
+| `workspace start` | `0.19s` | 0.17–0.25s |
+| `workspace stop` | `0.12s` | 0.10–0.14s |
+| `workspace destroy` | `0.04s` | 0.03–0.06s |
+| `pause` | `0.12s` | 0.10–0.17s |
+| `resume` | `0.11s` | 0.10–0.13s |
+| `stop` (sandbox) | `0.21s` | 0.19–0.30s |
+| `start` (sandbox) | `0.22s` | 0.20–0.24s |
+
+Two things are worth reading off this table. A sandbox create is fast because a
+cached rootfs is mounted as a shared base layer rather than copied; the 127 MB
+tree is never written per sandbox. And `pause` is roughly half of `stop` on the
+way out and `resume` roughly half of `start` on the way back, because neither
+tears down or rebuilds the runtime, the mounts, or the filesystem. The absolute
+gap is a tenth of a second here; what `pause` preserves is the process state,
+which is what makes the difference matter for a workspace that took real work to
+get into its current state.
+
+These are single-workspace numbers. For the eight-workspace aggregate see the
+lifecycle timing section in [runtime-details.md](runtime-details.md).
+
+## Operation IDs
+
+Every daemon request runs as one operation with one id. Mutating commands print it
+on success:
+
+```console
+$ enclave workspace start mybox agent1
+started workspace
+operation 8f0c3a2e-6d1b-4c9a-9f4e-2b7d5a1c8e30
+```
+
+A failing command names it in the error, so a failure can be traced without
+reproducing it:
+
+```console
+$ enclave workspace start mybox missing
+error: workspace 'missing' not found in sandbox 'mybox-1a2b3c4d5e6f' (operation 7c6b...)
+```
+
+The same id names the lifecycle journal record under `<state_dir>/operations/`,
+the `lifecycle operation started` and `request failed` log lines, and the phase
+timings emitted with `--verbose` or `ENCLAVE_PERF=1`. `enclave daemon status`
+prints the operation running now and the last one that ran.
+
+Read-only requests such as `workspace status` are not journaled and print no id.
+
 ## Workspace
 
 ```bash
 enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
-enclave workspace resize  <sandbox> <workspace> --disk-mb N
+enclave workspace resize  <sandbox> <workspace> [--disk-mb N] [--memory-mb N | --no-memory-limit]
 enclave workspace cp      <sandbox> <workspace> <src> <dst>
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>
@@ -134,13 +232,13 @@ enclave workspace stats   <workspace>
 | Command | Description |
 |---------|-------------|
 | `create` | Create a new workspace inside a sandbox with optional resource limits. |
-| `resize` | Increase the disk allocation of an Enclave-managed workspace. The target is an absolute size in MiB; host-backed workspace directories and decreases are not supported. |
+| `resize` | Change a workspace's disk allocation, its memory limit, or both. Each target is an absolute size in MiB and an omitted one is left alone. The disk can be grown or shrunk; shrinking is refused when the filesystem holds more data than the target, and the message names the smallest allocation that would work. A disk change stops and restarts a running workspace; a memory change is applied to the running runtime through its cgroup without interrupting it. Host-backed `workspace_dir`/`path` workspaces have no managed disk to resize. |
 | `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. Transfers stage data before committing it, reject special files, and do not overwrite an existing destination entry. |
 | `start` | Start a workspace session (namespaces + mounts). |
 | `stop` | Stop a running workspace session. |
 | `destroy` | Stop and permanently delete a workspace. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List workspaces, optionally filtered by sandbox. |
-| `status` | Show detailed status for a workspace (process count, resource usage). |
+| `status` | Show detailed status for a workspace: process count, resource usage, and the storage tier it is on with the lifecycle cost that tier implies (a directory-backed workspace, or a quota-backed one whose `/home`, private `/tmp`, and root overlay live on a loop-mounted ext4 image). |
 | `remove` | Remove a workspace entry from the registry. |
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). |
@@ -152,13 +250,51 @@ enclave workspace stats   <workspace>
 | `logs` | Show workspace session logs. `--follow` continuously streams appended log output. |
 | `stats` | Show workspace resource metrics like CPU %, memory usage/limit, memory %, network I/O, block I/O, pids, and threads. |
 
-### Resize workspace storage
+### Resize a workspace
 
-`workspace resize` takes an absolute target size in MiB rather than a size delta:
+`workspace resize` takes an absolute target size in MiB rather than a size delta, and
+either limit on its own:
 
 ```bash
+# Memory is a cgroup value, so the running workspace is not interrupted.
+enclave workspace resize mybox agent1 --memory-mb 2048
+
+# A disk change stops and restarts the workspace, because an image cannot be resized
+# while it is mounted.
 enclave workspace resize mybox agent1 --disk-mb 2048
+
+# Both together is one stop, not two.
+enclave workspace resize mybox agent1 --disk-mb 2048 --memory-mb 2048
+
+# Remove a limit rather than setting one.
+enclave workspace resize mybox agent1 --no-memory-limit
 ```
+
+Both limits can be raised or lowered. A disk allocation is refused when the
+filesystem holds more data than the target, and the message names the smallest
+allocation that would work; host-backed `workspace_dir`/`path` workspaces have no
+managed disk to resize, but their memory limit can still be changed. Every reason a
+request could be refused is checked before a running workspace is stopped for it, so a
+refused resize leaves it running.
+
+### Resize a sandbox
+
+A sandbox has no image of its own: its rootfs is a shared lower layer on the host
+filesystem, so what it allocates is the sum of its workspaces' quota images. `resize`
+therefore takes the sandbox's own limits, and `--disk-mb` sets the budget those
+workspace allocations are measured against:
+
+```bash
+enclave resize mybox --memory-mb 8192
+enclave resize mybox --disk-mb 32768
+enclave resize mybox --max-procs 512
+enclave resize mybox --no-disk-budget
+```
+
+Memory and process limits are cgroup values and are applied to a running sandbox
+without restarting it. A disk budget is enforced where an allocation is granted, so a
+workspace cannot be created or grown past it, and a budget below what the sandbox's
+workspaces already allocate is refused rather than stored.
 
 ### Copy files with a workspace
 
@@ -218,6 +354,7 @@ When creating a sandbox, you can set aggregate sandbox resource limits:
 | `--cpu-percent N` | Maximum steady CPU share as a percentage of total machine CPU capacity. |
 | `--memory-mb N` | Maximum aggregate memory for all workspace processes in the sandbox (`memory.max`, cgroup v2). |
 | `--max-procs N` | Maximum aggregate process count for the sandbox (`pids.max`, cgroup v2). |
+| `--disk-mb N` | Total disk budget for the sandbox's workspaces. A sandbox rootfs is a shared lower layer rather than an image, so this caps the sum of its workspaces' `disk_mb` allocations and is enforced when a workspace is created or grown. Change it later with `enclave resize`. |
 
 When creating a workspace, you can set per-workspace resource limits:
 
@@ -287,4 +424,14 @@ enclave registry repair [--strict]
 |---------|-------------|
 | `repair` | Scan and repair the registry. `--strict` removes entries with missing on-disk state. |
 
-> **Destructive commands** (`wipe`, `workspace wipe`) require two-step confirmation before executing.
+ > **Destructive commands** (`wipe`, `workspace wipe`) require two-step confirmation before executing.
+
+The confirmation is read from standard input, so a destructive command with no
+terminal fails rather than doing nothing: it exits non-zero and reports that nothing
+was deleted. Answering a prompt with anything other than the required phrase aborts
+the command and exits zero. To run one from a script, supply the answers on standard
+input:
+
+```bash
+printf 'y\ndelete all sandboxes\n' | enclave wipe --force
+```

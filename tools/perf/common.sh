@@ -10,12 +10,24 @@ require_binary() {
     printf 'build it with: cargo build --release\n' >&2
     exit 2
   fi
+  # A binary older than the tree it is meant to describe produces numbers that do
+  # not describe the current code, which is worse than no number at all.
+  local stale_source
+  stale_source=$(find "$repo_root/src" "$repo_root/Cargo.toml" -newer "$binary" -print -quit 2>/dev/null || true)
+  if [[ -n "$stale_source" ]]; then
+    printf 'warning: %s is older than %s; these numbers do not describe the current tree\n' \
+      "$binary" "$stale_source" >&2
+  fi
 }
 
 host_metadata() {
   printf 'date=%s\n' "$(date -Iseconds)"
   printf 'kernel=%s\n' "$(uname -srmo)"
   printf 'cpu=%s\n' "$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^ +/, "", $2); print $2; exit}' || printf unknown)"
+  # The one-minute load average against the CPU count, because a lifecycle number
+  # taken on a busy host is not comparable with one taken on an idle host, and the
+  # host metadata is the only place a reader can see which one they are reading.
+  printf 'load=%s/%s\n' "$(awk '{print $1}' /proc/loadavg 2>/dev/null || printf unknown)" "$(nproc 2>/dev/null || printf unknown)"
   printf 'rust=%s\n' "$(rustc --version 2>/dev/null || printf unknown)"
   printf 'filesystem=%s\n' "$(stat -f -c '%T' "$repo_root")"
   printf 'uid=%s\n' "$(id -u)"

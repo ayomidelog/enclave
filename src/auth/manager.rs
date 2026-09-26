@@ -64,6 +64,22 @@ impl AuthManager {
             );
         }
 
+        // The destination is inside the workspace's own mount namespace, where `/run`
+        // is a tmpfs the session mounted for this start, so the files are always
+        // absent when this runs and there is never an unchanged copy to compare
+        // against. Rewriting them unconditionally is therefore not the waste it
+        // looks like: measured on this host the whole phase is about 210 us with
+        // every provider and env token configured, which is under 0.2% of a start.
+        // Skipping an unchanged write was tried and removed again, because it saves
+        // nothing here and the reconcile it needs is more code than the
+        // remove-then-write it replaced.
+        //
+        // The writes are best-effort rather than durable. A durable write fsyncs,
+        // and there is nothing here for an fsync to protect: the tmpfs is inside a
+        // mount namespace that dies with the runtime, so the files cannot outlive
+        // the process that reads them, and a power loss takes the runtime and the
+        // namespace with it. A write without fsync is already visible to every
+        // process in the namespace, which is the only reader there is.
         let auth_dir = rootfs.join("run/enclave/auth");
         fs::create_dir_all(&auth_dir)
             .with_context(|| format!("failed to create {}", auth_dir.display()))?;
@@ -91,13 +107,23 @@ impl AuthManager {
         let tokens = self.tokens_for_workspace(auth_providers);
         for token in &tokens {
             let token_path = storage::token_path_for_provider(&auth_dir, &token.provider)?;
-            crate::fsutil::write_file_atomic(&token_path, token.token.as_bytes(), 0o400)
-                .with_context(|| format!("failed to write {}", token_path.display()))?;
+            crate::fsutil::write_file_atomic_with(
+                &token_path,
+                token.token.as_bytes(),
+                0o400,
+                crate::fsutil::Durability::BestEffort,
+            )
+            .with_context(|| format!("failed to write {}", token_path.display()))?;
         }
         for (env_var, token) in self.env_tokens_for_workspace(env_tokens) {
             let token_path = env_dir.join(&env_var);
-            crate::fsutil::write_file_atomic(&token_path, token.as_bytes(), 0o400)
-                .with_context(|| format!("failed to write {}", token_path.display()))?;
+            crate::fsutil::write_file_atomic_with(
+                &token_path,
+                token.as_bytes(),
+                0o400,
+                crate::fsutil::Durability::BestEffort,
+            )
+            .with_context(|| format!("failed to write {}", token_path.display()))?;
         }
         Ok(tokens)
     }

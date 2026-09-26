@@ -1,0 +1,12 @@
+[sandbox]
+name = "ports-live"
+suite = "bookworm"
+bootstrap_method = "cached_rootfs"
+
+[workspace.dev]
+name = "dev"
+ports = [
+  "127.0.0.1:__PORT_A__:8080/tcp",
+  "127.0.0.1:__PORT_B__:8080/tcp",
+  "127.0.0.1:__PORT_C__:8080/tcp",
+]

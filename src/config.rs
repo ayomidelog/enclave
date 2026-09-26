@@ -40,7 +40,7 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<FileConfig> {
         .with_context(|| format!("failed to parse config {}", path.display()))?;
     validate_file_config(&parsed).with_context(|| {
         format!(
-            "invalid semantic values in config {}; fix debootstrap_binary/suite/mirror",
+            "invalid semantic values in config {}; fix suite/mirror",
             path.display()
         )
     })?;
@@ -63,10 +63,6 @@ fn validate_file_config(config: &FileConfig) -> Result<()> {
                 anyhow::bail!("{label} must be a non-empty label without control characters");
             }
         }
-    }
-
-    if let Some(binary) = config.debootstrap_binary.as_deref() {
-        crate::sandbox::validate_debootstrap_binary(binary)?;
     }
 
     let suite = config

@@ -79,7 +79,7 @@ fn cached_rootfs_fails_when_cache_missing() {
     let state_dir = tmp.join("state");
     fs::create_dir_all(tmp.join("rootfs")).unwrap();
 
-    let result = bootstrap_cached_rootfs(&tmp.join("rootfs"), "test", "bookworm", &state_dir);
+    let result = bootstrap_cached_rootfs("test", "bookworm", &state_dir);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("cached rootfs not found"), "got: {}", msg);
@@ -172,12 +172,11 @@ fn cached_rootfs_uses_suite_keyed_cache() {
     fs::create_dir_all(cache.join("usr")).unwrap();
     fs::write(cache.join("bin").join("sh"), "#!/bin/sh").unwrap();
 
-    bootstrap_cached_rootfs(&rootfs_out, "test", "bookworm", &state_dir).unwrap();
-
-    assert_eq!(
-        fs::read_to_string(rootfs_out.join("bin").join("sh")).unwrap(),
-        "#!/bin/sh"
-    );
+    // A cache hit reports the cache as an immutable shared base instead of
+    // copying the tree into the sandbox rootfs.
+    let outcome = bootstrap_cached_rootfs("test", "bookworm", &state_dir).unwrap();
+    assert_eq!(outcome.shared_lower.as_deref(), Some(cache.as_path()));
+    assert!(!rootfs_out.join("bin").join("sh").exists());
 
     let _ = fs::remove_dir_all(&tmp);
 }
@@ -197,12 +196,8 @@ fn cached_rootfs_falls_back_to_generic_base() {
     fs::create_dir_all(cache.join("usr")).unwrap();
     fs::write(cache.join("etc").join("hostname"), "generic").unwrap();
 
-    bootstrap_cached_rootfs(&rootfs_out, "test", "unknown-suite", &state_dir).unwrap();
-
-    assert_eq!(
-        fs::read_to_string(rootfs_out.join("etc").join("hostname")).unwrap(),
-        "generic"
-    );
+    let outcome = bootstrap_cached_rootfs("test", "unknown-suite", &state_dir).unwrap();
+    assert_eq!(outcome.shared_lower.as_deref(), Some(cache.as_path()));
 
     let _ = fs::remove_dir_all(&tmp);
 }

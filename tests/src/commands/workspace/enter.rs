@@ -48,3 +48,55 @@ fn shell_path_validation_rejects_invalid_values() {
 fn default_workspace_path_includes_flutter_bin() {
     assert!(DEFAULT_WORKSPACE_PATH.contains("/opt/flutter/bin"));
 }
+
+fn runtime_info(cgroup_path: Option<&str>) -> WorkspaceRuntimeInfo {
+    WorkspaceRuntimeInfo {
+        sandbox_id: "sb-1".to_string(),
+        workspace_id: "ws-1".to_string(),
+        workspace_name: "workspace".to_string(),
+        runtime_pid: 4321,
+        runtime_starttime_ticks: 99,
+        sandbox_rootfs_path: "/tmp/rootfs".to_string(),
+        cgroup_path: cgroup_path.map(str::to_string),
+    }
+}
+
+#[test]
+fn exec_helper_is_attached_to_the_workspace_cgroup() {
+    let args = internal_workspace_command_args(
+        &runtime_info(Some("/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-sb-1-ws-1")),
+        "/home",
+        &["/bin/echo".to_string(), "ok".to_string()],
+    );
+
+    assert_eq!(
+        args,
+        [
+            "internal",
+            "workspace-command",
+            "--runtime-pid",
+            "4321",
+            "--runtime-starttime-ticks",
+            "99",
+            "--cwd",
+            "/home",
+            "--sandbox-id",
+            "sb-1",
+            "--workspace-id",
+            "ws-1",
+            "--cgroup-path",
+            "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-sb-1-ws-1",
+            "/bin/echo",
+            "ok",
+        ]
+    );
+}
+
+#[test]
+fn exec_helper_omits_cgroup_path_when_the_host_has_no_workspace_cgroup() {
+    let args =
+        internal_workspace_command_args(&runtime_info(None), "/home", &["/bin/true".to_string()]);
+
+    assert!(!args.iter().any(|arg| arg == "--cgroup-path"));
+    assert_eq!(args.last().map(String::as_str), Some("/bin/true"));
+}

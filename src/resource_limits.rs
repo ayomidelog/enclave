@@ -2,6 +2,31 @@ use anyhow::{bail, Result};
 
 pub const DEFAULT_CPU_CGROUP_PERIOD_US: u64 = 100_000;
 
+/// The smallest memory limit Enclave will accept.
+///
+/// A limit this low is not a limit anyone means: the workspace runtime cannot load
+/// its own shared libraries inside it, so the session fails to start with a loader
+/// error rather than a limit that is merely tight. Refusing it here turns a confusing
+/// start failure into a number the operator has to correct.
+pub const MIN_MEMORY_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Whether a memory limit is one Enclave will set.
+///
+/// `None` is unlimited and always allowed. A value below the floor is refused with
+/// the floor named, because the alternative is a runtime that cannot start.
+pub fn validate_memory_bytes(value: Option<u64>) -> Result<()> {
+    let Some(bytes) = value else {
+        return Ok(());
+    };
+    if bytes < MIN_MEMORY_BYTES {
+        bail!(
+            "memory limit must be at least {} MiB",
+            MIN_MEMORY_BYTES / (1024 * 1024)
+        );
+    }
+    Ok(())
+}
+
 pub fn validate_cpu_percent(value: f64) -> Result<()> {
     if !value.is_finite() {
         bail!("cpu_percent must be a finite number");

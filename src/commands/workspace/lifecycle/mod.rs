@@ -1,0 +1,164 @@
+use super::*;
+
+pub(super) fn run_workspace_create(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceCreateArgs,
+) -> Result<()> {
+    let sandbox_id = args.sandbox_id.clone();
+    let workspace_name = args.name.clone();
+    tracing::info!(
+        "creating workspace '{}' in sandbox '{}'...",
+        workspace_name,
+        sandbox_id
+    );
+    let response = match send_managed(
+        ctx.socket,
+        "workspace.create",
+        json!({
+            "sandbox_id": sandbox_id.clone(),
+            "name": workspace_name.clone(),
+            "cpu_seconds": args.cpu_seconds,
+            "cpu_percent": args.cpu_percent,
+            "memory_mb": args.memory_mb,
+            "max_procs": args.max_procs,
+            "max_open_files": args.max_open_files,
+            "disk_mb": args.disk_mb,
+        }),
+    ) {
+        Ok(response) => response,
+        Err(err) => {
+            // The hint is only for the case it describes: the name was already
+            // taken, which the daemon reports as a conflict. A create can also fail
+            // after it has recorded the workspace — a runtime that never became
+            // ready, say — and a workspace with that name exists afterwards too, so
+            // asking only whether the name is present now would answer "already
+            // exists" and hide the failure that actually happened.
+            if crate::error::code_of(&err) == crate::error::ErrorCode::Conflict {
+                if let Some(hint) =
+                    existing_workspace_create_hint(ctx.socket, &sandbox_id, &workspace_name)?
+                {
+                    bail!("{hint}");
+                }
+            }
+            return Err(err);
+        }
+    };
+    let metadata: WorkspaceMetadata = serde_json::from_value(response.clone())?;
+    println!(
+        "created and started workspace {} in sandbox {}",
+        metadata.id, metadata.sandbox_id
+    );
+    print_state_transition(&response);
+    println!("workspace path {}", metadata.workspace_path);
+    // Every other lifecycle command prints the operation id, and this one is the
+    // first command an operator runs against a new workspace. Without it the
+    // phases the daemon logged for this create cannot be tied to the command
+    // that produced them, which is the correlation the id exists for.
+    print_operation_id();
+    Ok(())
+}
+
+/// Resize a workspace's disk, its memory, or both.
+///
+/// Each limit is reported as the change it was, so a resize that only touched memory
+/// does not look like it moved the disk as well.
+pub(super) fn run_workspace_resize(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceResizeArgs,
+) -> Result<()> {
+    // Only the limits the operator named are sent. A field carrying `null` means
+    // "clear this limit" to the daemon, so including an absent one would turn
+    // "resize the disk" into "resize the disk and remove the memory limit".
+    let mut params = serde_json::Map::new();
+    params.insert("sandbox".to_string(), json!(args.sandbox));
+    params.insert("workspace".to_string(), json!(args.workspace));
+    if let Some(disk_mb) = args.disk_mb {
+        params.insert("disk_mb".to_string(), json!(disk_mb));
+    }
+    if args.no_memory_limit {
+        // A field carrying `null` is how the daemon is told to remove a limit. It is
+        // sent explicitly rather than by omission, which means the opposite.
+        params.insert("memory_mb".to_string(), serde_json::Value::Null);
+    } else if let Some(memory_mb) = args.memory_mb {
+        params.insert("memory_mb".to_string(), json!(memory_mb));
+    }
+    let response = send_managed(
+        ctx.socket,
+        "workspace.resize",
+        serde_json::Value::Object(params),
+    )?;
+    let result: crate::workspace::WorkspaceResizeResult = serde_json::from_value(response)?;
+    let render = |bytes: u64| format!("{} MiB", bytes / (1024 * 1024));
+    match (result.previous_disk_bytes, result.new_disk_bytes) {
+        // A workspace whose storage Enclave does not manage has no disk to report,
+        // and its memory can still have been resized. Saying nothing about the disk is
+        // better than reporting a size that was never in play.
+        (None, None) => {}
+        (Some(previous), Some(current)) if previous == current => {
+            println!(
+                "workspace {} keeps its {} disk allocation",
+                result.workspace_name,
+                render(current)
+            );
+        }
+        (Some(previous), Some(current)) => {
+            println!(
+                "resized workspace {} disk from {} to {}",
+                result.workspace_name,
+                render(previous),
+                render(current)
+            );
+        }
+        // The daemon always reports both or neither; a half-reported disk would be a
+        // bug worth seeing rather than hiding.
+        (previous, current) => println!(
+            "workspace {} disk: {previous:?} -> {current:?}",
+            result.workspace_name
+        ),
+    }
+    let memory = |bytes: Option<u64>| match bytes {
+        Some(bytes) => render(bytes),
+        None => "unlimited".to_string(),
+    };
+    if result.previous_memory_bytes != result.new_memory_bytes {
+        println!(
+            "resized workspace {} memory from {} to {}",
+            result.workspace_name,
+            memory(result.previous_memory_bytes),
+            memory(result.new_memory_bytes)
+        );
+    }
+    if result.restarted {
+        println!("workspace restarted");
+    }
+    print_operation_id();
+    Ok(())
+}
+
+fn existing_workspace_create_hint(
+    socket: &Path,
+    sandbox_id: &str,
+    workspace_name: &str,
+) -> Result<Option<String>> {
+    let response = send(socket, "workspace.list", json!({"sandbox_id": sandbox_id}))?;
+    let workspaces: Vec<WorkspaceListItem> = serde_json::from_value(response)?;
+    if !workspaces
+        .iter()
+        .any(|item| item.name == workspace_name || item.id == workspace_name)
+    {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "workspace '{}' already exists. try `enclave workspace start {} {}` or `enclave workspace list --sandbox-id {}`.",
+        workspace_name, sandbox_id, workspace_name, sandbox_id
+    )))
+}
+
+mod query;
+mod transition;
+
+pub(super) use query::{run_workspace_list, run_workspace_remove, run_workspace_wipe};
+pub(super) use transition::{
+    run_workspace_destroy, run_workspace_start, run_workspace_stats, run_workspace_status,
+    run_workspace_stop,
+};

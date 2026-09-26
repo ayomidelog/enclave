@@ -17,6 +17,15 @@ use super::types::{WorkspaceLogsResult, WorkspaceMetadata};
 
 const MAX_LOG_READ_BYTES: u64 = 1_048_576;
 
+/// Largest slice of appended log a single follow poll returns.
+///
+/// A follower polls repeatedly, so it does not need one response to carry
+/// everything: it needs the next chunk. This is well below the client's response
+/// cap even after JSON escaping, which doubles the size of a log full of
+/// newlines, so a fast writer cannot make the follower fail with an oversized
+/// response instead of printing the log.
+const MAX_LOG_DELTA_BYTES: u64 = 128 * 1024;
+
 pub fn append_workspace_command_log(
     workspace: &WorkspaceMetadata,
     cwd: &str,
@@ -64,6 +73,8 @@ pub fn workspace_logs(
     sandbox_selector: &str,
     workspace_selector: &str,
     tail: Option<usize>,
+    offset: Option<u64>,
+    stream_id: Option<&str>,
 ) -> Result<WorkspaceLogsResult> {
     with_registry(state_dir, |registry| {
         let sandbox_id = resolve_sandbox_id(registry, sandbox_selector)?;
@@ -81,21 +92,82 @@ pub fn workspace_logs(
         if !log_path.exists() {
             return Ok(WorkspaceLogsResult {
                 content: String::new(),
+                next_offset: 0,
+                reset: offset.is_some(),
+                stream_id: None,
+                has_more: false,
             });
         }
+        if let Some(offset) = offset {
+            return read_log_delta(&log_path, offset, stream_id);
+        }
 
-        let (raw, truncated) = read_tail_bytes(&log_path, MAX_LOG_READ_BYTES)?;
+        let tail_read = read_tail_bytes(&log_path, MAX_LOG_READ_BYTES)?;
         let mut content = match tail {
-            Some(limit) => tail_lines(&raw, limit),
-            None => raw,
+            Some(limit) => tail_lines(&tail_read.content, limit),
+            None => tail_read.content,
         };
-        if truncated {
+        if tail_read.truncated {
             content = format!(
                 "[enclave] log output truncated to last {} bytes\n{}",
                 MAX_LOG_READ_BYTES, content
             );
         }
-        Ok(WorkspaceLogsResult { content })
+        Ok(WorkspaceLogsResult {
+            content,
+            next_offset: tail_read.end_offset,
+            reset: false,
+            stream_id: Some(tail_read.stream_id),
+            has_more: false,
+        })
+    })
+}
+
+/// Read the bytes appended since `offset`.
+///
+/// An offset only means something for the file it was taken from, so a
+/// truncated file (its length fell below the offset) and a replaced file (a
+/// different inode at the same path) both answer with a reset rather than with
+/// whatever happens to live at that offset now.
+fn read_log_delta(
+    path: &Path,
+    offset: u64,
+    expected_stream_id: Option<&str>,
+) -> Result<WorkspaceLogsResult> {
+    let mut file =
+        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let metadata = file.metadata()?;
+    let stream_id = log_stream_id(&metadata);
+    let replaced = expected_stream_id.is_some_and(|expected| expected != stream_id);
+    if replaced || metadata.len() < offset {
+        let tail_read = read_tail_bytes(path, MAX_LOG_READ_BYTES)?;
+        return Ok(WorkspaceLogsResult {
+            content: tail_read.content,
+            next_offset: tail_read.end_offset,
+            reset: true,
+            stream_id: Some(tail_read.stream_id),
+            has_more: false,
+        });
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    // Take a bounded slice rather than everything: the follower comes back for
+    // the rest, and an unbounded slice would exceed the response cap once the
+    // JSON escaping is counted.
+    let available = metadata.len().saturating_sub(offset);
+    let limit = available.min(MAX_LOG_DELTA_BYTES);
+    let mut raw = Vec::with_capacity(limit as usize);
+    std::io::Read::take(&mut file, limit).read_to_end(&mut raw)?;
+    // Read the offset back from the handle rather than computing it from the
+    // length taken before the read, so a write racing the read cannot make the
+    // next poll repeat bytes.
+    let next_offset = file.stream_position()?;
+    Ok(WorkspaceLogsResult {
+        content: String::from_utf8_lossy(&raw).to_string(),
+        next_offset,
+        reset: false,
+        stream_id: Some(stream_id),
+        // The slice was bounded, so anything past it is waiting.
+        has_more: limit < available,
     })
 }
 
@@ -105,14 +177,20 @@ fn tail_lines(input: &str, limit: usize) -> String {
     lines[start..].join("\n")
 }
 
-fn read_tail_bytes(path: &Path, max_bytes: u64) -> Result<(String, bool)> {
+struct TailRead {
+    content: String,
+    truncated: bool,
+    end_offset: u64,
+    stream_id: String,
+}
+
+fn read_tail_bytes(path: &Path, max_bytes: u64) -> Result<TailRead> {
     let mut file =
         File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let len = file
+    let metadata = file
         .metadata()
-        .with_context(|| format!("failed to stat {}", path.display()))?
-        .len();
-    let offset = len.saturating_sub(max_bytes);
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+    let offset = metadata.len().saturating_sub(max_bytes);
     if offset > 0 {
         file.seek(SeekFrom::Start(offset))
             .with_context(|| format!("failed to seek {}", path.display()))?;
@@ -121,8 +199,23 @@ fn read_tail_bytes(path: &Path, max_bytes: u64) -> Result<(String, bool)> {
     let mut raw = Vec::new();
     file.read_to_end(&mut raw)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let content = String::from_utf8_lossy(&raw).to_string();
-    Ok((content, offset > 0))
+    Ok(TailRead {
+        content: String::from_utf8_lossy(&raw).to_string(),
+        truncated: offset > 0,
+        end_offset: file
+            .stream_position()
+            .with_context(|| format!("failed to read {}", path.display()))?,
+        stream_id: log_stream_id(&metadata),
+    })
+}
+
+/// A stable identity for a log file: the device and inode it lives on.
+///
+/// Two different files at the same path differ here even when the second one is
+/// longer than the first, which is what makes a replaced log detectable.
+fn log_stream_id(metadata: &fs::Metadata) -> String {
+    use std::os::linux::fs::MetadataExt;
+    format!("{:x}:{:x}", metadata.st_dev(), metadata.st_ino())
 }
 
 #[cfg(test)]

@@ -26,6 +26,8 @@ pub struct SandboxSection {
     pub memory_mb: Option<u64>,
     pub cpu_percent: Option<f64>,
     pub max_procs: Option<u64>,
+    /// Total disk budget for the sandbox's workspaces, in MiB.
+    pub disk_mb: Option<u64>,
     #[serde(default)]
     pub setup: Vec<String>,
 }

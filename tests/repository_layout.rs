@@ -112,10 +112,158 @@ fn release_workflow_runs_verification_before_release() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
     assert!(workflow.contains("workflow_dispatch:"));
-    assert!(workflow.contains("cargo fmt --all -- --check"));
-    assert!(workflow.contains("cargo check --all-targets"));
-    assert!(workflow.contains("cargo clippy --all-targets -- -D warnings"));
-    assert!(workflow.contains("cargo test --all-targets -- --skip integration:: --skip stress::"));
+    assert!(
+        workflow.contains("tools/ci/verify.sh"),
+        "the release must run the same verification a branch runs"
+    );
     assert!(workflow.contains("cargo build --release --locked"));
     assert!(workflow.contains("softprops/action-gh-release@v2"));
+
+    // The commands themselves live in the script, so that the release workflow and
+    // the pull-request workflow cannot drift apart. Checking the workflow alone
+    // would then pass on a script that had stopped checking anything, so the
+    // checks are pinned here too.
+    let verify = fs::read_to_string(repo_root().join("tools/ci/verify.sh"))
+        .expect("read the verification script");
+    for check in [
+        "cargo fmt --all -- --check",
+        "cargo check --all-targets --locked",
+        "cargo clippy --all-targets --locked -- -D warnings",
+        "cargo test --all-targets --locked",
+        "--skip integration:: --skip stress::",
+        "RUSTDOCFLAGS",
+        "shellcheck",
+    ] {
+        assert!(
+            verify.contains(check),
+            "the verification script must run {check}"
+        );
+    }
+}
+
+/// The stress suite drives repeated churn and concurrent lifecycle operations. It
+/// needs the same host as the privileged suite, so it runs through the same script
+/// that checks for it, and this pins that it is still wired in.
+#[test]
+fn continuous_integration_runs_the_stress_suite() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/rust.yml"))
+        .expect("read the rust workflow");
+    assert!(
+        workflow.contains("ENCLAVE_SUITE=stress_suite"),
+        "the stress suite must be selected by name"
+    );
+    assert!(
+        workflow.contains("tools/ci/privileged-suite.sh"),
+        "the stress suite must go through the host checks"
+    );
+}
+
+/// The published lifecycle report cannot go stale without a check failing.
+///
+/// The report is measured on a privileged host and committed, so no hosted runner
+/// can regenerate it. What both workflows can do is refuse a report that predates
+/// the script that produces it, and this pins that they do.
+#[test]
+fn the_lifecycle_report_check_is_wired_into_ci() {
+    for workflow in [
+        ".github/workflows/rust.yml",
+        ".github/workflows/release.yml",
+    ] {
+        let text = fs::read_to_string(repo_root().join(workflow))
+            .unwrap_or_else(|error| panic!("read {workflow}: {error}"));
+        assert!(
+            text.contains("tools/ci/check-lifecycle-report.sh"),
+            "{workflow} must check that the lifecycle report is current"
+        );
+    }
+}
+
+/// The scripts the workflows call are committed with their executable bit.
+///
+/// A workflow that references a script which is not committed, or is committed
+/// without the bit, fails on the runner rather than here.
+#[test]
+fn the_ci_helper_scripts_are_committed_and_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for name in [
+        "privileged-suite.sh",
+        "verify.sh",
+        "check-lifecycle-report.sh",
+        "collect-host-state.sh",
+    ] {
+        let path = repo_root().join("tools/ci").join(name);
+        let metadata = fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("tools/ci/{name} is missing: {error}"));
+        assert!(
+            metadata.permissions().mode() & 0o111 != 0,
+            "tools/ci/{name} must be executable"
+        );
+    }
+}
+
+/// The privileged suite is wired into CI, and the wiring stays complete.
+///
+/// The suite is the only coverage of what a lifecycle operation does to the
+/// host, and it is `#[ignore]`d so `cargo test` never runs it. That makes the
+/// workflow the only thing that does, and a step removed from it would take the
+/// coverage away without failing anything else. This pins the parts that matter:
+/// the runner installs the tools the suite shells out to, and the suite is run
+/// through the script that checks for them first.
+#[test]
+fn continuous_integration_runs_the_privileged_suite() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/rust.yml"))
+        .expect("read the rust workflow");
+    assert!(
+        workflow.contains("tools/ci/privileged-suite.sh"),
+        "the privileged suite must be run through the script that checks the host first"
+    );
+    // The suite shells out to the same tools the daemon does, and builds its
+    // fixture rootfs from a static shell, so a runner without them fails in the
+    // middle of a test rather than before it.
+    for tool in [
+        "busybox-static",
+        "iproute2",
+        "iptables",
+        "util-linux",
+        "e2fsprogs",
+    ] {
+        assert!(
+            workflow.contains(tool),
+            "the privileged job must install {tool}"
+        );
+    }
+    // sudo resets PATH, so the toolchain the repository pins has to be passed
+    // through explicitly or the job builds with a cargo too old for the lockfile.
+    assert!(
+        workflow.contains("sudo -E env"),
+        "the privileged job must run with the pinned toolchain on PATH"
+    );
+}
+
+/// The script that runs the privileged suite exists and is executable.
+///
+/// A workflow referencing a script that is not committed, or is committed without
+/// its executable bit, fails on the runner rather than here.
+#[test]
+fn the_privileged_suite_runner_is_committed_and_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = repo_root().join("tools/ci/privileged-suite.sh");
+    let metadata = fs::metadata(&path)
+        .unwrap_or_else(|error| panic!("the privileged suite runner is missing: {error}"));
+    assert!(
+        metadata.permissions().mode() & 0o111 != 0,
+        "{} must be executable",
+        path.display()
+    );
+    let text = fs::read_to_string(&path).expect("read the privileged suite runner");
+    // The script is what turns a missing tool into a statement about the host,
+    // so it has to name the packages rather than only the binaries.
+    for expected in ["busybox", "iproute2", "iptables", "e2fsprogs"] {
+        assert!(
+            text.contains(expected),
+            "the runner must name {expected} as a host requirement"
+        );
+    }
 }

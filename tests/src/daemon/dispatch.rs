@@ -123,22 +123,56 @@ fn parse_string_array_rejects_non_string_elements() {
     assert!(parse_string_array(&params, "command").is_err());
 }
 
+/// An omitted disk field means "leave the disk alone", which is not the same as zero.
 #[test]
-fn parse_required_disk_bytes_uses_checked_mib_conversion() {
-    let params = serde_json::json!({"disk_mb": 64});
+fn parse_optional_disk_bytes_distinguishes_absent_from_a_value() {
     assert_eq!(
-        parse_required_disk_bytes(&params).unwrap(),
-        64 * 1024 * 1024
+        parse_optional_disk_bytes(&serde_json::json!({})).unwrap(),
+        None
+    );
+    assert_eq!(
+        parse_optional_disk_bytes(&serde_json::json!({"disk_mb": 64})).unwrap(),
+        Some(64 * 1024 * 1024)
     );
 }
 
 #[test]
-fn parse_required_disk_bytes_rejects_missing_and_overflowing_values() {
-    assert!(parse_required_disk_bytes(&serde_json::json!({})).is_err());
-    assert!(parse_required_disk_bytes(&serde_json::json!({
-        "disk_mb": u64::MAX
-    }))
-    .is_err());
+fn parse_optional_disk_bytes_rejects_an_overflowing_value() {
+    assert!(parse_optional_disk_bytes(&serde_json::json!({"disk_mb": u64::MAX})).is_err());
+}
+
+/// Memory is nested because a caller can ask for no limit at all.
+#[test]
+fn parse_optional_memory_bytes_distinguishes_absent_from_cleared() {
+    assert_eq!(
+        parse_optional_memory_bytes(&serde_json::json!({})).unwrap(),
+        None
+    );
+    assert_eq!(
+        parse_optional_memory_bytes(&serde_json::json!({"memory_mb": 512})).unwrap(),
+        Some(Some(512 * 1024 * 1024))
+    );
+}
+
+/// A limit the runtime cannot start inside is refused where it is set.
+#[test]
+fn parse_optional_memory_bytes_refuses_a_limit_below_the_floor() {
+    let error = parse_optional_memory_bytes(&serde_json::json!({"memory_mb": 1}))
+        .expect_err("a 1 MiB limit must be refused");
+    assert!(error.to_string().contains("at least"), "{error}");
+}
+
+#[test]
+fn workspace_limit_parsing_rejects_overflow_in_create_and_update() {
+    let params = serde_json::json!({"memory_mb": u64::MAX, "disk_mb": u64::MAX});
+    assert!(parse_workspace_limits_create(&params)
+        .expect_err("create overflow must fail")
+        .to_string()
+        .contains("memory_mb"));
+    assert!(parse_workspace_limits_update(&params)
+        .expect_err("update overflow must fail")
+        .to_string()
+        .contains("memory_mb"));
 }
 
 #[test]
@@ -160,4 +194,57 @@ fn clear_tmp_on_restart_rejects_non_boolean_values() {
         "clear_tmp_on_restart"
     )
     .is_err());
+}
+
+/// `workspace.start_many` reuses a start item as an update when the workspace
+/// already exists. `disk_mb` is valid on a start item but cannot be applied by
+/// an update, so forwarding it made every `up` after a `down` fail for
+/// quota-backed workspaces.
+#[test]
+fn existing_workspace_update_drops_the_declared_disk_allocation() {
+    let spec = serde_json::json!({
+        "sandbox_id": "sandbox-id",
+        "name": "dev",
+        "disk_mb": 64,
+        "memory_mb": 256,
+        "clear_tmp_on_restart": true,
+        "path": serde_json::Value::Null,
+    });
+
+    let update = existing_workspace_update(&spec, "sandbox-id", "dev");
+    let object = update.as_object().expect("update is an object");
+
+    assert!(!object.contains_key("disk_mb"));
+    assert!(!object.contains_key("path"));
+    assert_eq!(
+        object.get("sandbox").and_then(Value::as_str),
+        Some("sandbox-id")
+    );
+    assert_eq!(object.get("workspace").and_then(Value::as_str), Some("dev"));
+    assert_eq!(object.get("memory_mb").and_then(Value::as_u64), Some(256));
+    assert_eq!(
+        object.get("clear_tmp_on_restart").and_then(Value::as_bool),
+        Some(true)
+    );
+}
+
+/// The declared disk allocation is the only field with update-incompatible
+/// semantics, so the rest of the definition must still reach the update.
+#[test]
+fn existing_workspace_update_keeps_supported_limits() {
+    let spec = serde_json::json!({
+        "name": "dev",
+        "cpu_percent": 25.0,
+        "cpu_seconds": 30,
+        "max_procs": 64,
+        "max_open_files": 1024,
+    });
+
+    let update = existing_workspace_update(&spec, "sb", "dev");
+    let parsed = parse_workspace_limits_update(&update).expect("update limits parse");
+    assert_eq!(parsed.cpu_seconds, Some(Some(30)));
+    assert_eq!(parsed.cpu_percent, Some(Some(25.0)));
+    assert_eq!(parsed.max_processes, Some(Some(64)));
+    assert_eq!(parsed.max_open_files, Some(Some(1024)));
+    assert_eq!(parsed.disk_bytes, None);
 }

@@ -1,0 +1,32 @@
+version: 2
+
+# Two ecosystems, both weekly and both grouped into one pull request each. This
+# project has a small dependency list on purpose, and an ungrouped updater would
+# bury a real change under a dozen single-crate pull requests.
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: build
+    groups:
+      cargo:
+        patterns:
+          - "*"
+
+  # The workflows and the composite action call these by tag, so an update is a
+  # change to what runs with the repository's token: worth reviewing as a change
+  # rather than merged as noise.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - "*"

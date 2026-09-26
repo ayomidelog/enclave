@@ -138,6 +138,15 @@ fn ensure_rootfs_etc(rootfs: &Path) -> Result<PathBuf> {
     Ok(target_etc)
 }
 
+/// Write generated configuration only when it differs from what is there.
+///
+/// These files are regenerated on every start, and a start that changes nothing
+/// about them should not touch the filesystem: the workspace rootfs is an overlay
+/// over a shared lower layer, so an unnecessary write is a copy-up as well as a
+/// write.
+///
+/// This is a local function rather than a shared one because this module is included
+/// by path into a unit test binary, where the crate's own modules are not in scope.
 fn write_if_changed(path: &Path, content: &[u8]) -> Result<()> {
     if let Ok(existing) = fs::read(path) {
         if existing == content {

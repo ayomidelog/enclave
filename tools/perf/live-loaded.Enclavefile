@@ -1,0 +1,119 @@
+# Twelve workspaces, each running a command that will use all the CPU it is
+# allowed to, under a sandbox that is capped well below the host.
+#
+# The demand the workspaces declare is deliberately larger than the budget the
+# sandbox declares: twelve workspaces at 10% of the machine each want 4.8 CPUs,
+# and the sandbox is allowed 25% of the machine, which is one CPU on a
+# four-CPU host. The cap therefore binds and every workspace is throttled,
+# which is what makes this a loaded run rather than a busy-looking one. It is
+# also what keeps the run safe to take on a host that is doing other work: the
+# sandbox cannot spend more than its declared share no matter how hard the
+# workspaces inside it try.
+[sandbox]
+name = "loaded-live"
+suite = "bookworm"
+bootstrap_method = "cached_rootfs"
+memory_mb = 1024
+cpu_percent = 25
+max_procs = 512
+
+# `yes` writing to /dev/null is a loop with no syscalls and no memory growth, so
+# the load is CPU and nothing else. Each workspace detaches its own copies so
+# the command that starts them returns and the workspace can be left running.
+
+# Two of the twelve are on the quota tier, which is the tier whose storage is an
+# ext4 image on a loop device. That matters here beyond the extra cost of a loop
+# mount per start: a quota-backed workspace mounts its /tmp from a directory
+# inside that image rather than from a fresh tmpfs, and that is the branch whose
+# mount root was once a directory the image no longer linked, which reached the
+# workspace by path but could not hold a new file. The probe below therefore has
+# to hold for both branches, and it is run while every workspace is competing for
+# the sandbox's CPU.
+
+[workspace.ws01]
+name = "ws01"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+ports = ["127.0.0.1:__PORT_A__:8080/tcp"]
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws02]
+name = "ws02"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+ports = ["127.0.0.1:__PORT_B__:8080/tcp"]
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws03]
+name = "ws03"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws04]
+name = "ws04"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws05]
+name = "ws05"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws06]
+name = "ws06"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws07]
+name = "ws07"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws08]
+name = "ws08"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws09]
+name = "ws09"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws10]
+name = "ws10"
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws11]
+name = "ws11"
+disk_mb = 256
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"
+
+[workspace.ws12]
+name = "ws12"
+disk_mb = 256
+memory_mb = 64
+cpu_percent = 10
+max_procs = 32
+run = "sh -c 'for i in 1 2 3 4; do setsid -f yes </dev/null >/dev/null 2>&1; done; exit 0'"

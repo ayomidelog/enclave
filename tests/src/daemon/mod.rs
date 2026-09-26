@@ -1,6 +1,10 @@
-use super::prepare_runtime_paths;
+use super::socket::prepare_runtime_paths;
+use super::wait_for_listener;
 use std::fs;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 
 #[test]
 fn prepare_runtime_paths_removes_stale_socket_file() {
@@ -45,5 +49,74 @@ fn prepare_runtime_paths_rejects_active_socket() {
     );
     drop(listener);
     let _ = fs::remove_file(&socket);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Serializes the tests that install the daemon's shutdown wakeup pipe.
+///
+/// The write end is a process-wide static, because a signal handler has to reach it
+/// without any context of its own. A second install replaces the descriptor the first
+/// test's waker writes to, so a test that installs it while another is waiting sends the
+/// byte to the wrong pipe and leaves the other blocked on a poll that has no timeout.
+/// Running them one at a time is what makes the pair deterministic.
+static SHUTDOWN_WAKEUP_TESTS: Mutex<()> = Mutex::new(());
+
+fn serialize_shutdown_wakeup_test() -> std::sync::MutexGuard<'static, ()> {
+    SHUTDOWN_WAKEUP_TESTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+#[test]
+fn wait_for_listener_returns_when_a_connection_is_ready() {
+    let _serial = serialize_shutdown_wakeup_test();
+    let dir = std::env::temp_dir().join(format!("enclave-daemon-poll-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create poll test dir");
+    let socket = dir.join("daemon.sock");
+    let listener = UnixListener::bind(&socket).expect("bind poll socket");
+    listener.set_nonblocking(true).expect("set nonblocking");
+    let connector = thread::spawn({
+        let socket = socket.clone();
+        move || {
+            thread::sleep(Duration::from_millis(20));
+            let _ = UnixStream::connect(socket);
+        }
+    });
+
+    let shutdown_wait = super::shutdown::install_shutdown_wait().expect("create the wakeup pipe");
+    wait_for_listener(&listener, &shutdown_wait).expect("poll should report readiness");
+    assert!(listener.accept().is_ok());
+    connector.join().expect("connector thread");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A shutdown has to end the accept loop's wait, which blocks indefinitely.
+///
+/// The loop no longer wakes on a timer, so nothing but the pipe interrupts it. A
+/// shutdown requested over the socket arrives on a worker thread, where no signal
+/// is delivered, which is the case this covers.
+#[test]
+fn wait_for_listener_returns_when_a_shutdown_is_requested() {
+    let _serial = serialize_shutdown_wakeup_test();
+    let dir = std::env::temp_dir().join(format!("enclave-daemon-wakeup-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create wakeup test dir");
+    let socket = dir.join("daemon.sock");
+    let listener = UnixListener::bind(&socket).expect("bind wakeup socket");
+    let shutdown_wait = super::shutdown::install_shutdown_wait().expect("create the wakeup pipe");
+
+    let waker = thread::spawn(|| {
+        thread::sleep(Duration::from_millis(20));
+        super::shutdown::wake_shutdown_wait();
+    });
+
+    let started = std::time::Instant::now();
+    wait_for_listener(&listener, &shutdown_wait).expect("a wakeup should end the wait");
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the wait must end on the wakeup rather than on a timer"
+    );
+    waker.join().expect("waker thread");
     let _ = fs::remove_dir_all(&dir);
 }

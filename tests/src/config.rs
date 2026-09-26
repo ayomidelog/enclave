@@ -116,7 +116,7 @@ fn load_config_rejects_invalid_mirror_url() {
 }
 
 #[test]
-fn load_config_rejects_invalid_debootstrap_binary() {
+fn load_config_defers_debootstrap_binary_validation_until_bootstrap() {
     let dir = std::env::temp_dir().join(format!("enclave-config-badbinary-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
@@ -126,8 +126,12 @@ fn load_config_rejects_invalid_debootstrap_binary() {
         )
         .unwrap();
 
-    let result = load_config(Some(&path));
-    assert!(result.is_err());
+    let config =
+        load_config(Some(&path)).expect("daemon config should accept cached-rootfs setups");
+    assert_eq!(
+        config.debootstrap_binary.as_deref(),
+        Some("/path/that/does/not/exist")
+    );
 
     if dir.exists() {
         fs::remove_dir_all(&dir).expect("failed to cleanup temp test dir");

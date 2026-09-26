@@ -98,8 +98,8 @@ fn configured_ps_workers(job_count: usize) -> usize {
 }
 
 fn resolve_live_status(probe: &ProcessProbe) -> (String, Option<u32>, Option<u64>) {
-    if probe.status != WorkspaceStatus::Running {
-        return ("stopped".to_string(), None, None);
+    if !probe.status.is_running() {
+        return (probe.status.as_str().to_string(), None, None);
     }
 
     let Some(pid) = probe.pid else {

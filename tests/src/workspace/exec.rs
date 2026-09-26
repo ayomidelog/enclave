@@ -1,4 +1,4 @@
-use super::runtime_exec_command_args;
+use super::{runtime_exec_command_args, workspace_file_receive_args};
 use crate::workspace::{WorkspaceLimits, WorkspaceMetadata, WorkspaceStatus};
 
 #[test]
@@ -49,7 +49,10 @@ fn runtime_exec_clears_environment_before_running_wrapper() {
     assert_eq!(args[10], "--workspace-id");
     assert_eq!(args[11], "ws-1");
     assert_eq!(args[12], "--cgroup-path");
-    assert_eq!(args[13], "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-1234");
+    assert_eq!(
+        args[13],
+        "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-sb-1-ws-1"
+    );
     assert_eq!(args[14], "--");
     assert_eq!(args[15], "/bin/echo");
     assert_eq!(args[16], "ok");
@@ -70,11 +73,48 @@ fn runtime_exec_separates_wrapped_command_flags() {
         &args[12..],
         [
             "--cgroup-path",
-            "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-1234",
+            "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-sb-1-ws-1",
             "--",
             "tar",
             "-C",
             "/home"
         ]
     );
+}
+
+#[test]
+fn file_receiver_is_attached_to_the_workspace_cgroup() {
+    let args = workspace_file_receive_args(
+        1234,
+        1,
+        "/home/stage/file",
+        Some("/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-sb-1-ws-1"),
+        [0, 1, 2, 3, 4, 5],
+    );
+
+    assert_eq!(
+        &args[..12],
+        [
+            "internal",
+            "workspace-file-receive",
+            "--runtime-pid",
+            "1234",
+            "--runtime-starttime-ticks",
+            "1",
+            "--target",
+            "/home/stage/file",
+            "--cgroup-path",
+            "/sys/fs/cgroup/enclave-sb-sb-1/enclave-ws-sb-1-ws-1",
+            "--root-fd",
+            "0",
+        ]
+    );
+}
+
+#[test]
+fn file_receiver_omits_cgroup_path_without_a_workspace_cgroup() {
+    let args = workspace_file_receive_args(1234, 1, "/home/file", None, [0, 1, 2, 3, 4, 5]);
+
+    assert!(!args.iter().any(|arg| arg == "--cgroup-path"));
+    assert_eq!(args[8], "--root-fd");
 }
