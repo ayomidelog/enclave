@@ -134,7 +134,19 @@ then fails over a workspace that recovery was right to keep, and the test only l
 flaky. Hold the registry lock instead: committing a transition is the one step that
 takes it, so the daemon cannot close the window while the guard is held, and a test
 that reads the registry before it kills can assert the state it meant to crash in.
-`tests/integration/crash_recovery/` does this for a start's commit window.
+`tests/integration/crash_recovery/` does this for a start's commit window, and it
+shows the second half: pin the far side of the window too. A launch writes the
+workspace's own record before it takes the lock, so a test that waits only for the
+phase marker still races that write and lands in either settled state. Waiting for
+the file the daemon actually writes is what makes the outcome one thing.
+
+Then assert on the state that ordering produces, not on the state you expected. A
+kill before the record is written is rolled back, and a kill after it is completed by
+the next daemon, because the record is the authority and repair adopts the on-disk
+copy. `assert_recovered` therefore branches: a stopped workspace must hold nothing,
+and a running one must hold exactly the runtime its record names. An assertion that
+only ever checks for emptiness cannot tell a leak from a completed start, and it will
+report the second as the first on whichever runner closes the window fastest.
 
 Add a test when it proves something a reader would otherwise have to take on
 trust: a bug you fixed, a contract another module depends on, or an invariant a

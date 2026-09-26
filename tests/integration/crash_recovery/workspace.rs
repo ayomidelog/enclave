@@ -54,14 +54,27 @@ fn a_daemon_killed_during_a_workspace_launch_recovers() {
 /// This is the narrowest window in the lifecycle and the one with the most to get wrong:
 /// the runtime exists and is running, and the registry still says the workspace is
 /// starting. A recovery that trusted the record would leave a runtime nothing describes;
-/// one that trusted the process would adopt a runtime whose identity was never committed.
-/// What the daemon does instead is roll back, which is what this asserts.
+/// one that trusted the process alone would adopt a runtime whose identity no record
+/// proves. Neither is what the daemon does, and what it does instead is what this pins
+/// down: the workspace's own record, written before the registry commit and carrying the
+/// runtime pid, its start time, and its namespace references, is the identity, so the
+/// next daemon adopts it and the start completes.
 ///
 /// The window is a few filesystem writes wide, which a fast host closes before a test
-/// can react to the phase marker it watches for, so the test holds the registry lock
-/// for the whole launch. Committing the runtime identity is the one step of a launch
-/// that takes that lock, so the daemon cannot close the window while the guard is held,
-/// and the status read below proves the kill landed on the near side of it.
+/// can react to a phase marker, so the test holds the registry lock for the whole
+/// launch. Committing the runtime identity is the one step of a launch that takes that
+/// lock, so the daemon cannot close the window while the guard is held.
+///
+/// Holding it also settles what the outcome is. A launch writes the workspace's own
+/// record — status, runtime pid, start time, namespace references — and only then takes
+/// the lock to commit the registry, so the disk copy is `running` while the registry is
+/// still `starting` at the moment of the kill. Repair adopts the on-disk copy, which is
+/// the documented precedence rule, and the recovered workspace is therefore `running`
+/// with the runtime the record names. That is the outcome asserted below, and it is the
+/// one the ordering is for: the record is written ahead of the registry so a crash
+/// between them completes the start rather than rolling back a runtime that did all of
+/// its host work. The rollback path is the other crash test, which kills before the
+/// runtime metadata is written.
 #[test]
 #[ignore = "requires root privileges and namespace/mount support"]
 fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
@@ -95,8 +108,15 @@ fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
         ),
         "the start never reached its commit phase, so killing here would test nothing"
     );
+    // The launch writes the workspace's own record before it reaches for the lock, so
+    // this is what pins the kill to the far side of that write. Without it the test
+    // would race the write as well as the commit and land in either settled state.
+    assert!(
+        fixture.wait_for_disk_status("running", Duration::from_secs(20)),
+        "the launch never wrote its own record, so killing here would test nothing"
+    );
     assert_eq!(
-        fixture.registry_workspace_status(),
+        fixture.registry_record().status,
         "starting",
         "the start committed its runtime metadata before the daemon was killed, so this \
          run tested nothing: the registry lock was not held across the commit"
@@ -107,6 +127,12 @@ fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
     fixture.daemon.start();
 
     assert_recovered(&fixture);
+    assert_eq!(
+        fixture.registry_record().status,
+        "running",
+        "the launch's own record was written before the commit, so the next daemon has to \
+         complete the start rather than roll back a runtime that did all of its host work"
+    );
 }
 
 /// A daemon killed while a workspace is stopping must leave a state the next start

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use enclave::operation::{load, OperationStatus};
 
 use super::super::support::{
-    loop_devices_backing, prepare_cached_rootfs, sandbox_dir, session_processes_for, state_dir,
-    workspace_cgroup_path, workspace_dir, TestDaemon,
+    cgroup_processes, loop_devices_backing, prepare_cached_rootfs, process_starttime, sandbox_dir,
+    session_processes_for, state_dir, workspace_cgroup_path, workspace_dir, TestDaemon,
 };
 
 /// Every mount under the workspaces of a state directory.
@@ -253,11 +253,12 @@ impl CrashFixture {
         RegistryLockGuard::acquire(&self.state.join("registry.lock"))
     }
 
-    /// The status the registry records for the fixture's workspace.
+    /// The lifecycle fields the registry records for the fixture's workspace.
     ///
-    /// Read from the file rather than through the CLI on purpose: a test holding
-    /// the registry lock would block a request that reads the registry too.
-    pub(super) fn registry_workspace_status(&self) -> String {
+    /// Read from the file rather than through the CLI or the registry library on
+    /// purpose: a crash test holds the registry lock to keep a window open, and
+    /// either of those takes the lock and would block on it.
+    pub(super) fn registry_record(&self) -> RecordedWorkspace {
         let path = self.state.join("registry.json");
         let raw = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read the registry {}: {error}", path.display()));
@@ -265,12 +266,41 @@ impl CrashFixture {
             serde_json::from_str(&raw).expect("the registry is valid json");
         let sandbox_id = self.sandbox_id();
         let workspace_id = self.workspace_id();
-        registry["sandboxes"][&sandbox_id]["workspaces"][&workspace_id]["status"]
+        let record = &registry["sandboxes"][&sandbox_id]["workspaces"][&workspace_id];
+        assert!(
+            !record.is_null(),
+            "the registry does not record workspace '{workspace_id}'"
+        );
+        RecordedWorkspace::from_json(record)
+    }
+
+    /// The status the workspace's own `workspace.json` records.
+    ///
+    /// This is the copy repair adopts, and it is written before the registry commit,
+    /// so a test that wants to land between the two has to watch this file rather
+    /// than the registry.
+    pub(super) fn disk_workspace_status(&self) -> String {
+        let path = self.workspace_dir().join("workspace.json");
+        let raw = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let record: serde_json::Value =
+            serde_json::from_str(&raw).expect("the workspace metadata is valid json");
+        record["status"]
             .as_str()
-            .unwrap_or_else(|| {
-                panic!("the registry does not record a status for workspace '{workspace_id}'")
-            })
+            .unwrap_or_else(|| panic!("{} records no status", path.display()))
             .to_string()
+    }
+
+    /// Block until the workspace's own record reaches `status`, or give up.
+    pub(super) fn wait_for_disk_status(&self, status: &str, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.disk_workspace_status() == status {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
     }
 }
 
@@ -332,6 +362,35 @@ impl Drop for RegistryLockGuard {
     }
 }
 
+/// The lifecycle fields of one workspace record, read out of the registry file.
+///
+/// Only the fields that describe the runtime are kept: those are the ones recovery
+/// has to make agree with the host, and the rest of the record is metadata that no
+/// crash can put out of step with it.
+#[derive(Debug)]
+pub(super) struct RecordedWorkspace {
+    pub(super) status: String,
+    pub(super) runtime_pid: Option<u32>,
+    pub(super) runtime_starttime_ticks: Option<u64>,
+    pub(super) assigned_ip: Option<String>,
+}
+
+impl RecordedWorkspace {
+    fn from_json(record: &serde_json::Value) -> Self {
+        Self {
+            status: record["status"]
+                .as_str()
+                .expect("the workspace record has a status")
+                .to_string(),
+            runtime_pid: record["runtime_pid"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok()),
+            runtime_starttime_ticks: record["runtime_starttime_ticks"].as_u64(),
+            assigned_ip: record["assigned_ip"].as_str().map(str::to_string),
+        }
+    }
+}
+
 /// Wait for a spawned CLI command to finish, so a test does not leave a process behind.
 pub(super) fn reap(mut child: Child) {
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -343,6 +402,46 @@ pub(super) fn reap(mut child: Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// What a leftover process is, and what the daemon said about it.
+///
+/// A leftover process is the one finding that cannot be investigated after the fact:
+/// the fixture's guard stops the daemon and removes its state directory and its log, so
+/// a failure that reports only a pid leaves nothing behind to explain it. Both are
+/// captured here, while they still exist.
+fn orphan_diagnostics(fixture: &CrashFixture, orphans: &[u32]) -> String {
+    let mut out = String::new();
+    for pid in orphans {
+        let cmdline = fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|raw| String::from_utf8_lossy(&raw).replace('\0', " "))
+            .unwrap_or_else(|error| format!("<unreadable: {error}>"));
+        let cgroup = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+            .map(|raw| raw.trim().replace('\n', "; "))
+            .unwrap_or_else(|error| format!("<unreadable: {error}>"));
+        out.push_str(&format!(
+            "\n  orphan {pid} cmdline: {cmdline}\n  orphan {pid} cgroup: {cgroup}"
+        ));
+    }
+    out.push_str("\n  daemon log tail:\n");
+    out.push_str(&fixture.daemon.log_tail(60));
+    for (label, path) in [
+        ("registry", fixture.state.join("registry.json")),
+        (
+            "workspace.json",
+            fixture.workspace_dir().join("workspace.json"),
+        ),
+    ] {
+        let record = fs::read_to_string(&path)
+            .map(|raw| {
+                serde_json::from_str::<serde_json::Value>(&raw)
+                    .map(|value| value.to_string())
+                    .unwrap_or(raw)
+            })
+            .unwrap_or_else(|error| format!("<unreadable: {error}>"));
+        out.push_str(&format!("\n  {label}: {record}"));
+    }
+    out
 }
 
 /// What every crash test asserts once the daemon has restarted.
@@ -357,45 +456,9 @@ pub(super) fn assert_recovered(fixture: &CrashFixture) {
     let workspace_id = fixture.workspace_id();
     let sandbox_path = fixture.sandbox_dir();
 
-    let orphans = session_processes_for(&sandbox_path);
-    assert!(
-        orphans.is_empty(),
-        "recovery left {} session process(es) behind: {orphans:?}",
-        orphans.len()
-    );
-
-    let mounts = workspace_mounts(&fixture.state);
-    assert!(
-        mounts.is_empty(),
-        "recovery left workspace mount(s) behind: {mounts:?}"
-    );
-
-    let veths = sandbox_veths(&fixture.state, &sandbox_id);
-    assert!(
-        veths.is_empty(),
-        "recovery left interface(s) behind: {veths:?}"
-    );
-
-    let cgroup = workspace_cgroup_path(&sandbox_id, &workspace_id);
-    assert!(
-        !cgroup.exists(),
-        "recovery left the workspace cgroup {} behind",
-        cgroup.display()
-    );
-
-    // A quota-backed workspace owns an ext4 image on a loop device. That is kernel
-    // state a directory-backed workspace never has, and it is released by the same
-    // teardown, so a rollback that stopped early leaves the image attached with
-    // nothing left in the registry to find it by.
-    let image = Path::new(&fixture.workspace_dir()).join("fs.img");
-    if image.exists() {
-        let loops = loop_devices_backing(&image);
-        assert!(
-            loops.is_empty(),
-            "recovery left the workspace image attached to {loops:?}"
-        );
-    }
-
+    // The journal has to be terminal in either settled state: the restart is the one
+    // moment that closes what a dead daemon left open, and a record left `planned` or
+    // `running` makes doctor report the same interrupted operation forever.
     let records = journal_records(&fixture.state);
     let open = records
         .iter()
@@ -409,18 +472,100 @@ pub(super) fn assert_recovered(fixture: &CrashFixture) {
         "recovery left open journal record(s): {open:?}"
     );
 
-    // The record has to describe the host, which for a crashed operation means it was
-    // rolled back rather than left transitional.
-    let status = fixture.daemon.cli(&[
-        "workspace",
-        "status",
-        &fixture.sandbox_name,
-        &fixture.workspace_name,
-    ]);
-    let stdout = String::from_utf8_lossy(&status.stdout).into_owned();
-    assert!(
-        stdout.contains("status: stopped") || stdout.contains("status: running"),
-        "the workspace is not in a settled state: {stdout}{}",
-        String::from_utf8_lossy(&status.stderr)
-    );
+    // The record has to describe the host, and which settled state it settled in is
+    // what decides what the host is allowed to hold. A rollback has to have released
+    // everything the interrupted operation created; a start whose own record was
+    // written before the commit is a workspace the next daemon completes, and its
+    // runtime, cgroup, mounts, and interface are then described by that record rather
+    // than leaked by it. Asserting on emptiness alone would call the second outcome a
+    // leak and the first one a pass, which is the mistake this branch exists to avoid.
+    let record = fixture.registry_record();
+    let live = session_processes_for(&sandbox_path);
+    let cgroup = workspace_cgroup_path(&sandbox_id, &workspace_id);
+    match record.status.as_str() {
+        "running" => {
+            let pid = record
+                .runtime_pid
+                .unwrap_or_else(|| panic!("a running workspace records no runtime: {record:?}"));
+            let beside = live
+                .iter()
+                .copied()
+                .filter(|live_pid| *live_pid != pid)
+                .collect::<Vec<_>>();
+            assert!(
+                beside.is_empty(),
+                "recovery left session process(es) {beside:?} beside the recorded runtime {pid}{}",
+                orphan_diagnostics(fixture, &beside)
+            );
+            assert_eq!(
+                process_starttime(pid),
+                record.runtime_starttime_ticks,
+                "the record names a runtime that is not running with its start time"
+            );
+            assert!(
+                cgroup.exists(),
+                "a running workspace has no cgroup at {}",
+                cgroup.display()
+            );
+            assert!(
+                cgroup_processes(&cgroup)
+                    .iter()
+                    .any(|(held, _)| *held == pid),
+                "the workspace runtime is not in its cgroup {}",
+                cgroup.display()
+            );
+            assert!(
+                record.assigned_ip.is_some(),
+                "a running workspace holds no address"
+            );
+        }
+        "stopped" => {
+            assert!(
+                live.is_empty(),
+                "recovery left {} session process(es) behind: {live:?}{}",
+                live.len(),
+                orphan_diagnostics(fixture, &live)
+            );
+            assert_eq!(
+                record.runtime_pid, None,
+                "a stopped workspace still records a runtime"
+            );
+            assert_eq!(
+                record.assigned_ip, None,
+                "a stopped workspace still holds an address"
+            );
+
+            let mounts = workspace_mounts(&fixture.state);
+            assert!(
+                mounts.is_empty(),
+                "recovery left workspace mount(s) behind: {mounts:?}"
+            );
+
+            let veths = sandbox_veths(&fixture.state, &sandbox_id);
+            assert!(
+                veths.is_empty(),
+                "recovery left interface(s) behind: {veths:?}"
+            );
+
+            assert!(
+                !cgroup.exists(),
+                "recovery left the workspace cgroup {} behind",
+                cgroup.display()
+            );
+
+            // A quota-backed workspace owns an ext4 image on a loop device. That is
+            // kernel state a directory-backed workspace never has, and it is released
+            // by the same teardown, so a rollback that stopped early leaves the image
+            // attached with nothing left in the registry to find it by.
+            let image = Path::new(&fixture.workspace_dir()).join("fs.img");
+            if image.exists() {
+                let loops = loop_devices_backing(&image);
+                assert!(
+                    loops.is_empty(),
+                    "recovery left the workspace image attached to {loops:?}"
+                );
+            }
+        }
+        other => panic!("recovery left the workspace {other}: {record:?}"),
+    }
 }

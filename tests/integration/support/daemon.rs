@@ -154,6 +154,25 @@ impl TestDaemon {
         }
         false
     }
+
+    /// The last `lines` lines of the daemon's log.
+    ///
+    /// The log lives beside the socket and the fixture's guard removes it, so a
+    /// test that wants to report what the daemon decided has to read it while the
+    /// daemon is still running rather than after the guard has cleaned up.
+    pub(crate) fn log_tail(&self, lines: usize) -> String {
+        let path = self
+            .socket
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("daemon.log");
+        let Ok(raw) = fs::read_to_string(&path) else {
+            return format!("<no daemon log at {}>", path.display());
+        };
+        let all: Vec<&str> = raw.lines().collect();
+        let start = all.len().saturating_sub(lines);
+        all[start..].join("\n")
+    }
 }
 
 impl Drop for TestDaemon {
