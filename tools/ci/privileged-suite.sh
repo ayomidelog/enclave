@@ -141,4 +141,11 @@ done
 
 suite=${ENCLAVE_SUITE:-integration_suite}
 printf 'running the privileged %s\n' "$suite"
-exec "$cargo_bin" test --test "$suite" -- "${serial_args[@]}" "$@"
+# The capability probe above is removed by an EXIT trap, and `exec` would replace
+# this shell before that trap could run, leaving the probe directory behind on every
+# run. The collector that CI uploads after a failure reports those as leftovers, so
+# the leak was visible as noise in the one artifact meant to be evidence. Running the
+# test as a child and propagating its status keeps the trap.
+status=0
+"$cargo_bin" test --test "$suite" -- "${serial_args[@]}" "$@" || status=$?
+exit "$status"
