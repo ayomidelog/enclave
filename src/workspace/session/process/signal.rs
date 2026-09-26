@@ -70,8 +70,18 @@ pub(in crate::workspace::session) fn verify_signal_target(
     }
 
     let status_path = format!("/proc/{pid}/status");
-    let status = fs::read_to_string(&status_path)
-        .with_context(|| format!("failed to read {}", status_path))?;
+    let status = match fs::read_to_string(&status_path) {
+        Ok(status) => status,
+        // A process can exit between the liveness check above and this read. That is
+        // not a failure to inspect it, it is the answer: a pid that is gone is one there
+        // is nothing left to refuse. Reporting it as an error would fail the whole stop,
+        // and a stop that fails leaves the record and the runtime in place, which is the
+        // opposite of what this check is for.
+        Err(_) if !process_matches(pid, expected_starttime_ticks) => {
+            return Ok(SignalTarget::Signallable);
+        }
+        Err(error) => return Err(error).with_context(|| format!("failed to read {}", status_path)),
+    };
     let uid_line = status
         .lines()
         .find(|line| line.starts_with("Uid:"))
@@ -88,8 +98,16 @@ pub(in crate::workspace::session) fn verify_signal_target(
     }
 
     let cmdline_path = format!("/proc/{pid}/cmdline");
-    let cmdline =
-        fs::read(&cmdline_path).with_context(|| format!("failed to read {}", cmdline_path))?;
+    let cmdline = match fs::read(&cmdline_path) {
+        Ok(cmdline) => cmdline,
+        // The same race as the status read above, and the same answer.
+        Err(_) if !process_matches(pid, expected_starttime_ticks) => {
+            return Ok(SignalTarget::Signallable);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", cmdline_path))
+        }
+    };
     let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
     if !looks_like_enclave_runtime_cmdline(&cmdline) {
         return Ok(SignalTarget::Starting);

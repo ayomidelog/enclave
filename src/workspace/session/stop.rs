@@ -43,6 +43,12 @@ where
     // deadline bounds the whole batch rather than each record, so a stop that finds
     // several unrecognizable pids pays it once.
     sorted.settle(crate::deadlines::runtime_exec_settle().get())?;
+    // A pid that could not be inspected at all is reported here rather than at the
+    // point it failed. A read of `/proc` fails when the process is exiting, which is the
+    // one case where there is nothing to signal, so failing on the first failure would
+    // abort a stop that was about to succeed. If it is still unreadable after the settle
+    // window, something is genuinely wrong and the caller is told.
+    resolve_unreadable(&mut sorted)?;
     for (pid, expected_starttime_ticks) in std::mem::take(&mut sorted.starting) {
         tracing::warn!(
             "session pid {pid} is still not an enclave runtime after {}; treating its record as stale",
@@ -140,6 +146,13 @@ struct StopTargets {
     /// Pids whose record is stale: the process is gone, or it belongs to another
     /// user.
     stopped: Vec<(u32, Option<u64>)>,
+    /// Pids that are alive and match their record but could not be inspected, with
+    /// the error the inspection produced.
+    ///
+    /// Kept apart rather than returned immediately so one unreadable pid does not
+    /// lose the others in the same batch: a stop that aborts here leaves every target
+    /// unsignalled, which is how several runtimes end up behind instead of one.
+    unreadable: Vec<(u32, Option<u64>)>,
 }
 
 impl StopTargets {
@@ -151,7 +164,14 @@ impl StopTargets {
                 sorted.stopped.push((pid, expected_starttime_ticks));
                 continue;
             }
-            match process::verify_signal_target(pid, expected_starttime_ticks)? {
+            let target = match process::verify_signal_target(pid, expected_starttime_ticks) {
+                Ok(target) => target,
+                Err(_) => {
+                    sorted.unreadable.push((pid, expected_starttime_ticks));
+                    continue;
+                }
+            };
+            match target {
                 process::SignalTarget::Signallable => {
                     sorted.signallable.push((pid, expected_starttime_ticks));
                 }
@@ -187,9 +207,53 @@ impl StopTargets {
             self.signallable.extend(settled.signallable);
             self.starting.extend(settled.starting);
             self.stopped.extend(settled.stopped);
+            // A pid that could not be inspected this time is tried again rather than
+            // given up on: the deadline is what bounds the wait, and a read that failed
+            // once often succeeds on the next pass.
+            self.starting.extend(settled.unreadable);
         }
         Ok(())
     }
+}
+
+/// Re-check the pids that could not be inspected, once the settle window has passed.
+///
+/// A read of `/proc` fails when the process is exiting, which is the one case where
+/// there is nothing left to signal, so a pid is only reported as unreadable if it is
+/// still there and still unreadable after every retry. Its result is folded into the
+/// same buckets the first pass used, so a pid that became readable is handled the way
+/// it would have been had the first read succeeded.
+fn resolve_unreadable(targets: &mut StopTargets) -> Result<()> {
+    let unreadable = std::mem::take(&mut targets.unreadable);
+    let mut still_unreadable = Vec::new();
+    for (pid, expected_starttime_ticks) in unreadable {
+        if !process_matches(pid, expected_starttime_ticks) {
+            targets.stopped.push((pid, expected_starttime_ticks));
+            continue;
+        }
+        match process::verify_signal_target(pid, expected_starttime_ticks) {
+            Ok(process::SignalTarget::Signallable) => {
+                targets.signallable.push((pid, expected_starttime_ticks));
+            }
+            Ok(process::SignalTarget::Starting) => {
+                targets.starting.push((pid, expected_starttime_ticks));
+            }
+            Ok(process::SignalTarget::ForeignOwner { owner_uid }) => {
+                tracing::warn!(
+                    "stale session pid {pid} detected (owned by uid {owner_uid}); treating as already stopped"
+                );
+                targets.stopped.push((pid, expected_starttime_ticks));
+            }
+            Err(_) => still_unreadable.push((pid, expected_starttime_ticks)),
+        }
+    }
+    if let Some((pid, _)) = still_unreadable.first() {
+        return Err(anyhow::anyhow!(
+            "session pid {pid} is alive and matches its record but could not be inspected after {}; refusing to signal a process this daemon cannot identify",
+            crate::deadlines::runtime_exec_settle().describe_timeout()
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn wait_for_targets_to_exit(targets: &[(u32, Option<u64>)], timeout: Duration) {
