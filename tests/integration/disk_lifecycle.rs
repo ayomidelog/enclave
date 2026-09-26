@@ -18,7 +18,7 @@ use enclave::workspace::{
 
 use super::support::{
     ext4_filesystem_size, loop_devices_backing, mounts_at_or_below, prepare_cached_rootfs,
-    root_only, state_dir,
+    root_only, state_dir, SandboxCleanup,
 };
 
 #[test]
@@ -315,6 +315,10 @@ fn a_memory_resize_reaches_the_running_runtime() {
 
     let state = state_dir("enclave-int-memory-resize");
     prepare_cached_rootfs(&state, "bookworm");
+    // The state directory is removed however the test ends. A failure between the
+    // start and the teardown would otherwise leave a mounted overlay and a running
+    // runtime in a directory nothing points at, which is a mess to find by hand.
+    let mut cleanup = SandboxCleanup::new(state.clone());
 
     let sandbox = create_sandbox(
         &state,
@@ -325,6 +329,7 @@ fn a_memory_resize_reaches_the_running_runtime() {
         &BootstrapMethod::CachedRootfs,
     )
     .expect("create sandbox");
+    cleanup.record(&sandbox.id);
     start_sandbox(&state, &sandbox.id).expect("start sandbox");
 
     // Deliberately no disk allocation: memory is independent of storage, and a
@@ -380,7 +385,7 @@ fn a_memory_resize_reaches_the_running_runtime() {
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
-    let _ = fs::remove_dir_all(state);
+    drop(cleanup);
 }
 
 /// The soft address-space limit the kernel reports for `pid`, with `unlimited` read
