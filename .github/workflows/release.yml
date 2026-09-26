@@ -35,6 +35,23 @@ jobs:
       - name: Performance regression gate
         run: tools/perf/check-thresholds.sh
 
+      # The lifecycle latency report is measured on a privileged host, which a
+      # hosted runner is not, so the workflow checks the committed report against
+      # the tree it describes rather than regenerating it. A report whose template
+      # or script has changed since it was written is stale, and a release should
+      # not carry numbers nobody re-took.
+      - name: Lifecycle report is current
+        run: |
+          if [[ ! -s docs/lifecycle-report.md ]]; then
+            printf 'docs/lifecycle-report.md is missing or empty\n' >&2
+            exit 1
+          fi
+          stale=$(find docs/lifecycle-report.md -newer tools/perf/lifecycle-report.sh -print -quit)
+          if [[ -z "$stale" ]]; then
+            printf 'docs/lifecycle-report.md is older than the script that generates it; rerun ENCLAVE_LIVE_ITERATIONS=12 tools/perf/lifecycle-report.sh\n' >&2
+            exit 1
+          fi
+
   build-and-release:
     needs: verify
     # Build against glibc 2.35 so release binaries also run on Ubuntu 22.04

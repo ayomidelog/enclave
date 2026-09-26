@@ -66,6 +66,12 @@ excluded), as the median of seven consecutive runs:
 - warm workspace boot: `2.03s`
 - warm shutdown: `0.60s`
 
+Each release carries a full p50/p95/p99 report taken with the binary it ships,
+along with the host it was measured on, in
+[docs/lifecycle-report.md](docs/lifecycle-report.md). Regenerate it with
+`ENCLAVE_LIVE_ITERATIONS=12 ./tools/perf/lifecycle-report.sh`, which needs a
+privileged host and a cached rootfs.
+
 The validation host is shared with other work, so the spread is wide: cold boot
 ranged 2.42–3.68s, cold shutdown 0.43–0.76s, warm boot 1.91–2.10s, and warm
 shutdown 0.47–0.64s. The medians are the number to compare; the ranges are what
