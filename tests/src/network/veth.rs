@@ -64,3 +64,40 @@ fn default_route_output_requires_gateway_and_interface_match() {
         "10.200.0.1"
     ));
 }
+
+/// The octet an Enclave interface name carries is readable back out of it.
+///
+/// The name is the only record of an address that a second daemon can see: the
+/// address itself is inside a network namespace, and the other daemon's registry is
+/// not this one's to read. The allocator uses this to refuse an octet another
+/// daemon's workspace is already holding, so the round trip has to be exact and a
+/// name that is not Enclave's has to yield nothing rather than a guess.
+#[test]
+fn an_enclave_interface_name_yields_the_octet_it_carries() {
+    for octet in [10u8, 12, 100, 254] {
+        let (host, _) = veth_names(octet, "workspace-1");
+        assert_eq!(
+            octet_from_veth_name(&host),
+            Some(octet),
+            "{host} carries {octet}"
+        );
+    }
+
+    // A foreign interface is not an Enclave one, whatever it looks like: the peer
+    // end is `eth0` inside the workspace and never appears on the host, a name
+    // without the hash is not this scheme, and a name from another tool must not be
+    // read as an address.
+    for foreign in [
+        "eth0",
+        "veth0",
+        "veth-12",
+        "veth-12-nothex",
+        "veth-abc-123456",
+        "veth-1234-123456",
+        "docker0",
+        "br-abcdef123456",
+        "",
+    ] {
+        assert_eq!(octet_from_veth_name(foreign), None, "{foreign}");
+    }
+}

@@ -136,7 +136,14 @@ pub(crate) fn collect_all_used_ip_octets(
         .values()
         .flat_map(|s| s.workspaces.values())
         .filter_map(|ws| ws.assigned_ip.as_deref());
-    network::collect_used_ips(ips)
+    // The registry describes this daemon's workspaces, and the host describes every
+    // Enclave interface on the machine. A second daemon on this host allocates from
+    // its own registry and attaches to the same bridge, so an address only one of
+    // the two knows about is an address that can be handed out twice. Unioning the
+    // two is what makes the allocator see the other daemon's workspaces.
+    let mut used = network::collect_used_ips(ips);
+    used.extend(network::host_veth_octets());
+    used
 }
 
 pub fn workspace_runtime_is_active(workspace: &WorkspaceMetadata) -> bool {

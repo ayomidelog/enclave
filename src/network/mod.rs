@@ -131,6 +131,31 @@ where
     ips.filter_map(ipam::parse_host_octet).collect()
 }
 
+/// The host octets that Enclave interfaces on this host are already using.
+///
+/// The registry is not the only record of which addresses are taken. A second
+/// daemon with its own state directory allocates from its own empty pool, and both
+/// daemons attach to the same bridge, so the two can hand the same address to two
+/// workspaces without either registry disagreeing with the other. The address
+/// itself is inside a network namespace and invisible from the host, but the
+/// interface name is not: a host veth is named for the octet it carries, so every
+/// Enclave interface on the host names an octet that is in use, whoever created it.
+///
+/// Reading this is one directory listing, and it makes the allocator refuse an
+/// address another daemon's workspace is holding rather than trusting a registry
+/// that cannot see it.
+pub fn host_veth_octets() -> BTreeSet<u8> {
+    let Ok(entries) = std::fs::read_dir(NET_CLASS_DIR) else {
+        return BTreeSet::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+        .filter(|name| veth::is_enclave_veth_name(name))
+        .filter_map(|name| veth::octet_from_veth_name(&name))
+        .collect()
+}
+
 pub fn cleanup_host_networking() {
     let Ok(_guard) = HOST_NETWORKING_LOCK.get_or_init(|| Mutex::new(())).lock() else {
         tracing::warn!("host networking cleanup lock poisoned");

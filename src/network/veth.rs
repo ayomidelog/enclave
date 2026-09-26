@@ -82,6 +82,18 @@ pub(crate) fn is_enclave_veth_name(name: &str) -> bool {
         && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// The host octet an Enclave veth name encodes, when the name is one.
+///
+/// The name carries the address the interface holds, so a name is also a record
+/// that the octet is in use. See `network::host_veth_octets` for why that matters
+/// with more than one daemon on a host.
+pub(crate) fn octet_from_veth_name(name: &str) -> Option<u8> {
+    if !is_enclave_veth_name(name) {
+        return None;
+    }
+    name.strip_prefix("veth-")?.split_once('-')?.0.parse().ok()
+}
+
 fn workspace_id_hash(workspace_id: &str) -> u32 {
     workspace_id.bytes().fold(0x811c9dc5u32, |hash, byte| {
         hash.wrapping_mul(0x01000193) ^ u32::from(byte)

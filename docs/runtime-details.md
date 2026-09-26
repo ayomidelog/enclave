@@ -74,6 +74,15 @@ Each workspace runs in its own network namespace with full port isolation and ou
 - `10.200.0.2`–`.9` — reserved
 - `10.200.0.10`–`.254` — workspace pool (auto-allocated, persisted in registry)
 
+An address is allocated against the union of two things: the registry's own
+assigned addresses, and the octets carried by every Enclave interface already on
+the host. The second is what keeps a second daemon with its own state directory
+from handing out an address the first daemon's workspace holds — the address lives
+inside a network namespace and the other daemon's registry is not this one's to
+read, but a host veth is named for the octet it carries (`veth-<octet>-<hash>`), so
+the host itself records which ones are taken. See [limitations.md](limitations.md)
+for what two daemons on one host still share.
+
 ### DNS
 
 A managed `/etc/resolv.conf` is provisioned in each workspace rootfs. If the host resolver is a systemd-resolved stub (`127.0.0.53`), Enclave reads the upstream resolver list from `/run/systemd/resolve/resolv.conf` instead, ensuring name resolution works without the stub dependency.
