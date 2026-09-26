@@ -51,6 +51,7 @@ pub(crate) use stop::{
 };
 pub use stop::{stop_workspace, stop_workspace_with_certificate};
 pub use update::resize_workspace_disk;
+pub use update::resize_workspace_memory;
 pub(crate) use update::resize_workspace_with_security;
 pub use update::update_workspace_definition;
 

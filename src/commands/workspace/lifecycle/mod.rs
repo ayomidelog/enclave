@@ -89,19 +89,32 @@ pub(super) fn run_workspace_resize(
     )?;
     let result: crate::workspace::WorkspaceResizeResult = serde_json::from_value(response)?;
     let render = |bytes: u64| format!("{} MiB", bytes / (1024 * 1024));
-    if result.previous_disk_bytes == result.new_disk_bytes {
-        println!(
-            "workspace {} keeps its {} disk allocation",
-            result.workspace_name,
-            render(result.new_disk_bytes)
-        );
-    } else {
-        println!(
-            "resized workspace {} disk from {} to {}",
-            result.workspace_name,
-            render(result.previous_disk_bytes),
-            render(result.new_disk_bytes)
-        );
+    match (result.previous_disk_bytes, result.new_disk_bytes) {
+        // A workspace whose storage Enclave does not manage has no disk to report,
+        // and its memory can still have been resized. Saying nothing about the disk is
+        // better than reporting a size that was never in play.
+        (None, None) => {}
+        (Some(previous), Some(current)) if previous == current => {
+            println!(
+                "workspace {} keeps its {} disk allocation",
+                result.workspace_name,
+                render(current)
+            );
+        }
+        (Some(previous), Some(current)) => {
+            println!(
+                "resized workspace {} disk from {} to {}",
+                result.workspace_name,
+                render(previous),
+                render(current)
+            );
+        }
+        // The daemon always reports both or neither; a half-reported disk would be a
+        // bug worth seeing rather than hiding.
+        (previous, current) => println!(
+            "workspace {} disk: {previous:?} -> {current:?}",
+            result.workspace_name
+        ),
     }
     let memory = |bytes: Option<u64>| match bytes {
         Some(bytes) => render(bytes),

@@ -21,7 +21,13 @@ struct ResizePlan {
     workspace_id: String,
     sandbox: SandboxMetadata,
     workspace: WorkspaceMetadata,
-    previous_disk_bytes: u64,
+    /// The managed disk the workspace has, when it has one.
+    ///
+    /// A workspace is only disk-backed if it was created with `disk_mb`, and memory
+    /// is independent of that: a workspace whose `/home` is a host directory still has
+    /// a memory limit that can be changed. So a missing allocation is not a reason to
+    /// refuse a memory resize, and only a resize that asks to change the disk needs one.
+    previous_disk_bytes: Option<u64>,
     /// The disk the sandbox's workspaces hold apart from the one being resized.
     ///
     /// Read with the plan so the budget check and the resize describe the same
@@ -50,7 +56,7 @@ pub fn resize_workspace_with_security(
     // serialized by the daemon lease, not by this lock.
     let plan = read_resize_plan(state_dir, sandbox_selector, workspace_selector)?;
 
-    let disk_change = new_disk_bytes.filter(|bytes| *bytes != plan.previous_disk_bytes);
+    let disk_change = new_disk_bytes.filter(|bytes| Some(*bytes) != plan.previous_disk_bytes);
     let memory_change =
         new_memory_bytes.filter(|bytes| *bytes != plan.workspace.limits.memory_bytes);
 
@@ -62,6 +68,16 @@ pub fn resize_workspace_with_security(
         ));
     }
 
+    // A disk change needs a managed disk to change. This is the one place that is
+    // required, and it is required here rather than when the plan is read so a memory
+    // resize is not refused for a disk it never mentioned.
+    if disk_change.is_some() && plan.previous_disk_bytes.is_none() {
+        bail!(
+            "workspace '{}' has no Enclave-managed disk allocation; configure disk_mb when creating it",
+            plan.workspace.name
+        );
+    }
+
     // Every reason this request could be refused is checked here, before anything is
     // stopped or written. A disk resize stops the runtime, and a refusal after that
     // point would leave a workspace down for a request that was never possible.
@@ -69,7 +85,10 @@ pub fn resize_workspace_with_security(
     // A grow also has to fit the sandbox's disk budget. A shrink always fits: it
     // releases space rather than taking it.
     if let Some(new_disk_bytes) = disk_change {
-        if new_disk_bytes > plan.previous_disk_bytes {
+        if plan
+            .previous_disk_bytes
+            .is_some_and(|current| new_disk_bytes > current)
+        {
             plan.sandbox
                 .limits
                 .check_disk_budget(plan.other_workspace_disk_bytes, new_disk_bytes)?;
@@ -118,7 +137,7 @@ fn resize_workspace_image(
     new_disk_bytes: u64,
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
-) -> Result<(u64, bool)> {
+) -> Result<(Option<u64>, bool)> {
     let was_running = plan.workspace.status.is_running();
 
     // Stop the runtime before the image is touched and record the stop, so the
@@ -146,13 +165,13 @@ fn resize_workspace_image(
     if was_running {
         restart_workspace_after_resize(state_dir, plan, apparmor_profile, selinux_label)?;
     }
-    Ok((resize.new_bytes, was_running))
+    Ok((Some(resize.new_bytes), was_running))
 }
 
 impl ResizePlan {
     fn result(
         &self,
-        new_disk_bytes: u64,
+        new_disk_bytes: Option<u64>,
         new_memory_bytes: Option<u64>,
         restarted: bool,
     ) -> WorkspaceResizeResult {
@@ -198,12 +217,7 @@ fn read_resize_plan(
                 workspace.status.as_str()
             );
         }
-        let previous_disk_bytes = workspace.limits.disk_bytes.ok_or_else(|| {
-            anyhow!(
-                "workspace '{}' has no Enclave-managed disk allocation; configure disk_mb when creating it",
-                workspace.name
-            )
-        })?;
+        let previous_disk_bytes = workspace.limits.disk_bytes;
         if workspace.home_mount_source_path.is_some() {
             bail!(
                 "workspace '{}' uses a host-backed workspace directory; disk resize is only supported for Enclave-managed storage",
@@ -363,6 +377,27 @@ pub fn resize_workspace_disk(
         workspace_selector,
         Some(new_disk_bytes),
         None,
+        None,
+        None,
+    )
+}
+
+/// Resize a workspace's memory limit, where `None` removes the limit.
+///
+/// A workspace whose storage Enclave does not manage has no disk to resize, but it
+/// still has a memory limit, so this is usable on every workspace.
+pub fn resize_workspace_memory(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    new_memory_bytes: Option<u64>,
+) -> Result<WorkspaceResizeResult> {
+    resize_workspace_with_security(
+        state_dir,
+        sandbox_selector,
+        workspace_selector,
+        None,
+        Some(new_memory_bytes),
         None,
         None,
     )

@@ -250,13 +250,51 @@ enclave workspace stats   <workspace>
 | `logs` | Show workspace session logs. `--follow` continuously streams appended log output. |
 | `stats` | Show workspace resource metrics like CPU %, memory usage/limit, memory %, network I/O, block I/O, pids, and threads. |
 
-### Resize workspace storage
+### Resize a workspace
 
-`workspace resize` takes an absolute target size in MiB rather than a size delta:
+`workspace resize` takes an absolute target size in MiB rather than a size delta, and
+either limit on its own:
 
 ```bash
+# Memory is a cgroup value, so the running workspace is not interrupted.
+enclave workspace resize mybox agent1 --memory-mb 2048
+
+# A disk change stops and restarts the workspace, because an image cannot be resized
+# while it is mounted.
 enclave workspace resize mybox agent1 --disk-mb 2048
+
+# Both together is one stop, not two.
+enclave workspace resize mybox agent1 --disk-mb 2048 --memory-mb 2048
+
+# Remove a limit rather than setting one.
+enclave workspace resize mybox agent1 --no-memory-limit
 ```
+
+Both limits can be raised or lowered. A disk allocation is refused when the
+filesystem holds more data than the target, and the message names the smallest
+allocation that would work; host-backed `workspace_dir`/`path` workspaces have no
+managed disk to resize, but their memory limit can still be changed. Every reason a
+request could be refused is checked before a running workspace is stopped for it, so a
+refused resize leaves it running.
+
+### Resize a sandbox
+
+A sandbox has no image of its own: its rootfs is a shared lower layer on the host
+filesystem, so what it allocates is the sum of its workspaces' quota images. `resize`
+therefore takes the sandbox's own limits, and `--disk-mb` sets the budget those
+workspace allocations are measured against:
+
+```bash
+enclave resize mybox --memory-mb 8192
+enclave resize mybox --disk-mb 32768
+enclave resize mybox --max-procs 512
+enclave resize mybox --no-disk-budget
+```
+
+Memory and process limits are cgroup values and are applied to a running sandbox
+without restarting it. A disk budget is enforced where an allocation is granted, so a
+workspace cannot be created or grown past it, and a budget below what the sandbox's
+workspaces already allocate is refused rather than stored.
 
 ### Copy files with a workspace
 

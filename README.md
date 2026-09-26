@@ -353,14 +353,16 @@ sudo enclave resize devbox --memory-mb 8192
 sudo enclave resize devbox --disk-mb 32768
 ```
 
-Both directions work. A disk allocation can be shrunk, and a shrink that the data
+Both directions work, and `--no-memory-limit` / `--no-disk-budget` remove a limit
+instead of setting one. A disk allocation can be shrunk, and a shrink that the data
 does not fit in is refused before anything is written, naming the smallest allocation
 that would work. A sandbox's disk budget is a cap rather than a size: a sandbox rootfs
 is a shared lower layer, so what it allocates is the sum of its workspaces' images,
 and a workspace cannot be created or grown past the budget. Every reason a request
 could be refused is checked before a running workspace is stopped for it, so a refused
-resize leaves it running. See the [Command Reference](docs/commands.md) for the full
-surface.
+resize leaves it running. A memory limit is enforced by the cgroup and by the session's
+address-space limit, and both are moved together, so a raise is usable without a
+restart. See the [Command Reference](docs/commands.md) for the full surface.
 
 ## Lifecycle tiers
 

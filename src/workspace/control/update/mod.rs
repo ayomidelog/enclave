@@ -83,4 +83,5 @@ pub fn update_workspace_definition(
 mod resize;
 
 pub use resize::resize_workspace_disk;
+pub use resize::resize_workspace_memory;
 pub(crate) use resize::resize_workspace_with_security;

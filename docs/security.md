@@ -98,7 +98,7 @@ Workspace runtime tracks both the PID and the process start-time ticks (`/proc/<
 
 Workspace and sandbox resource limits use a dual approach:
 
-1. **rlimit (workspace-local)**: `cpu_seconds`, `memory_mb`, `max_procs`, and `max_open_files` are applied to the workspace session process via `prlimit` / `RLIMIT_*`.
+1. **rlimit (workspace-local)**: `cpu_seconds`, `memory_mb`, `max_procs`, and `max_open_files` are applied to the workspace session process via `prlimit` / `RLIMIT_*`. `memory_mb` is the one of these that can be changed on a running workspace, and changing it writes both layers: the cgroup is rewritten and the session process's `RLIMIT_AS` is moved with it, so a raised limit is usable without a restart. Only the soft limit is written, leaving the hard limit unlimited, so a limit can still be lowered and raised again afterwards.
 2. **cgroup v2 (aggregate and steady-share)**: when the unified hierarchy is mounted at `/sys/fs/cgroup`, Enclave creates a sandbox parent cgroup plus per-workspace child cgroups and writes `memory.max`, `cpu.max`, and `pids.max`.
 
 This split is intentional:

@@ -54,6 +54,11 @@ binary alone.
   target, and the message names the smallest allocation that would work.
   `--no-memory-limit` removes a memory limit rather than setting one, spelled as a
   flag because a size of zero is refused as a size that cannot work.
+  A memory change writes both layers the limit is enforced by, the cgroup and the
+  session process's `RLIMIT_AS`, so a raise is usable without a restart; moving only
+  the cgroup left a workspace capped at the limit it had started with. A memory limit
+  can be changed on any workspace, including one whose storage Enclave does not manage
+  and which therefore has no disk to resize.
 - `enclave resize <sandbox>` for a sandbox's resource limits: `--memory-mb`,
   `--disk-mb`, and `--max-procs`, each optional and each left alone when omitted.
   Memory and process limits are applied to a running sandbox through its cgroup

@@ -27,6 +27,7 @@ pub(crate) use certificate::{
 };
 pub use cleanup::{CleanupMode, RetainedResource};
 pub use control::resize_workspace_disk;
+pub use control::resize_workspace_memory;
 pub(crate) use control::start_workspace_with_security;
 pub use control::stop_workspace_with_certificate;
 pub use control::{

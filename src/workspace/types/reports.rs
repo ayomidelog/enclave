@@ -23,8 +23,12 @@ pub struct WorkspaceExecResult {
 pub struct WorkspaceResizeResult {
     pub workspace_id: String,
     pub workspace_name: String,
-    pub previous_disk_bytes: u64,
-    pub new_disk_bytes: u64,
+    /// The managed disk before and after, where `None` is a workspace whose storage
+    /// Enclave does not manage and whose disk therefore cannot be resized.
+    #[serde(default)]
+    pub previous_disk_bytes: Option<u64>,
+    #[serde(default)]
+    pub new_disk_bytes: Option<u64>,
     #[serde(default)]
     pub previous_memory_bytes: Option<u64>,
     #[serde(default)]

@@ -12,8 +12,8 @@ use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
 };
 use enclave::workspace::{
-    create_workspace, destroy_workspace, list_workspaces, resize_workspace_disk, start_workspace,
-    stop_workspace, WorkspaceLimits,
+    create_workspace, destroy_workspace, list_workspaces, resize_workspace_disk,
+    resize_workspace_memory, start_workspace, stop_workspace, WorkspaceLimits,
 };
 
 use super::support::{
@@ -64,8 +64,8 @@ fn workspace_disk_resize_grows_running_managed_storage() {
     let result = resize_workspace_disk(&state, &sandbox.id, &workspace.id, expanded_bytes)
         .expect("resize workspace");
     assert!(result.restarted);
-    assert_eq!(result.previous_disk_bytes, initial_bytes);
-    assert_eq!(result.new_disk_bytes, expanded_bytes);
+    assert_eq!(result.previous_disk_bytes, Some(initial_bytes));
+    assert_eq!(result.new_disk_bytes, Some(expanded_bytes));
 
     let workspaces = list_workspaces(&state, Some(&sandbox.id)).expect("list workspaces");
     let resized = workspaces
@@ -293,4 +293,105 @@ fn a_refused_resize_leaves_the_workspace_running() {
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
+}
+
+/// A memory limit changed on a running workspace must reach the running process.
+///
+/// A workspace memory limit is enforced twice: by the cgroup's `memory.max`, and by
+/// `RLIMIT_AS` on the session process. The cgroup is rewritten whenever the limit
+/// changes, but the rlimit is set once when the session starts, so a raise used to
+/// move the cgroup while the process stayed capped at the limit it began with. The
+/// workspace then could not use the memory it had been given until it was restarted,
+/// which is not what the command reported.
+///
+/// This goes through the real path, so it also proves the sync is wired in rather than
+/// only that it works.
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn a_memory_resize_reaches_the_running_runtime() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-memory-resize");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-memory-resize-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    // Deliberately no disk allocation: memory is independent of storage, and a
+    // workspace whose `/home` is a plain directory still has a memory limit that can be
+    // changed. Requiring a managed disk here was a bug of its own.
+    let workspace = create_workspace(
+        &state,
+        &sandbox.id,
+        "memory",
+        WorkspaceLimits {
+            memory_bytes: Some(64 * 1024 * 1024),
+            ..WorkspaceLimits::default()
+        },
+    )
+    .expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let pid = started.runtime_pid.expect("runtime pid");
+    assert_eq!(runtime_address_space(pid), Some(64 * 1024 * 1024));
+
+    // The raise, which is the case that used to be lost.
+    let result =
+        resize_workspace_memory(&state, &sandbox.id, &workspace.id, Some(512 * 1024 * 1024))
+            .expect("raise the workspace memory limit");
+    assert_eq!(result.previous_memory_bytes, Some(64 * 1024 * 1024));
+    assert_eq!(result.new_memory_bytes, Some(512 * 1024 * 1024));
+    assert!(
+        !result.restarted,
+        "a memory change must not interrupt the workspace"
+    );
+    assert_eq!(
+        runtime_address_space(pid),
+        Some(512 * 1024 * 1024),
+        "a raised memory limit must reach the running runtime"
+    );
+
+    // The same runtime, so nothing was restarted to make this true.
+    let after = list_workspaces(&state, Some(&sandbox.id))
+        .expect("list workspaces")
+        .into_iter()
+        .find(|item| item.id == workspace.id)
+        .expect("workspace metadata");
+    assert_eq!(
+        after.runtime_pid,
+        Some(pid),
+        "the runtime must be the same one"
+    );
+
+    // And a lower limit reaches it too.
+    resize_workspace_memory(&state, &sandbox.id, &workspace.id, Some(32 * 1024 * 1024))
+        .expect("lower the workspace memory limit");
+    assert_eq!(runtime_address_space(pid), Some(32 * 1024 * 1024));
+
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// The soft address-space limit the kernel reports for `pid`, with `unlimited` read
+/// back as the infinity it means.
+fn runtime_address_space(pid: u32) -> Option<u64> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/limits")).ok()?;
+    let line = raw
+        .lines()
+        .find(|line| line.starts_with("Max address space"))?;
+    match line.split_whitespace().nth(3)? {
+        "unlimited" => Some(u64::MAX),
+        value => value.parse::<u64>().ok(),
+    }
 }
