@@ -111,8 +111,26 @@ pub fn stop_workspace_with_certificate(
         return Err(error);
     }
     let stop_runtime = crate::perf::Timer::new("workspace.stop.runtime");
-    if let Some(pid) = current.runtime_pid {
-        if let Err(error) = session::stop_session(pid, current.runtime_starttime_ticks) {
+    // A workspace left `Starting` by an interrupted launch has no pid in its
+    // record, but its session may already be running. Signalling nothing and then
+    // removing the runtime markers would leave that session with nothing on the
+    // host naming it, so the session is found the same way the launch failure path
+    // finds it: by the pid file the session wrote, or by its own command line.
+    let in_flight = (current.status == WorkspaceStatus::Starting)
+        .then(|| session::live_session_pid(&current))
+        .flatten();
+    let stop_target = current
+        .runtime_pid
+        .map(|pid| (pid, current.runtime_starttime_ticks))
+        .or_else(|| {
+            in_flight.map(|pid| {
+                // The start time is read before the signal so the stop proves it is
+                // the same process it ends rather than a reused pid.
+                (pid, session::process_starttime_ticks(pid).ok())
+            })
+        });
+    if let Some((pid, starttime_ticks)) = stop_target {
+        if let Err(error) = session::stop_session(pid, starttime_ticks) {
             drop(stop_runtime);
             let _ = journal.fail(format!("{error:#}"));
             return Err(error);

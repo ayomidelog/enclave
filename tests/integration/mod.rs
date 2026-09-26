@@ -11,6 +11,7 @@ mod destroy_contract;
 mod detached_commands;
 mod disk_lifecycle;
 mod dns_rollback;
+mod interrupted_launch;
 mod lifecycle;
 mod network_collision;
 mod network_rules;

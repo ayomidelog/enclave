@@ -14,8 +14,8 @@ use enclave::workspace::{
 };
 
 use super::support::{
-    cgroup_processes, prepare_cached_rootfs, process_starttime, root_only, state_dir,
-    workspace_cgroup_path, SandboxCleanup,
+    cgroup_processes, prepare_cached_rootfs, process_starttime, root_only, session_processes_for,
+    state_dir, workspace_cgroup_path, SandboxCleanup,
 };
 
 struct Recorded {
@@ -54,16 +54,30 @@ fn outcome<T>(result: &Result<T, anyhow::Error>) -> &'static str {
 fn assert_record_describes_the_host(
     state: &Path,
     sandbox_id: &str,
+    sandbox_path: &Path,
     workspace_id: &str,
     round: usize,
 ) {
     let record = workspace_record(state, workspace_id);
     let cgroup = workspace_cgroup_path(sandbox_id, workspace_id);
+    // The record is not the only thing that has to survive the race: a runtime the
+    // record does not name is an orphan, and it is the one outcome no later
+    // lifecycle command can clean up, because nothing describes it.
+    let live = session_processes_for(sandbox_path);
     match record.status.as_str() {
         "running" => {
             let pid = record.pid.unwrap_or_else(|| {
                 panic!("round {round}: a running workspace has no recorded pid")
             });
+            let orphaned = live
+                .iter()
+                .copied()
+                .filter(|live_pid| *live_pid != pid)
+                .collect::<Vec<_>>();
+            assert!(
+                orphaned.is_empty(),
+                "round {round}: the race left live session process(es) {orphaned:?} beside the recorded runtime {pid}"
+            );
             assert_eq!(
                 process_starttime(pid),
                 record.starttime_ticks,
@@ -85,6 +99,10 @@ fn assert_record_describes_the_host(
             );
         }
         "stopped" => {
+            assert!(
+                live.is_empty(),
+                "round {round}: a stopped workspace still has live session process(es) {live:?}"
+            );
             assert_eq!(
                 record.pid, None,
                 "round {round}: a stopped workspace still records a runtime"
@@ -161,7 +179,13 @@ fn a_stop_and_a_start_racing_on_one_workspace_settle() {
         // what the check below is about. A start that fails partway is the case
         // worth having: it is the one that rolls a reservation back, and a rollback
         // that raced a teardown is what would leave a workspace stranded.
-        assert_record_describes_the_host(&state, &sandbox.id, &workspace.id, round);
+        assert_record_describes_the_host(
+            &state,
+            &sandbox.id,
+            Path::new(&sandbox.sandbox_path),
+            &workspace.id,
+            round,
+        );
         eprintln!(
             "round {round}: stop {}, start {}",
             outcome(&stopped),

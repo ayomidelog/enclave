@@ -56,6 +56,7 @@ pub struct BatchStopResult {
     pub failed_pids: BTreeSet<u32>,
 }
 
+mod discover;
 mod helper;
 mod paths;
 mod start;
@@ -77,10 +78,11 @@ pub use paths::{
 };
 
 // Shared between the session modules above.
+pub(crate) use discover::live_session_pid;
 #[cfg(test)]
 pub(crate) use helper::{infer_workspace_helper_from_current_exe, session_helper_path};
 pub(crate) use helper::{prepare_session_helper, resolve_session_helper_source};
-pub(crate) use paths::{ensure_runtime_layout, sandbox_runtime_dir};
+pub(crate) use paths::{ensure_runtime_layout, runtime_dir, sandbox_runtime_dir};
 #[cfg(test)]
 pub(crate) use start::{launch_userns_args, session_helper_load_failure, setgroups_args};
 
