@@ -34,3 +34,40 @@ jobs:
 
       - name: Performance regression gate
         run: tools/perf/check-thresholds.sh
+
+  # The privileged suite is the only one that exercises the lifecycle end to end:
+  # it creates namespaces, mounts, loop devices, cgroups, and firewall rules, and
+  # then checks the host state each operation left behind. Everything the unit
+  # tests cover is a decision; everything this covers is what the decision did to
+  # the host, which is where a lifecycle bug actually shows up.
+  #
+  # It needs a machine it can own, because it mounts, creates interfaces, and
+  # writes to the cgroup root. A hosted runner has the kernel and the privileges,
+  # but it is shared with nothing else of ours, so running it there is the closest
+  # thing to the validation host this is developed against. The suite starts its
+  # own daemon in its own state directory for every test, so it never touches a
+  # sandbox that is already running.
+  privileged:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.0
+
+      # The fixture rootfs is built from a static shell, and the suite shells out
+      # to the same tools the daemon does.
+      - name: Install host tools the suite needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static iproute2 iptables util-linux coreutils e2fsprogs tar
+
+      - name: Build the test binaries
+        run: cargo build --tests
+
+      - name: Run the privileged integration suite
+        run: sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh
