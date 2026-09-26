@@ -252,6 +252,23 @@ not depend on how many files the cached rootfs contains.
 ./scripts/install.sh
 ```
 
+## Development
+
+```bash
+make check          # cargo fmt --check and cargo check
+make clippy         # cargo clippy --all-targets -- -D warnings
+make test-unit      # the unit suite, no privileges needed
+sudo make test-integration   # namespaces, mounts, cgroups, and firewall rules
+sudo make test-stress        # the churn and concurrency stress suites
+```
+
+The integration and stress suites are marked `#[ignore]`, because they need root
+and a host that can create namespaces, mounts, and loop devices. `make test` runs
+everything, so it needs the same privileges. Each integration test builds its own
+state directory and its own cached rootfs, so they do not touch a sandbox that is
+already running; `tools/perf/live-*.sh` follow the same rule for the live
+lifecycle benchmarks.
+
 ## Install a release binary
 
 Release binaries target x86_64 Linux and are built on Ubuntu 22.04 so they run

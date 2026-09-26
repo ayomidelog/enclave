@@ -94,3 +94,75 @@ fn remaining_mount_detail_separates_enclave_leftovers_from_foreign_mounts() {
         "{detail}"
     );
 }
+
+/// A busy mount names the processes that hold it, and their mount namespaces.
+///
+/// An EBUSY unmount reports only an errno, and the errno does not say who is in
+/// the way. The holder list is what turns it into an actionable diagnosis: the pid
+/// is the process to look at and the namespace inode is what proves the pid is the
+/// one that holds the mount rather than a reused one. The test mounts a filesystem
+/// itself and asks the same function the unmount error uses, so what it proves is
+/// that the function reads the kernel record rather than that a particular message
+/// was formatted.
+///
+/// The list is capped, so the test does not assume its own pid is in it. What it
+/// checks instead is that every entry pairs a pid with the namespace that pid is
+/// actually in, which is the property the diagnosis rests on.
+#[test]
+#[ignore = "requires root privileges and mount support"]
+fn a_busy_mount_names_its_holder_pid_and_namespace() {
+    if unsafe { libc::geteuid() } != 0 {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("enclave-unmount-holders-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the mount point");
+
+    let mount_point = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()).unwrap();
+    let source = std::ffi::CString::new("tmpfs").unwrap();
+    let fstype = std::ffi::CString::new("tmpfs").unwrap();
+    let mounted = unsafe {
+        libc::mount(
+            source.as_ptr(),
+            mount_point.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(mounted, 0, "failed to mount tmpfs at {}", dir.display());
+
+    let holders = mount_holders(&dir);
+    assert!(
+        !holders.is_empty(),
+        "a mounted path must name the processes whose mount table lists it"
+    );
+    for holder in &holders {
+        let (pid, namespace) = holder
+            .strip_prefix("pid=")
+            .and_then(|rest| rest.split_once("@"))
+            .unwrap_or_else(|| panic!("holder entry is not pid=<n>@<ns>: {holder}"));
+        let pid: u32 = pid.parse().expect("the holder entry names a pid");
+        let actual = std::fs::read_link(format!("/proc/{pid}/ns/mnt"))
+            .expect("read the holder mount namespace");
+        assert_eq!(
+            actual.to_string_lossy(),
+            namespace,
+            "the namespace in the entry is not the one pid {pid} is in"
+        );
+    }
+
+    // A path that is not a mount is nobody, so the same function answers with an
+    // empty list rather than naming every process that shares a directory name.
+    let plain = dir.join("not-a-mount");
+    std::fs::create_dir_all(&plain).expect("create a plain directory");
+    assert!(mount_holders(&plain).is_empty());
+
+    let unmounted = unsafe { libc::umount(mount_point.as_ptr()) };
+    assert_eq!(unmounted, 0, "failed to unmount {}", dir.display());
+    assert!(
+        mount_holders(&dir).is_empty(),
+        "an unmounted path must name no holder"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

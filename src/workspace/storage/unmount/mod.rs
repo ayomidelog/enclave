@@ -32,6 +32,8 @@ pub(crate) use verify::{remaining_mount_detail, workspace_owner_is_dead};
 #[cfg(test)]
 pub(crate) use crate::fsutil::parse_losetup_for_image;
 #[cfg(test)]
+pub(crate) use detach::mount_holders;
+#[cfg(test)]
 pub(crate) use detach::unmount_error;
 #[cfg(test)]
 pub(crate) use verify::{mounts_below, parse_mountinfo_mountpoints};

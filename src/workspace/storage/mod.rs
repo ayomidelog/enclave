@@ -86,6 +86,8 @@ pub(crate) use unmount::ensure_workspace_storage_unmounted_many;
 pub(crate) use unmount::loop_device_is_mounted;
 pub(crate) use unmount::loop_devices_for_image;
 #[cfg(test)]
+pub(crate) use unmount::mount_holders;
+#[cfg(test)]
 pub(crate) use unmount::mounts_below;
 #[cfg(test)]
 pub(crate) use unmount::remaining_mount_detail;
