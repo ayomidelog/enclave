@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 use enclave::operation::{load, OperationStatus};
 
 use super::support::{
-    prepare_cached_rootfs, root_only, sandbox_dir, session_processes_for, state_dir,
-    workspace_cgroup_path, workspace_dir, TestDaemon,
+    loop_devices_backing, prepare_cached_rootfs, root_only, sandbox_dir, session_processes_for,
+    state_dir, workspace_cgroup_path, workspace_dir, TestDaemon,
 };
 
 /// Every mount under the workspaces of a state directory.
@@ -128,6 +128,19 @@ struct CrashFixture {
 impl CrashFixture {
     /// Build the fixture and leave the daemon running with the workspace stopped.
     fn new(label: &str) -> Self {
+        Self::build(label, None)
+    }
+
+    /// Build the fixture with a quota-backed workspace.
+    ///
+    /// The quota tier is a different kind of storage: the workspace owns an ext4
+    /// image on a loop device rather than a directory, so a crash while it is being
+    /// torn down leaves kernel state a directory-backed workspace never has.
+    fn quota(label: &str, disk_mb: u32) -> Self {
+        Self::build(label, Some(disk_mb))
+    }
+
+    fn build(label: &str, disk_mb: Option<u32>) -> Self {
         let state = state_dir(&format!("enclave-int-crash-{label}"));
         prepare_cached_rootfs(&state, "bookworm");
         let socket_dir = std::env::temp_dir().join(format!(
@@ -149,7 +162,18 @@ impl CrashFixture {
             "--bootstrap-method",
             "cached_rootfs",
         ]);
-        daemon.cli_ok(&["workspace", "create", &sandbox_name, &workspace_name]);
+        let mut create = vec![
+            "workspace",
+            "create",
+            sandbox_name.as_str(),
+            workspace_name.as_str(),
+        ];
+        let disk_arg;
+        if let Some(disk_mb) = disk_mb {
+            disk_arg = disk_mb.to_string();
+            create.extend(["--disk-mb", disk_arg.as_str()]);
+        }
+        daemon.cli_ok(&create);
         // `workspace create` starts what it creates, so the workspace is running here.
         // Every crash test starts from the same place, a stopped workspace, which means
         // stopping it: a start of a workspace that is already running is answered from
@@ -201,6 +225,25 @@ impl CrashFixture {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if pid_file.exists() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// Block until the workspace's interface exists on the host, or give up.
+    ///
+    /// The network phase runs inside the launch, so no journal phase names it. The
+    /// interface itself does: it is created before the address is attached and the
+    /// anti-spoofing rules are installed, and the launch cannot commit until all of
+    /// that is done. Waiting for it is what puts the kill inside the window where
+    /// the host holds network state the record does not describe yet.
+    fn wait_for_veth(&self, timeout: Duration) -> bool {
+        let sandbox_id = self.sandbox_id();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if !sandbox_veths(&self.state, &sandbox_id).is_empty() {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -280,6 +323,19 @@ fn assert_recovered(fixture: &CrashFixture) {
         "recovery left the workspace cgroup {} behind",
         cgroup.display()
     );
+
+    // A quota-backed workspace owns an ext4 image on a loop device. That is kernel
+    // state a directory-backed workspace never has, and it is released by the same
+    // teardown, so a rollback that stopped early leaves the image attached with
+    // nothing left in the registry to find it by.
+    let image = Path::new(&fixture.workspace_dir()).join("fs.img");
+    if image.exists() {
+        let loops = loop_devices_backing(&image);
+        assert!(
+            loops.is_empty(),
+            "recovery left the workspace image attached to {loops:?}"
+        );
+    }
 
     let records = journal_records(&fixture.state);
     let open = records
@@ -473,4 +529,90 @@ fn a_daemon_killed_during_a_sandbox_stop_recovers() {
         );
     }
     assert_recovered(&fixture);
+}
+
+/// A daemon killed while a workspace's networking is being set up must leave a state
+/// the next start recovers from.
+///
+/// The network phase runs inside the launch and has no journal phase of its own, so
+/// the kill is timed from the interface appearing on the host. By then the veth
+/// exists and the anti-spoofing rules are being installed, and the record still does
+/// not name a runtime. A recovery that only rolled the record back would leave the
+/// interface and its rules behind, because nothing else on the host knows they are
+/// the workspace's.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn a_daemon_killed_during_network_setup_recovers() {
+    if !root_only() {
+        return;
+    }
+
+    let mut fixture = CrashFixture::new("network");
+    let child = fixture.spawn(&[
+        "workspace",
+        "start",
+        &fixture.sandbox_name,
+        &fixture.workspace_name,
+    ]);
+    assert!(
+        fixture.wait_for_veth(Duration::from_secs(20)),
+        "the start never created an interface, so killing here would test nothing"
+    );
+    fixture.daemon.kill();
+    reap(child);
+    fixture.daemon.start();
+
+    assert_recovered(&fixture);
+}
+
+/// A daemon killed while a quota-backed workspace is stopping must release the loop
+/// device as well as the mount.
+///
+/// The quota tier is the one whose storage is a real filesystem: the stop unmounts
+/// the image and then detaches the loop device behind it. A crash between the two
+/// leaves the image attached with the record already rolled back, so nothing that
+/// reads the registry can find it again.
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn a_daemon_killed_during_a_quota_workspace_stop_recovers() {
+    if !root_only() {
+        return;
+    }
+
+    let mut fixture = CrashFixture::quota("quota-stop", 64);
+    let image = fixture.workspace_dir().join("fs.img");
+    fixture.cli_ok(&[
+        "workspace",
+        "start",
+        &fixture.sandbox_name,
+        &fixture.workspace_name,
+    ]);
+    assert!(
+        !loop_devices_backing(&image).is_empty(),
+        "the running quota workspace has to own a loop device for this to test anything"
+    );
+
+    let child = fixture.spawn(&[
+        "workspace",
+        "stop",
+        &fixture.sandbox_name,
+        &fixture.workspace_name,
+    ]);
+    assert!(
+        fixture.daemon.wait_for_phase(
+            "workspace.stop",
+            "cleanup_resources",
+            Duration::from_secs(20)
+        ),
+        "the stop never reached its cleanup phase, so killing here would test nothing"
+    );
+    fixture.daemon.kill();
+    reap(child);
+    fixture.daemon.start();
+
+    assert_recovered(&fixture);
+    assert!(
+        loop_devices_backing(&image).is_empty(),
+        "recovery left the workspace image attached to a loop device"
+    );
 }
