@@ -11,6 +11,7 @@ that a lifecycle of this shape costs this much on a host like this one.
 | measured | %GENERATED% |
 | kernel | %KERNEL% |
 | cpu | %CPU% |
+| load | %LOAD% (1-minute average / CPUs) |
 | filesystem | %FILESYSTEM% |
 | rust | %RUST% |
 | binary | %BINARY% |
@@ -57,4 +58,3 @@ ENCLAVE_LIVE_ITERATIONS=%ITERATIONS% ./tools/perf/lifecycle-report.sh
 This needs a privileged host with a cached rootfs at `%ROOTFS%` and runs against
 a daemon it starts in its own state directory, so it does not touch a sandbox
 that is already running.
-

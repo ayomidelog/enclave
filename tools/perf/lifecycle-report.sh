@@ -76,6 +76,7 @@ fi
 generated=$(require date)
 kernel=$(require kernel)
 cpu=$(require cpu)
+load=$(require load)
 rust=$(require rust)
 filesystem=$(require filesystem)
 binary=$(require binary)
@@ -107,14 +108,14 @@ stop_raw=$(require RAW_SHUTDOWN_SECONDS)
 # or a $ in its prose is just prose. Substituting here rather than expanding in the
 # template is also what lets the report be read as a document on its own.
 python3 - "$script_dir/lifecycle-report.tpl" "$output" "$generated" "$kernel" "$cpu" \
-  "$filesystem" "$rust" "$binary" "$workers" "$fixture" "$iterations" "$provenance" \
+  "$load" "$filesystem" "$rust" "$binary" "$workers" "$fixture" "$iterations" "$provenance" \
   "$boot_p50" "$boot_p95" "$boot_p99" "$boot_max" "$stop_p50" "$stop_p95" \
   "$stop_p99" "$stop_max" "$boot_cold" "$shutdown_cold" "$boot_raw" "$stop_raw" \
   "$rootfs_source" <<'PY'
 import sys
 
 template, output = sys.argv[1], sys.argv[2]
-(generated, kernel, cpu, filesystem, rust, binary, workers, fixture, iterations,
+(generated, kernel, cpu, load, filesystem, rust, binary, workers, fixture, iterations,
  provenance, boot_p50, boot_p95, boot_p99, boot_max, stop_p50, stop_p95, stop_p99,
  stop_max, boot_cold, shutdown_cold, boot_raw, stop_raw, rootfs) = sys.argv[3:]
 
@@ -122,6 +123,7 @@ values = {
     "GENERATED": generated,
     "KERNEL": kernel,
     "CPU": cpu,
+    "LOAD": load,
     "FILESYSTEM": filesystem,
     "RUST": rust,
     "BINARY": binary,

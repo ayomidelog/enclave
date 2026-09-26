@@ -8,9 +8,10 @@ that a lifecycle of this shape costs this much on a host like this one.
 
 | | |
 |---|---|
-| measured | 2026-09-26T04:18:15+02:00 |
+| measured | 2026-09-26T08:43:55+02:00 |
 | kernel | Linux 6.8.0-138-generic x86_64 GNU/Linux |
 | cpu | AMD EPYC Processor (with IBPB) |
+| load | 3.20/4 (1-minute average / CPUs) |
 | filesystem | ext2/ext3 |
 | rust | rustc 1.85.0 (4d91de4e4 2025-02-17) |
 | binary | /home/ayoraph/enclave/target/release/enclave |
@@ -29,23 +30,23 @@ would describe neither.
 
 | phase | p50 | p95 | p99 | max |
 |---|---|---|---|---|
-| workspace boot | 1.465s | 1.571s | 1.571s | 1.671s |
-| sandbox shutdown | 0.592s | 0.655s | 0.655s | 0.730s |
+| workspace boot | 1.915s | 2.310s | 2.310s | 2.865s |
+| sandbox shutdown | 0.725s | 0.927s | 0.927s | 1.263s |
 
 Cold tier, first cycle only:
 
 | phase | seconds |
 |---|---|
-| workspace boot | 1.995 |
-| sandbox shutdown | 0.568 |
+| workspace boot | 2.363 |
+| sandbox shutdown | 0.656 |
 
 ## Raw samples
 
 Every sample is kept so a percentile can be re-derived rather than only read.
 
 ```
-boot_seconds = 1.995 1.521 1.671 1.562 1.438 1.468 1.571 1.410 1.448 1.368 1.436 1.465
-shutdown_seconds = 0.568 0.602 0.730 0.655 0.504 0.559 0.600 0.591 0.500 0.592 0.570 0.603
+boot_seconds = 2.363 2.058 2.865 1.848 1.675 1.915 1.886 2.152 1.652 2.310 2.025 1.751
+shutdown_seconds = 0.656 0.734 0.651 0.681 0.619 0.725 0.764 0.770 0.927 0.568 1.263 0.681
 ```
 
 ## Reproducing
@@ -57,4 +58,3 @@ ENCLAVE_LIVE_ITERATIONS=12 ./tools/perf/lifecycle-report.sh
 This needs a privileged host with a cached rootfs at `/root/.local/state/enclave/sandboxes/rootfs-cache/bookworm` and runs against
 a daemon it starts in its own state directory, so it does not touch a sandbox
 that is already running.
-
