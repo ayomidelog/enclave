@@ -42,6 +42,11 @@ pub(super) fn run_workspace_create(
     );
     print_state_transition(&response);
     println!("workspace path {}", metadata.workspace_path);
+    // Every other lifecycle command prints the operation id, and this one is the
+    // first command an operator runs against a new workspace. Without it the
+    // phases the daemon logged for this create cannot be tied to the command
+    // that produced them, which is the correlation the id exists for.
+    print_operation_id();
     Ok(())
 }
 
