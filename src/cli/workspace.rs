@@ -27,6 +27,20 @@ pub struct WorkspaceCreateArgs {
     pub disk_mb: Option<u64>,
 }
 
+/// Change a workspace's disk allocation, its memory limit, or both.
+///
+/// Each target is an absolute size in MiB, not a delta, and an omitted one is left
+/// alone. Both can be raised or lowered.
+///
+/// The two limits are applied differently, because they are different things. Memory
+/// is a cgroup value, so it is written to the running runtime and a workspace that is
+/// already running is not interrupted for it. Disk is an image and the filesystem
+/// inside it, which can only be resized with the workspace stopped, so a disk change
+/// stops the workspace and starts it again through the normal lifecycle. Asking for
+/// both does one stop rather than two.
+///
+/// A shrink is refused before anything is written when the filesystem holds more data
+/// than the target, and the message names the smallest allocation that would work.
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("target")
@@ -35,8 +49,10 @@ pub struct WorkspaceCreateArgs {
         .multiple(true)
 ))]
 pub struct WorkspaceResizeArgs {
+    /// The sandbox the workspace is in.
     #[arg(value_parser = parse_entity_name)]
     pub sandbox: String,
+    /// The workspace to resize, by id or name.
     #[arg(value_parser = parse_entity_name)]
     pub workspace: String,
     /// Target disk allocation in MiB. Omit to leave the disk alone.
