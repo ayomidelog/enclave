@@ -244,6 +244,118 @@ fn spawn_term_resistant_enclave_process() -> Child {
         .spawn()
         .expect("spawn enclave-like process")
 }
+
+/// A stop that arrives while a runtime is still inside the `exec` that makes it
+/// the runtime must wait for the command line to settle.
+///
+/// A process carries its launcher's command line from the fork until the exec
+/// finishes, and while the exec is in progress its command line reads as empty.
+/// Reading either as a record that no longer names a runtime is what made a stop
+/// clear the record without signalling anything, leaving the runtime running with
+/// nothing on the host naming it.
+#[test]
+fn a_stop_waits_for_a_runtime_that_is_still_inside_its_exec() {
+    let (mut child, launcher_dir) = spawn_runtime_that_execs_after(Duration::from_millis(150));
+    let pid = child.id();
+    let starttime = super::process_starttime_ticks(pid).expect("process starttime");
+
+    let result = stop_sessions_batch(&[(pid, Some(starttime))]).expect("batch stop");
+
+    assert!(
+        result.stopped_pids.contains(&pid),
+        "the runtime the stop waited for should be reported stopped"
+    );
+    assert!(
+        result.failed_pids.is_empty(),
+        "no target should be left running: {:?}",
+        result.failed_pids
+    );
+    assert!(
+        reaped_within(&mut child, Duration::from_secs(5)),
+        "the stop reported the runtime stopped while it was still running"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(launcher_dir);
+}
+
+/// A pid that never becomes a runtime is still resolved as a stale record, and
+/// the stop does not signal it.
+///
+/// The settle wait is a deadline rather than a wait for the process to change, so
+/// a record naming something that is not a runtime at all is cleared once the
+/// deadline passes. The process itself is left alone: it is not this daemon's to
+/// end.
+#[test]
+fn a_stop_gives_up_on_a_pid_that_never_becomes_a_runtime() {
+    let mut child = Command::new("bash")
+        .args(["-c", "sleep 300"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a process that is not a runtime");
+    let pid = child.id();
+    let starttime = super::process_starttime_ticks(pid).expect("process starttime");
+
+    let result = stop_sessions_batch(&[(pid, Some(starttime))]).expect("batch stop");
+
+    assert!(result.stopped_pids.contains(&pid));
+    assert!(
+        child.try_wait().expect("poll the child").is_none(),
+        "a process that is not an enclave runtime must not be signalled"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A process whose command line does not name a runtime yet, and becomes one
+/// after `delay` by exec'ing in place.
+///
+/// The launcher is a script file rather than a `bash -c` string, because a string
+/// would carry the runtime's name in the launcher's own command line and the window
+/// this tests would not exist. The pid and its start time survive the exec, which is
+/// what makes the process the same one the record named before and after the window.
+fn spawn_runtime_that_execs_after(delay: Duration) -> (Child, std::path::PathBuf) {
+    let launcher_dir = std::env::temp_dir().join(format!(
+        "enclave-runtime-exec-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&launcher_dir).expect("create the launcher directory");
+    let launcher = launcher_dir.join("launch.sh");
+    std::fs::write(
+        &launcher,
+        format!(
+            "#!/bin/sh\nsleep {}\nexec -a enclave-workspace-session sleep 300\n",
+            delay.as_secs_f64()
+        ),
+    )
+    .expect("write the launcher");
+    // Bash, because `exec -a` is what renames the process and it is not a POSIX
+    // `sh` feature.
+    let child = Command::new("bash")
+        .arg(&launcher)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a runtime that execs after a delay");
+    (child, launcher_dir)
+}
+
+/// Whether `child` exits within `timeout`.
+fn reaped_within(child: &mut Child, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if child.try_wait().expect("poll the child").is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
+}
+
 /// A launch that failed because the helper binary was momentarily open for
 /// writing is the one launch failure worth retrying, and it is recognized from
 /// the session log rather than from the exit status: the launcher is started

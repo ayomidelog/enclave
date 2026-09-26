@@ -1,7 +1,5 @@
 use super::*;
 
-use super::signal::StaleTarget;
-
 #[test]
 fn hostname_lowercases_name() {
     assert_eq!(workspace_runtime_hostname("MyProject"), "myproject");
@@ -123,20 +121,77 @@ fn runtime_cmdline_detection_accepts_bootstrap_helper() {
     ));
 }
 
+/// Every step of a runtime has to be recognized, not only the last one.
+///
+/// A runtime keeps one pid across the launcher, the init, the bootstrap helper, and
+/// the loop, and the pid file the daemon records is written by the init. A stop that
+/// arrived before the loop was reached used to refuse to signal the pid, clear the
+/// record, and leave the runtime running.
+#[test]
+fn runtime_cmdline_detection_accepts_every_session_step() {
+    for step in [
+        "workspace-session-launch",
+        "workspace-session-init",
+        "workspace-session-bootstrap",
+        "workspace-session-loop",
+    ] {
+        assert!(
+            looks_like_enclave_runtime_cmdline(&format!(
+                "/usr/local/bin/enclave internal {step} --workspace-id ws-1 --ready-file /tmp/ready"
+            )),
+            "the {step} step must be recognized as a workspace runtime"
+        );
+    }
+}
+
 #[test]
 fn runtime_cmdline_detection_rejects_unrelated_process() {
     assert!(!looks_like_enclave_runtime_cmdline("/usr/bin/bash -lc env"));
 }
 
 #[test]
-fn a_live_pid_that_is_not_an_enclave_runtime_is_reported_as_stale() {
+fn a_live_pid_whose_command_line_is_not_a_runtime_is_not_signallable() {
     // This test binary is alive and owned by the current user, but its command
-    // line is not an Enclave runtime, so the record naming it is stale.
+    // line is not an Enclave runtime, so it is not something this daemon may
+    // signal. It is reported as starting rather than stale because the same
+    // reading describes a runtime that has not finished its exec yet, and only a
+    // wait tells the two apart.
     let target = verify_signal_target(std::process::id(), None).expect("inspect self");
-    assert!(matches!(
-        target,
-        SignalTarget::Stale(StaleTarget::NotEnclaveProcess)
-    ));
+    assert!(matches!(target, SignalTarget::Starting));
+    assert!(!target.is_signallable());
+}
+
+#[test]
+fn a_pid_whose_command_line_names_a_runtime_is_signallable() {
+    let mut child = std::process::Command::new("bash")
+        .args(["-c", "exec -a enclave-workspace-session sleep 30"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn an enclave-like runtime");
+    let pid = child.id();
+    let starttime = process_starttime_ticks(pid).expect("runtime start time");
+
+    // The child is only recognizable once it has exec'd, which is the window the
+    // stop's settle deadline covers. Wait for it here so this test is about the
+    // classification rather than about the window.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let target = loop {
+        let target = verify_signal_target(pid, Some(starttime)).expect("inspect the runtime");
+        if target.is_signallable() {
+            break target;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the runtime never became recognizable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert!(target.is_signallable());
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]

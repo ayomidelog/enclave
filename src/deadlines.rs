@@ -170,6 +170,26 @@ pub(crate) fn session_ready() -> Deadline {
     )
 }
 
+/// How long a runtime that has been forked but has not finished the `exec` that
+/// makes it the runtime gets to become recognizable.
+///
+/// A stop reads the command line of the pid a record names to refuse a pid that is
+/// not an Enclave runtime. Between the fork that creates a runtime and the end of
+/// its `exec` there is a moment where that command line is still the launcher's or
+/// reads as empty, and a record read in that moment would be called stale and
+/// cleared while the runtime kept running. This is the window the stop waits out
+/// before it gives up on a record; it is not a wait a healthy stop pays, because a
+/// runtime that is already recognizable costs nothing.
+pub(crate) fn runtime_exec_settle() -> Deadline {
+    Deadline::resolve(
+        "runtime_exec_settle",
+        "ENCLAVE_RUNTIME_EXEC_SETTLE_MS",
+        Unit::Milliseconds,
+        Duration::from_millis(500),
+        Duration::from_secs(30),
+    )
+}
+
 /// How long a runtime gets to exit after SIGTERM before it is killed.
 pub(crate) fn runtime_term_grace() -> Deadline {
     Deadline::resolve(
@@ -244,6 +264,7 @@ pub(crate) fn describe_all() -> serde_json::Value {
     serde_json::Value::Array(
         [
             session_ready(),
+            runtime_exec_settle(),
             runtime_term_grace(),
             runtime_kill_grace(),
             loop_detach(),

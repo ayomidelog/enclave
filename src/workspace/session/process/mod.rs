@@ -181,10 +181,31 @@ fn parse_status_kb_value(raw: &str) -> Option<u64> {
     raw.split_whitespace().next()?.parse::<u64>().ok()
 }
 
+/// The command lines a workspace runtime is allowed to have.
+///
+/// A runtime is one process that becomes a series of them: the launcher that
+/// unshares the namespaces, the init that records the pid and the namespace
+/// references, the bootstrap helper that mounts and pivots, and finally the session
+/// loop. Every step keeps the pid the daemon recorded, so every step has to be
+/// recognized, not only the last one. Recognizing only the loop and the bootstrap
+/// meant a stop that arrived while the runtime was still in its init step refused to
+/// signal it, cleared the record, and left the runtime running with its cgroup, its
+/// interface, and its mounts owned by nothing.
+///
+/// `enclave-workspace-session` is not one of the steps: it is the name the test
+/// fixtures give a process to make it look like a runtime.
+const ENCLAVE_RUNTIME_CMDLINE_MARKERS: [&str; 5] = [
+    "enclave-workspace-session",
+    "workspace-session-launch",
+    "workspace-session-init",
+    "workspace-session-bootstrap",
+    "workspace-session-loop",
+];
+
 fn looks_like_enclave_runtime_cmdline(cmdline: &str) -> bool {
-    cmdline.contains("enclave-workspace-session")
-        || cmdline.contains("workspace-session-loop")
-        || cmdline.contains("workspace-session-bootstrap")
+    ENCLAVE_RUNTIME_CMDLINE_MARKERS
+        .iter()
+        .any(|marker| cmdline.contains(marker))
 }
 
 fn current_euid() -> u32 {

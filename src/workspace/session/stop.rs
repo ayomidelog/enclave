@@ -1,5 +1,8 @@
 use super::*;
 
+/// How often the settle wait re-reads the command line of a starting runtime.
+const STARTING_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
 pub fn stop_session(pid: u32, expected_starttime_ticks: Option<u64>) -> Result<()> {
     let result = stop_sessions_batch(&[(pid, expected_starttime_ticks)])?;
     if result.failed_pids.contains(&pid) {
@@ -29,34 +32,28 @@ where
     F: FnOnce(),
 {
     let mut result = BatchStopResult::default();
-    let mut pending = Vec::new();
+    let mut sorted = StopTargets::sort(targets)?;
 
-    for (pid, expected_starttime_ticks) in targets.iter().copied() {
-        if !process_matches(pid, expected_starttime_ticks) {
-            result.stopped_pids.insert(pid);
-            namespace_cache::invalidate(pid, expected_starttime_ticks);
-            if let Some(starttime_ticks) = expected_starttime_ticks {
-                persistent::invalidate(pid, starttime_ticks);
-            }
-            continue;
-        }
-        match process::verify_signal_target(pid, expected_starttime_ticks) {
-            Ok(process::SignalTarget::Signallable) => pending.push((pid, expected_starttime_ticks)),
-            Ok(process::SignalTarget::Stale(reason)) => {
-                tracing::warn!(
-                    "stale session pid {} detected ({reason}); treating as already stopped",
-                    pid
-                );
-                result.stopped_pids.insert(pid);
-                namespace_cache::invalidate(pid, expected_starttime_ticks);
-                if let Some(starttime_ticks) = expected_starttime_ticks {
-                    persistent::invalidate(pid, starttime_ticks);
-                }
-                continue;
-            }
-            Err(err) => return Err(err),
-        }
+    // A runtime that has been forked but has not finished the exec that makes it
+    // the runtime still carries its launcher's command line, and a process inside
+    // that exec reads as having none at all. Reading that moment as a stale record
+    // is what clears the record and leaves the runtime holding its cgroup, its
+    // interface, and its mounts with nothing left to name it, so the command line
+    // gets the settle deadline to arrive before the record is given up on. The
+    // deadline bounds the whole batch rather than each record, so a stop that finds
+    // several unrecognizable pids pays it once.
+    sorted.settle(crate::deadlines::runtime_exec_settle().get())?;
+    for (pid, expected_starttime_ticks) in std::mem::take(&mut sorted.starting) {
+        tracing::warn!(
+            "session pid {pid} is still not an enclave runtime after {}; treating its record as stale",
+            crate::deadlines::runtime_exec_settle().describe_timeout()
+        );
+        mark_already_stopped(&mut result, pid, expected_starttime_ticks);
     }
+    for (pid, expected_starttime_ticks) in std::mem::take(&mut sorted.stopped) {
+        mark_already_stopped(&mut result, pid, expected_starttime_ticks);
+    }
+    let pending = sorted.signallable;
 
     for (pid, _) in &pending {
         process::send_signal(*pid, libc::SIGTERM)?;
@@ -101,16 +98,98 @@ where
         if process_matches(pid, expected_starttime_ticks) {
             result.failed_pids.insert(pid);
         } else {
-            result.stopped_pids.insert(pid);
-            namespace_cache::invalidate(pid, expected_starttime_ticks);
-            if let Some(starttime_ticks) = expected_starttime_ticks {
-                persistent::invalidate(pid, starttime_ticks);
-            }
+            mark_already_stopped(&mut result, pid, expected_starttime_ticks);
         }
     }
 
     remaining.clear();
     Ok(result)
+}
+
+/// Record a pid the stop will not signal as already stopped.
+///
+/// The cached namespace descriptors and the persistent helper of a pid that is
+/// gone describe nothing, so they are dropped with the record. A pid whose
+/// command line never named a runtime has no helper, and invalidating is a no-op.
+fn mark_already_stopped(
+    result: &mut BatchStopResult,
+    pid: u32,
+    expected_starttime_ticks: Option<u64>,
+) {
+    result.stopped_pids.insert(pid);
+    namespace_cache::invalidate(pid, expected_starttime_ticks);
+    if let Some(starttime_ticks) = expected_starttime_ticks {
+        persistent::invalidate(pid, starttime_ticks);
+    }
+}
+
+/// The targets of a stop, sorted by what the stop does with each one.
+///
+/// Sorting is separate from acting because a target can change state between the
+/// two: a runtime that is still inside the exec that makes it the runtime when it
+/// is first inspected becomes recognizable a moment later, which is why the
+/// starting bucket is re-examined under a deadline instead of being given up on
+/// the first time it is seen.
+#[derive(Default)]
+struct StopTargets {
+    /// Pids to signal: alive, and recognizable as runtimes this daemon owns.
+    signallable: Vec<(u32, Option<u64>)>,
+    /// Pids that are alive and match their record, but whose command line does not
+    /// name a runtime yet.
+    starting: Vec<(u32, Option<u64>)>,
+    /// Pids whose record is stale: the process is gone, or it belongs to another
+    /// user.
+    stopped: Vec<(u32, Option<u64>)>,
+}
+
+impl StopTargets {
+    /// Sort `targets` by what the stop does with each one.
+    fn sort(targets: &[(u32, Option<u64>)]) -> Result<Self> {
+        let mut sorted = Self::default();
+        for (pid, expected_starttime_ticks) in targets.iter().copied() {
+            if !process_matches(pid, expected_starttime_ticks) {
+                sorted.stopped.push((pid, expected_starttime_ticks));
+                continue;
+            }
+            match process::verify_signal_target(pid, expected_starttime_ticks)? {
+                process::SignalTarget::Signallable => {
+                    sorted.signallable.push((pid, expected_starttime_ticks));
+                }
+                process::SignalTarget::Starting => {
+                    sorted.starting.push((pid, expected_starttime_ticks));
+                }
+                process::SignalTarget::ForeignOwner { owner_uid } => {
+                    tracing::warn!(
+                        "stale session pid {pid} detected (owned by uid {owner_uid}); treating as already stopped"
+                    );
+                    sorted.stopped.push((pid, expected_starttime_ticks));
+                }
+            }
+        }
+        Ok(sorted)
+    }
+
+    /// Re-inspect the targets whose command line had not settled, for up to
+    /// `timeout`.
+    ///
+    /// Whatever becomes recognizable joins the signallable bucket and whatever
+    /// exits joins the stopped bucket. A target that is still unrecognizable when
+    /// the deadline passes stays in the starting bucket, for the caller to report.
+    fn settle(&mut self, timeout: Duration) -> Result<()> {
+        let deadline = Instant::now() + timeout;
+        while !self.starting.is_empty() {
+            if Instant::now() >= deadline {
+                return Ok(());
+            }
+            thread::sleep(STARTING_POLL_INTERVAL);
+            let waiting = std::mem::take(&mut self.starting);
+            let settled = Self::sort(&waiting)?;
+            self.signallable.extend(settled.signallable);
+            self.starting.extend(settled.starting);
+            self.stopped.extend(settled.stopped);
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn wait_for_targets_to_exit(targets: &[(u32, Option<u64>)], timeout: Duration) {

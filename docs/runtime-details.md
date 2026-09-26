@@ -174,6 +174,7 @@ rather than after the deadline.
 | `ENCLAVE_SHUTDOWN_GRACE_SECS` | 30 | How long shutdown waits for running lifecycle operations before reporting them incomplete. Accepted in the range 1 to 600. |
 | `ENCLAVE_HOST_COMMAND_TIMEOUT_SECS` | 30 | Deadline for a host command that does not set its own. Accepted in the range 1 to 3600. |
 | `ENCLAVE_SESSION_READY_MS` | 5000 | How long a launched runtime gets to publish its pid and ready files. Accepted in the range 1 to 120000. |
+| `ENCLAVE_RUNTIME_EXEC_SETTLE_MS` | 500 | How long a stop waits for the command line of a pid it was told about to name a runtime. Accepted in the range 1 to 30000. |
 | `ENCLAVE_RUNTIME_TERM_GRACE_MS` | 500 | How long a runtime gets to exit after `SIGTERM` before it is killed. Accepted in the range 1 to 30000. |
 | `ENCLAVE_RUNTIME_KILL_GRACE_MS` | 500 | How long a killed runtime gets to disappear before the stop reports failure. Accepted in the range 1 to 30000. |
 | `ENCLAVE_LOOP_DETACH_MS` | 2000 | How long a workspace image's loop device gets to detach after its mount is released. Accepted in the range 1 to 60000. |
@@ -197,6 +198,18 @@ start in under 3 seconds, while 32 workspaces exceed the default and report
 runtime, and the message now names the deadline with its variable and ceiling so
 that is visible from the error. Raise `ENCLAVE_SESSION_READY_MS` when starting
 many workspaces at once, or lower `ENCLAVE_UP_WORKERS` so fewer start in parallel.
+
+The deadline that exists for a moment rather than for a slow host is
+`ENCLAVE_RUNTIME_EXEC_SETTLE_MS`. A stop refuses to signal a pid whose command
+line does not name an Enclave runtime, and a runtime carries its launcher's
+command line from the fork that created it until the exec that makes it the
+runtime has finished — during that exec the command line reads as empty. Reading
+that moment as a stale record cleared the record without signalling anything and
+left the runtime holding its cgroup, its interface, and its mounts with nothing
+left to name it. The stop now waits this long for the command line to settle
+before it gives up on the record. A runtime that is already recognizable costs
+nothing, so only a stop of a record that names something which is not a runtime
+at all pays the wait.
 
 Deadlines for jobs that are minutes long and have their own supervision —
 `debootstrap`, rootfs copies, snapshot archives — are not in this table. They are

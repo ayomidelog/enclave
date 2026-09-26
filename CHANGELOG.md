@@ -102,6 +102,20 @@
 
 ### Fixed
 
+- A stop no longer clears the record of a runtime that is still inside the `exec`
+  that makes it the runtime. A process carries its launcher's command line until
+  that exec finishes, and reads as having none at all while it is in progress, so a
+  stop that arrived in that window called the record stale, reported the workspace
+  stopped, and left the runtime running with its cgroup, its interface, and its
+  mounts owned by nothing. A stop now waits a bounded
+  `ENCLAVE_RUNTIME_EXEC_SETTLE_MS` for the command line to settle before it gives
+  up on the record, which is what makes a stop of a workspace that was just started
+  reliable on a loaded host.
+- The command lines a workspace runtime may have cover every step of it. The
+  launcher, the in-namespace init, the bootstrap helper, and the session loop all
+  keep the one pid the daemon recorded, and only the last two were recognized, so a
+  stop that arrived while the runtime was still in its init step refused to signal
+  it and cleared the record instead.
 - A start that never commits no longer leaves a live session running. A launch that
   fails before its session reports ready, and a stop of a workspace left `starting`,
   both end the session the launch started, finding it by the pid file it wrote or by

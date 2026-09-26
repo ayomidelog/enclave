@@ -28,32 +28,31 @@ pub(in crate::workspace::session) fn send_signal(pid: u32, signal: i32) -> Resul
 
 /// Whether a recorded pid is one this process may signal.
 ///
-/// A pid that is alive but is not an Enclave runtime this process owns means the
-/// record that named it is stale, which is a different outcome from the check
-/// itself failing. Callers decide what to do with that, so the distinction is a
-/// type rather than a substring of the message.
+/// A pid that is alive but is not something this process may end means the record
+/// that named it is stale, which is a different outcome from the check itself
+/// failing. Callers decide what to do with that, so the distinction is a type
+/// rather than a substring of the message. One of the outcomes is a moment rather
+/// than a verdict, because a runtime that was just spawned does not look like one
+/// yet, and only the caller knows whether waiting is worth it.
 pub(in crate::workspace::session) enum SignalTarget {
     /// The pid is an Enclave runtime this process owns.
     Signallable,
-    /// The pid is not an Enclave runtime this process owns.
-    Stale(StaleTarget),
-}
-
-/// Why a recorded pid is not signallable.
-pub(in crate::workspace::session) enum StaleTarget {
-    /// The pid belongs to another user.
+    /// The pid is alive and matches the record, but its command line does not
+    /// name a runtime.
+    ///
+    /// A process carries its launcher's command line from the `fork` that created
+    /// it until the `exec` that makes it the runtime has finished, and while that
+    /// `exec` is in progress `/proc/<pid>/cmdline` reads as empty or as a
+    /// half-copied argument vector. A runtime is therefore in this state for a
+    /// moment after it is spawned, and a process that is not a runtime is in it for
+    /// as long as it lives. Waiting is the only thing that tells the two apart, so
+    /// the wait belongs to the caller: this outcome reports what the pid looks like
+    /// now, and the caller decides how long to wait before it calls the record
+    /// stale.
+    Starting,
+    /// The pid belongs to another user, so it cannot be a runtime this process
+    /// started and the record that named it is stale.
     ForeignOwner { owner_uid: u32 },
-    /// The pid exists but its command line is not an Enclave runtime.
-    NotEnclaveProcess,
-}
-
-impl std::fmt::Display for StaleTarget {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ForeignOwner { owner_uid } => write!(formatter, "owned by uid {owner_uid}"),
-            Self::NotEnclaveProcess => write!(formatter, "not an enclave runtime process"),
-        }
-    }
 }
 
 impl SignalTarget {
@@ -85,7 +84,7 @@ pub(in crate::workspace::session) fn verify_signal_target(
         .with_context(|| format!("failed to parse uid in {}", status_path))?;
     let current_uid = current_euid();
     if current_uid != 0 && owner_uid != current_uid {
-        return Ok(SignalTarget::Stale(StaleTarget::ForeignOwner { owner_uid }));
+        return Ok(SignalTarget::ForeignOwner { owner_uid });
     }
 
     let cmdline_path = format!("/proc/{pid}/cmdline");
@@ -93,7 +92,7 @@ pub(in crate::workspace::session) fn verify_signal_target(
         fs::read(&cmdline_path).with_context(|| format!("failed to read {}", cmdline_path))?;
     let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
     if !looks_like_enclave_runtime_cmdline(&cmdline) {
-        return Ok(SignalTarget::Stale(StaleTarget::NotEnclaveProcess));
+        return Ok(SignalTarget::Starting);
     }
 
     Ok(SignalTarget::Signallable)
