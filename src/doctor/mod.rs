@@ -54,6 +54,11 @@ pub struct DoctorRepairReport {
     #[serde(default)]
     pub foreign_stale_mounts: Vec<String>,
     pub reconciled_workspace_mounts: usize,
+    /// Workspace records whose persisted lifecycle state disagreed with what was
+    /// actually running and which were brought back in line, such as a start that
+    /// was interrupted before it could commit.
+    #[serde(default)]
+    pub reconciled_runtime_records: usize,
     #[serde(default)]
     pub removed_stale_workspace_cgroups: usize,
     #[serde(default)]
@@ -196,6 +201,14 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
     };
     let registry = repair_registry(state_dir, false)?;
 
+    // Repair fixes the registry against what is on disk; this brings the
+    // persisted lifecycle state back in line with what is actually running. Both
+    // belong here because both answer the same question an operator is asking
+    // when they run repair: make the records describe the host. Without it a
+    // workspace left `starting` by an interrupted launch stays `starting`
+    // forever, and the check that reports it names a problem repair cannot fix.
+    let reconciled_runtime_records = crate::sandbox::reconcile_runtime_state(state_dir)?;
+
     let daemon_state_consistent = crate::daemon::state_lock::read_state_lock_record(state_dir)?
         .is_some_and(|record| {
             record.pid == std::process::id()
@@ -216,6 +229,7 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         unmounted_stale_mounts: stale_mounts.unmounted,
         foreign_stale_mounts: stale_mounts.foreign,
         reconciled_workspace_mounts,
+        reconciled_runtime_records,
         removed_stale_workspace_cgroups,
         removed_stale_firewall_rules,
         daemon_state_consistent,

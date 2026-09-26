@@ -11,7 +11,8 @@ use enclave::workspace::{
 };
 
 use super::support::{
-    prepare_cached_rootfs, process_starttime, root_only, state_dir, workspace_cgroup_path,
+    prepare_cached_rootfs, process_starttime, root_only, sandbox_dir, state_dir,
+    workspace_cgroup_path, workspace_dir, TestDaemon,
 };
 
 /// Repair must not delete a workspace whose metadata file is gone while its
@@ -166,4 +167,109 @@ fn repair_rebuilds_a_workspace_record_the_registry_lost() {
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
+}
+
+/// A repair has to resolve an interrupted transition, not only report it.
+///
+/// A launch writes the record `starting` before it does any host work, so a daemon
+/// killed during one leaves a record describing an operation nobody is running. The
+/// read-only doctor names it, which is what an operator sees first, but naming it is
+/// not fixing it: the record stays `starting` and the same finding comes back on every
+/// run. Repair is the command that is asked to make the records describe the host, so
+/// the rollback belongs to it as much as to the next daemon start.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn doctor_repair_rolls_back_a_workspace_left_mid_transition() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-doctor-repair-transition");
+    prepare_cached_rootfs(&state, "bookworm");
+    let socket_dir = std::env::temp_dir().join(format!(
+        "enclave-int-doctor-repair-transition-socket-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&socket_dir);
+    fs::create_dir_all(&socket_dir).expect("create the socket directory");
+
+    let mut daemon = TestDaemon::new(&state, &socket_dir);
+    daemon.start();
+    daemon.cli_ok(&[
+        "create",
+        "repairbox",
+        "--suite",
+        "bookworm",
+        "--bootstrap-method",
+        "cached_rootfs",
+    ]);
+    daemon.cli_ok(&["workspace", "create", "repairbox", "dev"]);
+    daemon.cli_ok(&["workspace", "stop", "repairbox", "dev"]);
+
+    let sandbox_dir = sandbox_dir(&state, "repairbox");
+    let workspace_dir = workspace_dir(&sandbox_dir, "dev");
+
+    // Leave the record mid-transition the way an interrupted launch does, with the
+    // address already reserved. Both copies are written, because repair adopts the
+    // on-disk one and a disagreement would be resolved before the rollback ran.
+    for path in [
+        state.join("registry.json"),
+        workspace_dir.join("workspace.json"),
+    ] {
+        let raw = fs::read_to_string(&path).expect("read the record");
+        let rewritten = rewrite_workspace_status(&raw, "starting");
+        fs::write(&path, rewritten).expect("write the record");
+    }
+
+    // The read-only doctor sees it, which is the report an operator gets first.
+    let before = daemon.cli(&["workspace", "status", "repairbox", "dev"]);
+    assert!(
+        String::from_utf8_lossy(&before.stdout).contains("status: starting"),
+        "the fixture has to leave the workspace transitional"
+    );
+
+    let repaired = daemon.cli(&["doctor", "--repair"]);
+    assert!(
+        repaired.status.success(),
+        "doctor --repair failed: {}",
+        String::from_utf8_lossy(&repaired.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&repaired.stdout).expect("parse the repair report");
+    assert_eq!(
+        report["reconciled_runtime_records"].as_u64(),
+        Some(1),
+        "repair must roll the interrupted transition back, not only report it: {report}"
+    );
+
+    let after = daemon.cli(&["workspace", "status", "repairbox", "dev"]);
+    assert!(
+        String::from_utf8_lossy(&after.stdout).contains("status: stopped"),
+        "the workspace is not settled after repair: {}",
+        String::from_utf8_lossy(&after.stdout)
+    );
+
+    daemon.cli_ok(&["destroy", "--force", "repairbox"]);
+    drop(daemon);
+    let _ = fs::remove_dir_all(&state);
+    let _ = fs::remove_dir_all(&socket_dir);
+}
+
+/// Rewrite the `status` field of a workspace record, in either of its two shapes.
+///
+/// The registry nests the workspace under its sandbox; the on-disk copy is the
+/// workspace itself. Only the status is changed, so the rest of the record stays
+/// exactly as the daemon wrote it.
+fn rewrite_workspace_status(raw: &str, status: &str) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(raw).expect("parse the record");
+    let target = match value.get_mut("sandboxes").and_then(|v| v.as_object_mut()) {
+        Some(sandboxes) => sandboxes
+            .values_mut()
+            .find_map(|sandbox| sandbox.get_mut("workspaces")?.as_object_mut())
+            .and_then(|workspaces| workspaces.values_mut().next())
+            .expect("the registry holds the workspace"),
+        None => &mut value,
+    };
+    target["status"] = serde_json::Value::String(status.to_string());
+    serde_json::to_string_pretty(&value).expect("serialize the record")
 }
