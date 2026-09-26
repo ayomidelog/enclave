@@ -266,3 +266,12 @@ what a user downloads rather than the binary in the build directory.
 
 The release also attaches the committed lifecycle report to the GitHub release and
 keeps it as a run artifact, so the numbers a release claims travel with it.
+
+Preparing a release means bumping `Cargo.toml` and `Cargo.lock`, moving the entries
+under `Unreleased` into a dated section, and leaving `Unreleased` in place for what
+comes next. The version says what an operator has to do: a change to durable state or
+to the daemon protocol is a major version, because a registry written by a newer
+Enclave is refused rather than guessed at and a strict client has to accept the new
+fields. Such a release needs a `Breaking` section at the top of its changelog entry
+and the upgrade path in the README updated to match. 2.0.0 is the example: the
+registry gained a schema version, and every response gained an operation id.

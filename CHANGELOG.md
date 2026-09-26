@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+## 2.0.0 - 2026-09-26
+
+### Breaking
+
+This release changes durable state and the daemon protocol, so it is a major
+version rather than a minor one. Each of these is something an operator has to know
+about before upgrading, and none of them is reversible by reinstalling the previous
+binary alone.
+
+- **The registry is versioned, and an upgrade is one way.** A registry written by a
+  newer Enclave is refused with the version it declares rather than guessed at, so
+  rolling back to 1.0.8 after this release has written state requires restoring the
+  state directory from a backup. An older schema is migrated in memory on the read
+  path and persisted by the next mutation, so a read-only command never rewrites the
+  file.
+- **Every daemon response carries an `operation_id`, and a failure carries a
+  `code`.** A client that deserializes responses strictly has to accept the new
+  field, and one that matched on error message text should switch to the code, which
+  is stable across message changes. A request accepts an optional `operation_id` so
+  a caller can correlate a retry with the attempt it repeats.
+- **Workspace cgroups are named from the sandbox and workspace ids**
+  (`enclave-ws-<sandbox>-<workspace>`) rather than from the runtime pid. Tooling that
+  scraped the pid-derived path sees different names. The legacy cgroup is still found
+  and removed, so an upgrade does not orphan one.
+- **Bridge and NAT rules are comment-tagged and installed by generation.** The first
+  start after the upgrade retires the previous generation's shared rules rather than
+  stacking a second copy, so a host whose firewall is managed by other tooling should
+  have Enclave's rules reviewed afterwards.
+- **Every lifecycle wait is bounded.** An operation that used to wait indefinitely
+  now fails on a deadline, and the failure names the variable that raises it. A host
+  slower than the defaults has to raise the value; the whole table is in
+  [Runtime details](docs/runtime-details.md).
+- **`wipe` and `workspace wipe` fail when their confirmation cannot be read.** A
+  command with no terminal used to print `aborted` and exit zero without deleting
+  anything, so a script took the status for a completed teardown. It now exits
+  non-zero and says nothing was deleted. Supplying the two answers on standard input
+  is the supported way to script it.
+
 ### Added
 
 - A lifecycle journal. Every lifecycle operation runs under one operation id, which

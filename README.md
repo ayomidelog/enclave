@@ -90,6 +90,31 @@ The installer builds the release binary with cargo and installs it to
 `rust-toolchain.toml`; [CONTRIBUTING.md](CONTRIBUTING.md) covers the development
 setup, and [Requirements](#requirements) below covers the kernel side.
 
+## Upgrading
+
+From a checkout, `./scripts/update.sh` pulls, reinstalls, and restarts the daemon:
+
+```bash
+cd enclave
+./scripts/update.sh
+```
+
+**Back up the state directory first if you are coming from 1.x.** 2.0.0 versions the
+registry, and a registry written by a newer Enclave is refused rather than guessed
+at, so going back to 1.x afterwards means restoring the state directory from that
+backup. Stopping the daemon first is enough to make the copy quiet: a workspace
+runtime outlives the daemon, so this does not interrupt anything running.
+
+```bash
+sudo enclave daemon stop
+sudo cp -a /root/.local/state/enclave /root/.local/state/enclave.1.x.bak
+```
+
+2.0.0 also bounds every lifecycle wait, so a host slower than the defaults can fail a
+start that used to succeed. The failure names the variable that raises it; the whole
+table is in [Runtime details](docs/runtime-details.md). [CHANGELOG.md](CHANGELOG.md)
+lists the rest of what changed.
+
 ## Quickstart
 
 **Every command here needs root.** Enclave starts its daemon on first use, so there
