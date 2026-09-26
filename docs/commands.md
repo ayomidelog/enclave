@@ -97,7 +97,7 @@ enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/rele
 ## Sandbox
 
 ```bash
-enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs]
+enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs] [--memory-mb N] [--cpu-percent N] [--max-procs N] [--disk-mb N]
 enclave start   <sandbox>
 enclave stop    <sandbox>
 enclave pause   <sandbox>
@@ -354,6 +354,7 @@ When creating a sandbox, you can set aggregate sandbox resource limits:
 | `--cpu-percent N` | Maximum steady CPU share as a percentage of total machine CPU capacity. |
 | `--memory-mb N` | Maximum aggregate memory for all workspace processes in the sandbox (`memory.max`, cgroup v2). |
 | `--max-procs N` | Maximum aggregate process count for the sandbox (`pids.max`, cgroup v2). |
+| `--disk-mb N` | Total disk budget for the sandbox's workspaces. A sandbox rootfs is a shared lower layer rather than an image, so this caps the sum of its workspaces' `disk_mb` allocations and is enforced when a workspace is created or grown. Change it later with `enclave resize`. |
 
 When creating a workspace, you can set per-workspace resource limits:
 
