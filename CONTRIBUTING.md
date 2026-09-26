@@ -126,6 +126,16 @@ wrote. A registry record saying `stopped` is a claim; `/proc/self/mountinfo` and
 this, and a test that says a resource is gone should ask the kernel, not the
 daemon.
 
+A crash-recovery test has one more thing to prove: that the kill landed in the
+window it names. The window between a runtime launching and the record that names it
+is a few filesystem writes wide, so a test that reacts to a journal phase marker is
+racing the daemon to close it, and on a fast runner the daemon wins — the assertion
+then fails over a workspace that recovery was right to keep, and the test only looks
+flaky. Hold the registry lock instead: committing a transition is the one step that
+takes it, so the daemon cannot close the window while the guard is held, and a test
+that reads the registry before it kills can assert the state it meant to crash in.
+`tests/integration/crash_recovery/` does this for a start's commit window.
+
 Add a test when it proves something a reader would otherwise have to take on
 trust: a bug you fixed, a contract another module depends on, or an invariant a
 refactor could quietly break. A test that restates the implementation is noise.

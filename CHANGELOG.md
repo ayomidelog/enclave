@@ -191,6 +191,14 @@ binary alone.
   `ENCLAVE_RUNTIME_EXEC_SETTLE_MS` for the command line to settle before it gives
   up on the record, which is what makes a stop of a workspace that was just started
   reliable on a loaded host.
+- A stop no longer aborts when a process it was told about exits while it is being
+  inspected. The liveness check and the read of the process's `/proc` entry are two
+  separate moments, and a runtime that exited between them made the second read fail
+  with `ENOENT`, which propagated out of the stop and released nothing: the runtime's
+  cgroup, its mounts, and its interface all stayed behind while the command reported
+  a failure. A read that finds the process gone is now the answer rather than an
+  error, and one pid that cannot be read no longer leaves the rest of a batch
+  unsignalled.
 - The command lines a workspace runtime may have cover every step of it. The
   launcher, the in-namespace init, the bootstrap helper, and the session loop all
   keep the one pid the daemon recorded, and only the last two were recognized, so a
