@@ -89,7 +89,53 @@ flowchart LR
 - Re-running `enclave up` when the sandbox exists skips sandbox creation, re-applies setup commands, and starts workspaces.
 - `--rebuild` forces sandbox recreation and reruns setup from scratch.
 
+## Lifecycle State And Recovery
+
+A lifecycle operation is a durable transaction, not a sequence of calls. Each one
+runs under an operation id, records its target and current phase in a journal file
+under `<state_dir>/operations/`, and reports that id back to the caller. The id ties
+the command a user ran to the journal record, the log lines, and the phase timings
+for the same operation.
+
+The registry records transitional states so a crash is never ambiguous:
+
+| Resource | States |
+|---|---|
+| Sandbox | `starting`, `running`, `paused`, `stopping`, `stopped` |
+| Workspace | `starting`, `running`, `stopping`, `stopped` |
+
+A transitional state means an operation is in flight and the recorded runtime
+identity may not be final yet. Nothing else may start a competing operation on that
+resource, and a daemon that starts and finds one resolves it deterministically:
+an interrupted start is rolled back and an interrupted stop is completed, never
+resumed. Resuming a half-started runtime would adopt a process whose identity the
+record does not prove.
+
+Cleanup is proved rather than asserted. A stop captures the resources the workspace
+owns before it signals anything, then verifies the host afterwards — runtime pid and
+start time, cgroup, mounts, loop device, veth interface, firewall rules, namespace
+reference files, and files — and refuses to record `stopped` while any of them is
+still held. A destroy runs the same check before it removes the workspace directory.
+The result is that a recorded state is evidence about the host, not a claim about
+what the code intended to do.
+
+Recovery follows the same rule from the other side. A workspace whose record says
+`running` but whose runtime is dead has the resources that runtime owned released
+before the record is cleared, because the record is the only description of them.
+Nothing is deleted through a mount Enclave did not create, and nothing is signalled
+without proof of identity: a pid is only acted on when its start time, and where it
+exists its namespace inode, still match what was recorded.
+
+One case is worth naming because it is easy to get wrong. A workspace records its
+runtime pid only when a launch commits, so there is a window in which a session is
+running and no record names it. A stop that arrives in that window, and a launch that
+fails in it, both find the session by the pid file it wrote or by its own command
+line, and end it. Without that, the session keeps running with its namespaces, its
+mounts, and its private `/tmp` after the record has been rewritten as stopped, and
+nothing on the host describes it any more.
+
 ## Namespace Handoff (workspace enter / exec)
+
 
 Both `workspace enter` and `workspace exec` use a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that uses identity-checked cached descriptors when available, calls `setns()`, and executes directly inside the workspace namespaces. Descriptors are reopened when the PID start time or namespace identities change. This means output streams in real-time and the daemon does not proxy process stdio.
 
@@ -133,28 +179,37 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 
 | Module | Purpose |
 |--------|---------|
-| `src/cli.rs` | Clap argument definitions |
-| `src/commands/*` | CLI command handlers (sandbox, workspace, enclavefile, daemon, ps) |
+| `src/cli/` | Clap argument definitions |
+| `src/commands/` | CLI command handlers (sandbox, workspace, enclavefile, daemon, ps, rootfs, policy) |
 | `src/commands/workspace/enter.rs` | `workspace enter` and `workspace exec` frontend that launches the internal runtime helper |
-| `src/commands/internal.rs` | Hidden internal commands for hardened session loops and runtime namespace entry |
+| `src/commands/internal/` | Hidden internal commands for hardened session loops, runtime namespace entry, and persistent command helpers |
 | `src/client.rs` | Unix socket JSON client |
-| `src/daemon/mod.rs` | Daemon main loop, connection handling |
+| `src/daemon/mod.rs` | Daemon main loop, shutdown, and connection handling |
+| `src/daemon/dispatch/` | Action routing and parameter extraction |
+| `src/daemon/workers/` | Bounded control and transfer worker pools with separate quality-of-service queues |
+| `src/daemon/leases.rs` | Per-sandbox lifecycle serialization |
+| `src/daemon/active_operations.rs` | The lifecycle operations in flight, named for shutdown reporting |
 | `src/daemon/state_lock.rs` | Exclusive state-directory daemon ownership lock and metadata record |
-| `src/daemon/dispatch.rs` | Action routing and parameter extraction |
 | `src/daemon/rate_limiter.rs` | Per-UID request rate limiting |
-| `src/registry.rs` | Atomic JSON state persistence with file locking |
-| `src/policy/*` | Policy engine (allow/deny rules, UID matching) |
-| `src/sandbox/*` | Sandbox lifecycle (create, start, stop, destroy) |
-| `src/workspace/*` | Workspace lifecycle, sessions, snapshots, process status |
-| `src/network/*` | Network namespace setup (bridge, isolated veth ports, NAT, IPAM, DNS, loopback port publishing, host-network cache) |
+| `src/registry/` | Atomic JSON state persistence, file locking, schema migration, and repair |
+| `src/operation/` | The lifecycle journal: operation ids, records, phases, and retention |
+| `src/policy/` | Policy engine (allow/deny rules, UID matching) |
+| `src/sandbox/` | Sandbox lifecycle, rootfs bootstrap and cache, and the sandbox cgroup |
+| `src/workspace/` | Workspace lifecycle, sessions, storage, snapshots, cleanup certificates, and process status |
+| `src/workspace/control/` | The workspace lifecycle state machine: start, stop, destroy, resize, and reconcile |
+| `src/workspace/certificate/` | The verified host-state record a stop and destroy produce |
+| `src/workspace/inventory/` | The resources a workspace owns, captured before cleanup and compared after |
+| `src/workspace/session/` | Workspace session launch, readiness, namespace handoff, and runtime discovery |
+| `src/workspace/storage/` | Managed and quota-backed workspace storage, mounts, and unmount verification |
+| `src/network/` | Network namespace setup (bridge, isolated veth ports, NAT, IPAM, DNS, loopback port publishing) |
+| `src/doctor/` | System diagnostics: registry, mounts, cgroups, networking, loop devices, orphan runtimes, the journal, and host capabilities |
+| `src/hostcmd/` | Every host command, run under a bounded deadline with structured errors |
+| `src/perf/` | Phase timers, counters, and histograms for the lifecycle |
+| `src/deadlines.rs` | The configurable, bounded lifecycle deadlines |
+| `src/error.rs` | Machine-readable error codes carried through the error chain |
 | `src/enclavefile.rs` | Enclavefile TOML parsing and scaffolding |
 | `src/config.rs` | Configuration file loading |
-| `src/doctor.rs` | System diagnostics (registry, mounts, cgroups, runtime state) |
 | `src/paths.rs` | Default path helpers (socket, state dir, pid file) |
 | `src/logging/` | Tracing/tracing-subscriber setup (ENCLAVE_LOG env filter) |
-| `src/fsutil.rs` | Atomic writes, file locking, path validation, slugify |
+| `src/fsutil/` | Atomic writes, file locking, path validation, and mountinfo parsing |
 | `src/protocol.rs` | JSON request/response wire format |
-| `src/workspace/session/mod.rs` | Workspace session lifecycle, sandbox-local session-helper cache, namespace handoff, and runtime bootstrap |
-| `src/workspace/session/security.rs` | Capability dropping, read-only remounts, and seccomp filter setup |
-| `src/workspace/session/userns.rs` | Subordinate UID/GID range detection for user namespace planning |
-| `src/workspace/session/idmap.rs` | Idmapped mount option generation for workspace source mounts |

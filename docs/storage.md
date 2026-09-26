@@ -92,6 +92,7 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - Managed workspace `/tmp` can be cleared after a successful workspace or sandbox stop by setting `clear_tmp_on_restart = true` in the workspace's Enclavefile section. The setting is opt-in. If mount cleanup fails, Enclave leaves the directory intact and logs the cleanup error rather than deleting through a potentially live mount.
 - Quota-backed workspace storage is initialized and mounted when the workspace is created so the returned `filesystem_path` always refers to the actual ext4 data volume, even before the runtime is started.
 - An existing quota-backed allocation can be increased with `enclave workspace resize <sandbox> <workspace> --disk-mb N`; the command grows both the sparse image and its ext4 filesystem and updates the persisted workspace limit.
+- A resize that cannot finish leaves the image and its filesystem agreeing. The growth checks the filesystem before growing it, and a failure at any step rolls the image back to the size it had, so a workspace is never left with an image larger than the filesystem inside it.
 - Resizing a running workspace temporarily stops and restarts its runtime through the normal lifecycle cleanup and hardening path. Host-backed workspace directories and allocation decreases are intentionally unsupported.
 - If `workspace_dir` is configured, Enclave mounts that directory instead.
 - Host-backed `workspace_dir`/`path` workspaces do not use the quota-backed root overlay and remain subject to the host directory's storage policy.

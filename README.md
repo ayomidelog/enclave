@@ -20,6 +20,7 @@ One file, one command, entire environment running.
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
 - [Roadmap](docs/roadmap.md)
+- [Lifecycle Latency Report](docs/lifecycle-report.md)
 - [Performance Harness](tools/perf/README.md)
 
 ## Runtime recovery
@@ -31,7 +32,9 @@ enclave doctor
 enclave doctor --repair
 ```
 
-`doctor --repair` reconciles stale registry records, workspace namespace references, mounts, and safe orphaned files. Destructive commands require a running daemon by default; use `enclave daemon start` or opt in for one command with `--start-daemon`.
+`doctor --repair` reconciles stale registry records, workspace namespace references, mounts, and safe orphaned files, and resolves an interrupted lifecycle transition rather than only reporting it: an interrupted stop is completed and an interrupted start is rolled back. Destructive commands require a running daemon by default; use `enclave daemon start` or opt in for one command with `--start-daemon`.
+
+Every lifecycle operation runs under one operation id. Mutating commands print it, a failure names it, and the id identifies the operation's durable record under the state directory's `operations/` directory, its log lines, and its phase timings. When a command reports a failure, that id is how to find what it did.
 
 ## Why Enclave exists
 I was running multiple AI agents in parallel and needed each one isolated, separate filesystem, separate processes and no cross-contamination.
@@ -59,23 +62,26 @@ That didn't exist. So I built it.
 ## Latest Verified Lifecycle Timing
 
 On the bounded eight-workspace cached-rootfs benchmark (bootstrap preparation
-excluded), as the median of seven consecutive runs:
+excluded), as the median of seven consecutive runs taken with the release binary at
+a one-minute load average of 3.0 on four CPUs:
 
-- cold workspace boot: `2.43s`
-- cold shutdown: `0.61s`
-- warm workspace boot: `2.03s`
-- warm shutdown: `0.60s`
+- cold workspace boot: `2.14s`
+- cold shutdown: `1.52s`
+- warm workspace boot: `1.95s`
+- warm shutdown: `0.75s`
 
 Each release carries a full p50/p95/p99 report taken with the binary it ships,
 along with the host it was measured on, in
 [docs/lifecycle-report.md](docs/lifecycle-report.md). Regenerate it with
 `ENCLAVE_LIVE_ITERATIONS=12 ./tools/perf/lifecycle-report.sh`, which needs a
-privileged host and a cached rootfs.
+privileged host and a cached rootfs. The committed report agrees with the medians
+above: warm boot p50 `1.92s` and warm shutdown p50 `0.73s` over twelve cycles.
 
-The validation host is shared with other work, so the spread is wide: cold boot
-ranged 2.42–3.68s, cold shutdown 0.43–0.76s, warm boot 1.91–2.10s, and warm
-shutdown 0.47–0.64s. The medians are the number to compare; the ranges are what
-a shared host does to them. Reproduce them with:
+The validation host is shared with other work, so the spread is wide and the load
+matters more than the tree does. The report records the load average and the CPU
+count it was taken under for exactly that reason. On the seven-run measurement the
+warm boot ranged 1.63–4.13s and warm shutdown 0.70–0.93s; the medians are the number
+to compare, and the range is what a shared host does to them. Reproduce them with:
 
 ```bash
 ENCLAVE_UP_WORKERS=1 ENCLAVE_CLEANUP_WORKERS=4 ./tools/perf/live-lifecycle.sh
@@ -96,6 +102,8 @@ fast tier, and it keeps the processes and their memory; see the lifecycle tiers
 section below.
 
 ## Lifecycle tiers
+
+
 
 Enclave has three ways to put a workspace away, and they preserve different things.
 Which one to use is a question about what the work inside the workspace holds that is
@@ -124,9 +132,12 @@ record. Use it when the work inside the workspace is finished with.
 The published number for each tier is measured by the benchmark under `tools/perf/`
 that exercises it: `live-lifecycle.sh` for stop and start, `live-pause.sh` for pause
 and resume, `live-quota.sh` for the storage tier whose workspace owns an ext4 image
-rather than a directory, and `live-loaded.sh` for a sandbox whose workspaces are all
-busy at once. They are separate runs because a change to one tier is not a change to
-another, and one number covering all of them would describe none of them.
+rather than a directory, `live-loaded.sh` for a sandbox whose workspaces are all
+busy at once, and `live-ports.sh` for the published-port lifecycle across all of
+them. They are separate runs because a change to one tier is not a change to another,
+and one number covering all of them would describe none of them. `live-ports.sh` is a
+correctness run rather than a measurement: the workspace layer never binds a
+listener, so the daemon has to be in the loop for the ports to exist at all.
 
 ## Snapshot Archives
 
@@ -187,7 +198,7 @@ enclave create mybox --suite bookworm
 
 ### Using a cached rootfs
 
-Import a rootfs archive to register it in the cache index. Hand-placing a directory in `rootfs-cache` can leave it unindexed when the cache index already exists. Use `--suite` for a suite-specific cache or `--base` for a generic cache:
+Import a rootfs archive to register it in the cache index. Use `--suite` for a suite-specific cache or `--base` for a generic cache:
 
 ```bash
 enclave rootfs import --suite bookworm ./bookworm-rootfs.tar.gz

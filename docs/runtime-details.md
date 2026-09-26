@@ -8,7 +8,7 @@ This page collects the lower-level runtime behavior that is useful once you are 
 - **Reproducibility via rootfs cache**: Sandbox root filesystems are bootstrapped once (via `debootstrap` or a cached base image) and shared read-only across all workspaces. Workspace-specific changes live in OverlayFS upper layers, ensuring the base environment is always reproducible.
 - **Single daemon, direct syscalls**: One daemon process manages all sandboxes and workspaces. Workspace sessions are created with direct `unshare` calls and entered through an internal namespace helper — no intermediate container runtime or orchestration layer.
 - **Post-bootstrap hardening**: After workspace bootstrap, Enclave remounts `/proc/sys` read-only, attempts to remount `/sys` read-only when the kernel permits it, drops runtime capabilities, and installs a seccomp deny list.
-- **Fail-safe cleanup**: All mount, cgroup, and network resources are cleaned up deterministically on workspace stop/destroy. The daemon reconciles stale state on startup and provides a `doctor` command for manual verification.
+- **Fail-safe cleanup**: All mount, cgroup, and network resources are cleaned up deterministically on workspace stop/destroy, and the cleanup is verified rather than assumed: a stop and a destroy each check the host afterwards and refuse to record success while anything is still held. The daemon reconciles stale state on startup and provides a `doctor` command for manual verification.
 
 ## Networking
 
@@ -209,22 +209,26 @@ It reuses a local cached rootfs, applies an eight-workspace memory/CPU/process
 budget, and excludes rootfs preparation from lifecycle timings.
 
 On the current bounded eight-workspace cached-rootfs validation, the medians of
-seven consecutive runs are approximately:
+seven consecutive runs at a one-minute load average of 3.0 on four CPUs are:
 
-- cold workspace boot: `2.43s` (2.42–3.68s)
-- cold shutdown: `0.61s` (0.43–0.76s)
-- warm workspace boot: `2.03s` (1.91–2.10s)
-- warm shutdown: `0.60s` (0.47–0.64s)
+- cold workspace boot: `2.14s` (2.14–4.13s)
+- cold shutdown: `1.52s` (0.70–1.52s)
+- warm workspace boot: `1.95s` (1.63–2.16s)
+- warm shutdown: `0.75s` (0.70–0.93s)
 
 The validation host is shared with other work, which is what widens the ranges;
-the cold-boot outlier above was measured at a load average of 3.35 on four CPUs.
-The median is the number to compare and the range is what a shared host does to
-it. These measurements are host-dependent, so use the repository benchmark to
-compare changes on the same machine rather than across machines.
+the warm-boot outlier above was measured while the host was busier than the rest of
+the run. The median is the number to compare and the range is what a shared host
+does to it. These measurements are host-dependent, so use the repository benchmark
+to compare changes on the same machine rather than across machines, and compare the
+host metadata in `docs/lifecycle-report.md` before comparing two releases.
 
 ## Stability Guarantees
 
-- **Crash recovery**: On daemon startup, Enclave reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. This handles daemon crashes, host reboots, and OOM-killed sessions without manual cleanup.
+- **Crash recovery**: On daemon startup, Enclave reconciles workspace state against the process table. Any workspace marked as `Running` whose session PID no longer exists (or whose start-time ticks do not match) is automatically transitioned to `Stopped`. A workspace left in a transitional state by an interrupted operation is resolved deterministically instead of being guessed at: an interrupted start is rolled back and an interrupted stop is completed, and neither is resumed. This handles daemon crashes, host reboots, and OOM-killed sessions without manual cleanup.
+- **Interrupted launches**: A workspace records its runtime PID only when a launch commits, so a session that is still starting is not yet named by any record. A stop that arrives in that window, and a launch that fails in it, both find that session by the pid file it wrote or by its own command line and end it, so a failed start cannot leave a live runtime holding namespaces, mounts, and a private `/tmp` that nothing on the host describes.
+- **Cleanup certificates**: A stop captures the resources the workspace owns, releases them, and then verifies the host — runtime PID and start time, cgroup, mounts, loop device, veth interface, firewall rules, namespace reference files, and files — before it records `stopped`. A destroy runs the same check before removing the workspace directory. A resource that cannot be released keeps the record transitional and names what was retained, which is what makes an interrupted teardown a recovery point rather than a silent leak.
+- **Lifecycle journal**: Every lifecycle operation runs under one operation id and writes a durable record with its target and current phase under the state directory's `operations/` directory. The id is returned to the caller and printed by mutating commands, so a command, its journal record, its log lines, and its phase timings can be tied together. A daemon start closes the records a previous daemon left open.
 - **cgroup fallback**: When cgroup v2 is not available, Enclave falls back to rlimit-only resource enforcement and logs a warning. Workspace isolation remains intact — only hard memory/PID limits are downgraded to soft rlimits.
 - **Process termination**: Workspace runtimes use dedicated cgroups when cgroup v2 is available. Shutdown allows a short graceful interval, then uses `cgroup.kill` with identity-checked signal fallback so detached workspace commands cannot survive normal cleanup.
 - **Detached run commands**: Enclavefile `run` commands launch asynchronously inside the workspace runtime cgroup. `enclave up` reports launch failures but does not wait for long-running services to exit.

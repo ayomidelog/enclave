@@ -93,7 +93,42 @@ read; a percentile of a run that was not kept cannot be checked later. The raw
 samples are also what a regression gate should compare, because a single sample
 cannot show a tail and the tail is where a lifecycle regression appears first.
 
+Publish the lifecycle latency contract a release is measured against:
+
+```bash
+ENCLAVE_LIVE_ITERATIONS=12 ./tools/perf/lifecycle-report.sh
+```
+
+It runs `live-lifecycle.sh` and writes `docs/lifecycle-report.md`, which a release
+ships: the p50/p95/p99 of the warm tier, the cold cycle on its own, every raw
+sample, and the host the numbers were taken on. A lifecycle number without its host
+is not comparable to anything, so the report carries the kernel, the CPU, the
+filesystem, the CPU count, the one-minute load average, and the binary it measured,
+and it says so when the binary was older than the tree it was meant to describe. The
+report has to be taken on a privileged host, which a hosted CI runner is not, so the
+release workflow checks the committed report against the tree rather than
+regenerating it. Point it at a different output path to keep a run rather than
+replace the committed one.
+
+Run the privileged lifecycle suite the way CI does:
+
+```bash
+sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh
+```
+
+It checks the host first — the tools the lifecycle shells out to, the kernel
+capabilities it needs, and the pinned cargo — and reports what is missing instead of
+failing partway through a suite whose failures would then be about the host rather
+than the code. Any extra arguments are passed to the test binary, so a single test
+can be run the same way:
+
+```bash
+sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh --test-threads=1 integration::lifecycle
+```
+
 Run the quota-backed lifecycle benchmark, which measures the tier whose storage
+is an ext4 image on a loop device rather than a directory:
+
 is an ext4 image on a loop device rather than a directory:
 
 ```bash

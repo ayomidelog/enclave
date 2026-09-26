@@ -42,8 +42,8 @@ enclave doctor [--repair]
 | `daemon stop` | Stop the daemon. |
 | `ping` | Send a ping to the daemon and print the response. |
 | `health` | Print daemon health information (state dir, uptime, etc.). |
-| `doctor` | Run diagnostic checks: registry consistency, orphaned mounts, stale cgroups, cgroup v2 availability, and published host ports no running workspace is using. Mounts below the state directory that Enclave did not create are reported separately and left in place. |
-| `doctor --repair` | Reconcile registry and filesystem state, remove stale workspace mounts and namespace state, and validate daemon ownership. Only mounts Enclave created are unmounted; a mount it cannot attribute to itself is reported and left alone. Requires a running daemon unless global `--start-daemon` is supplied. |
+| `doctor` | Run diagnostic checks: registry consistency, orphaned and nested workspace cgroups, orphaned mounts and sandbox rootfs mounts, workspace networking (veth interfaces, NAT rules, and anti-spoofing rules), loop devices backing workspace images, orphan runtimes whose metadata is gone, the operation journal, host capabilities, and published host ports no running workspace is using. Mounts and interfaces Enclave did not create are reported separately and left in place. |
+| `doctor --repair` | Reconcile registry and filesystem state, resolve an interrupted lifecycle transition (complete an interrupted stop, roll back an interrupted start), remove stale workspace mounts and namespace state, retire firewall rules for interfaces that are gone, and validate daemon ownership. Only mounts and rules Enclave created are released; anything it cannot attribute to itself is reported and left alone. Requires a running daemon unless global `--start-daemon` is supplied. |
 
 Destructive commands do not start a stopped daemon automatically. Start it with `enclave daemon start`, or opt in for one invocation with the global `--start-daemon` flag:
 
@@ -236,7 +236,7 @@ enclave workspace stats   <workspace>
 | `stop` | Stop a running workspace session. |
 | `destroy` | Stop and permanently delete a workspace. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List workspaces, optionally filtered by sandbox. |
-| `status` | Show detailed status for a workspace (process count, resource usage). |
+| `status` | Show detailed status for a workspace: process count, resource usage, and the storage tier it is on with the lifecycle cost that tier implies (a directory-backed workspace, or a quota-backed one whose `/home`, private `/tmp`, and root overlay live on a loop-mounted ext4 image). |
 | `remove` | Remove a workspace entry from the registry. |
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). |

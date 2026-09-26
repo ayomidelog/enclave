@@ -18,14 +18,6 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
    - Improve on the current full-copy snapshot model to reduce disk usage and restore time.
    - Keep the existing snapshot commands and retention workflow simple.
 
-4. **Richer operational visibility**
-   - Expand runtime inspection around networking, workspace health, and resource usage.
-   - Make it easier to understand what changed across many parallel workspaces.
-
-5. **Host capability diagnostics**
-   - Surface clearer checks for subordinate ID ranges, idmapped mount support, and optional AppArmor/SELinux profile availability.
-   - Make host compatibility failures easier to diagnose before `workspace start`.
-
 ## Not planned for v1.0
 
 - Rootless daemon / CLI operation
@@ -33,6 +25,30 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
 - Cross-platform support beyond Linux kernel primitives
 
 ## Recently completed
+
+- **Lifecycle observability and recovery**
+  - One operation id per lifecycle request, written to a durable journal with its
+    target and phase, returned to the caller, and printed by mutating commands.
+  - A cleanup certificate: stop and destroy verify the host afterwards and refuse to
+    record success while a runtime, cgroup, mount, loop device, interface, rule, or
+    file is still held.
+  - Transitional lifecycle states with deterministic recovery: an interrupted start
+    is rolled back and an interrupted stop is completed, never resumed.
+  - A published p50/p95/p99 lifecycle report taken with the release binary and the
+    host it was measured on, with a per-tier benchmark for each lifecycle tier.
+- **Host capability diagnostics**
+  - `enclave doctor` reports overlayfs, idmapped mounts, cgroup v2 and its
+    controllers, loop devices, the firewall, and netlink in one check, naming what is
+    lost when one is missing.
+  - It also inventories nested workspace cgroups, workspace networking, loop devices,
+    orphan runtimes, and the operation journal.
+- **Cleanup that proves itself**
+  - `enclave doctor --repair` resolves an interrupted lifecycle transition rather than
+    only reporting it.
+  - Network and cgroup teardown retries transient kernel busy states and reports the
+    attempt count, the delay, and the final errno.
+  - Published-port connections are bounded per port and in total, so a connection
+    flood is refused rather than exhausting threads.
 
 - **Runtime repair and ownership safety**
   - Exclusive state-directory daemon locking with inspectable ownership metadata.
