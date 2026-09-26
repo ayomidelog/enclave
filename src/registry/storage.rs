@@ -22,6 +22,23 @@ pub(crate) fn validate_registry_version(version: u32) -> Result<()> {
     Ok(())
 }
 
+/// The schema version the registry file declares, when it can be read at all.
+///
+/// Two failures look alike to a caller that only sees an error, and they call for
+/// opposite answers. A file that cannot be parsed is corrupt, and rebuilding it
+/// from the sandboxes tree is the documented recovery. A file that parses and
+/// declares a version this binary does not understand was written by a newer
+/// Enclave, and rewriting it would drop whatever that version recorded. This
+/// answers which one the file is: `None` means there is no version to refuse.
+pub(crate) fn declared_registry_version(state_dir: &Path) -> Option<u32> {
+    let raw = fs::read_to_string(registry_path(state_dir)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RegistryFingerprint {
     device: u64,

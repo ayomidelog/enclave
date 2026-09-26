@@ -191,3 +191,67 @@ fn repair_retains_a_workspace_directory_a_live_runtime_still_owns() {
     );
     let _ = fs::remove_dir_all(&state_dir);
 }
+
+/// A registry this binary does not understand must be refused, not rebuilt.
+///
+/// Repair rebuilds a registry it cannot load, which is the right answer for a
+/// corrupt file: the sandboxes tree is the authority and the record is a cache of
+/// it. It is the wrong answer for a file written by a newer Enclave, because that
+/// file parses and says so, and rebuilding it writes this binary's schema over
+/// whatever that version recorded. The two failures reach repair as the same kind
+/// of error, so the file itself is what has to tell them apart.
+#[test]
+fn repair_refuses_a_registry_from_a_newer_version() {
+    let state_dir = std::env::temp_dir().join(format!(
+        "enclave-registry-future-schema-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = fs::remove_dir_all(&state_dir);
+    fs::create_dir_all(&state_dir).expect("create state dir");
+
+    // A registry that parses and declares a version from the future, with a
+    // sandbox the rebuild would otherwise drop.
+    let registry = Registry {
+        version: REGISTRY_VERSION + 1,
+        ..Registry::default()
+    };
+    fs::write(
+        registry_path(&state_dir),
+        serde_json::to_string_pretty(&registry).expect("serialize"),
+    )
+    .expect("write the future registry");
+
+    let error = repair_registry(&state_dir, false)
+        .expect_err("repair must refuse a schema it does not understand");
+    assert!(
+        format!("{error:#}").contains("newer than this binary supports"),
+        "the refusal must name the version: {error:#}"
+    );
+
+    // The file is left exactly as it was found: a repair that refuses is not a
+    // repair that partially wrote.
+    let after: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(registry_path(&state_dir)).expect("read the registry back"),
+    )
+    .expect("the registry is still valid json");
+    assert_eq!(
+        after["version"].as_u64(),
+        Some(u64::from(REGISTRY_VERSION + 1)),
+        "repair rewrote a schema it refused"
+    );
+
+    // A corrupt file, which is the case repair is for, is still rebuilt.
+    fs::write(registry_path(&state_dir), "{ not json").expect("corrupt the registry");
+    repair_registry(&state_dir, false).expect("repair rebuilds a corrupt registry");
+    let rebuilt: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(registry_path(&state_dir)).expect("read the rebuilt registry"),
+    )
+    .expect("the rebuilt registry is valid json");
+    assert_eq!(
+        rebuilt["version"].as_u64(),
+        Some(u64::from(REGISTRY_VERSION))
+    );
+
+    let _ = fs::remove_dir_all(&state_dir);
+}

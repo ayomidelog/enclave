@@ -131,7 +131,18 @@ pub(super) fn handle_client(
             // the default log level: it is how an operator finds the journal
             // record for the operation that failed.
             tracing::error!(error = %format!("{err:#}"), "request failed");
-            Response::err_code(crate::error::code_of(&err), err.to_string(), operation_id)
+            // The whole chain, not only the outermost message. A lifecycle failure
+            // is usually a context wrapped around the call that actually failed
+            // ("failed to initialize workspace storage <path>: ... truncate: File
+            // too large"), and sending only the outer half leaves the client with a
+            // message that names what was attempted and not why it failed. The log
+            // line above already carries the chain; this is what makes the CLI
+            // agree with it.
+            Response::err_code(
+                crate::error::code_of(&err),
+                format!("{err:#}"),
+                operation_id,
+            )
         }
     };
     drop(_dispatch);

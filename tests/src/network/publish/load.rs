@@ -118,16 +118,32 @@ fn withdrawing_a_port_ends_its_open_connections() {
     let started = std::time::Instant::now();
     publisher.clear_workspace_ports("sb-publish", "ws-publish");
 
-    // Every client sees end of file, which is the proxy having shut the connection
-    // down rather than the client having to time out.
+    // Every client sees the connection end, which is the proxy having shut it down
+    // rather than the client having to time out.
+    //
+    // "End" covers two shapes, and the test has to accept both or it fails for a
+    // reason that is not the behaviour under test. A graceful shutdown is read as
+    // end of file. A socket closed while the peer still has data queued is read as
+    // `ECONNRESET`, which the kernel sends instead of a FIN, and which happens here
+    // whenever the withdrawal wins the race against the client reaching its read.
+    // Both mean the connection ended; only a read that times out means it hung, and
+    // that is what the assertion is for.
     for mut client in clients {
         client
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .expect("set a read timeout");
         let mut reply = Vec::new();
-        client
-            .read_to_end(&mut reply)
-            .expect("the withdrawn connection must end, not hang");
+        match client.read_to_end(&mut reply) {
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionAborted
+                ) => {}
+            Err(error) => panic!("the withdrawn connection must end, not hang: {error}"),
+        }
         assert!(
             reply.is_empty(),
             "unexpected payload after withdrawal: {reply:?}"

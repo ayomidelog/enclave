@@ -27,10 +27,18 @@ pub(super) fn run_workspace_create(
     ) {
         Ok(response) => response,
         Err(err) => {
-            if let Some(hint) =
-                existing_workspace_create_hint(ctx.socket, &sandbox_id, &workspace_name)?
-            {
-                bail!("{hint}");
+            // The hint is only for the case it describes: the name was already
+            // taken, which the daemon reports as a conflict. A create can also fail
+            // after it has recorded the workspace — a runtime that never became
+            // ready, say — and a workspace with that name exists afterwards too, so
+            // asking only whether the name is present now would answer "already
+            // exists" and hide the failure that actually happened.
+            if crate::error::code_of(&err) == crate::error::ErrorCode::Conflict {
+                if let Some(hint) =
+                    existing_workspace_create_hint(ctx.socket, &sandbox_id, &workspace_name)?
+                {
+                    bail!("{hint}");
+                }
             }
             return Err(err);
         }

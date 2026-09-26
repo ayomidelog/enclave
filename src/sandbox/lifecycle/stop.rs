@@ -73,7 +73,15 @@ pub fn pause_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadata
             .get(&sandbox_id)
             .ok_or_else(|| anyhow::anyhow!("sandbox '{}' not found", selector))?;
         if entry.metadata.status != SandboxStatus::Running {
-            bail!("sandbox '{}' is not running", selector);
+            // The state is named, not just the requirement: "not running" reads the
+            // same for a sandbox that is stopped and one that is already paused, and
+            // the two call for different commands.
+            bail!(
+                "sandbox '{}' is {}; pause needs it running (start it with `enclave start {}`)",
+                selector,
+                entry.metadata.status.as_str(),
+                selector
+            );
         }
         Ok(entry.metadata.clone())
     })?;
@@ -120,7 +128,12 @@ pub fn resume_sandbox(state_dir: &Path, selector: &str) -> Result<SandboxMetadat
             .get(&sandbox_id)
             .ok_or_else(|| anyhow::anyhow!("sandbox '{}' not found", selector))?;
         if entry.metadata.status != SandboxStatus::Paused {
-            bail!("sandbox '{}' is not paused", selector);
+            bail!(
+                "sandbox '{}' is {}; resume needs it paused (pause it with `enclave pause {}`)",
+                selector,
+                entry.metadata.status.as_str(),
+                selector
+            );
         }
         Ok(entry.metadata.clone())
     })?;

@@ -97,13 +97,18 @@ pub fn create_workspace_with_options(
 
         for existing in sandbox_entry.workspaces.values() {
             if existing.name == name {
-                bail!(
-                    "workspace name '{}' already exists in sandbox '{}' (id: {}); \
-                     choose a different name or use the existing workspace",
-                    name,
-                    sandbox_entry.metadata.id,
-                    existing.id
-                );
+                // Coded rather than plain: a name collision is a conflict, and the
+                // caller that turns it into a suggestion has to be able to tell it
+                // apart from a create that failed for another reason after it had
+                // already recorded the workspace.
+                return Err(crate::error::coded(
+                    crate::error::ErrorCode::Conflict,
+                    format!(
+                        "workspace name '{}' already exists in sandbox '{}' (id: {}); \
+                         choose a different name or use the existing workspace",
+                        name, sandbox_entry.metadata.id, existing.id
+                    ),
+                ));
             }
         }
 
@@ -252,11 +257,13 @@ pub fn create_workspace_with_options(
             .values()
             .any(|existing| existing.name == name)
         {
-            bail!(
-                "workspace name '{}' already exists in sandbox '{}'",
-                name,
-                sandbox_entry.metadata.id
-            );
+            return Err(crate::error::coded(
+                crate::error::ErrorCode::Conflict,
+                format!(
+                    "workspace name '{}' already exists in sandbox '{}'",
+                    name, sandbox_entry.metadata.id
+                ),
+            ));
         }
         sandbox_entry
             .workspaces

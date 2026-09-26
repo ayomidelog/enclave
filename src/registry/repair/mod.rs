@@ -18,7 +18,8 @@ use crate::workspace::OrphanRuntime;
 use crate::workspace::WorkspaceMetadata;
 
 use super::storage::{
-    load_registry_with_migrations, registry_lock_path, save_registry_unlocked, update_cache,
+    declared_registry_version, load_registry_with_migrations, registry_lock_path,
+    save_registry_unlocked, update_cache, validate_registry_version,
 };
 use super::{ensure_registry, MetadataDisagreement, Registry, RegistrySandbox, RepairReport};
 
@@ -62,6 +63,17 @@ pub fn repair_registry(state_dir: &Path, strict: bool) -> Result<RepairReport> {
         let (mut registry, migrations) = match load_registry_with_migrations(state_dir) {
             Ok(loaded) => loaded,
             Err(err) => {
+                // A registry written by a newer Enclave is not corrupt, and it is
+                // the one load failure that must not be rebuilt: rebuilding would
+                // write this binary's schema over a record it does not understand,
+                // dropping whatever that version stored. The read path refuses it
+                // for the same reason, so repair refuses it here rather than
+                // becoming the way around that refusal.
+                if let Some(version) = declared_registry_version(state_dir) {
+                    validate_registry_version(version).with_context(|| {
+                        "refusing to repair a registry this binary does not understand"
+                    })?;
+                }
                 tracing::warn!(
                     "registry repair is rebuilding in-memory state after registry load failure: {err:#}"
                 );
