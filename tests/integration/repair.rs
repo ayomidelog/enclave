@@ -249,6 +249,24 @@ fn doctor_repair_rolls_back_a_workspace_left_mid_transition() {
         String::from_utf8_lossy(&after.stdout)
     );
 
+    // Recovery has to be idempotent: the record is now one repair has nothing to do
+    // with, so a second run settles nothing and a third would be the same. Without
+    // this the test would pass on a repair that rolled the workspace back but left
+    // the record in a shape the next run would roll back again.
+    let second = daemon.cli(&["doctor", "--repair"]);
+    assert!(
+        second.status.success(),
+        "a second repair failed: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&second.stdout).expect("parse the second repair report");
+    assert_eq!(
+        report["reconciled_runtime_records"].as_u64(),
+        Some(0),
+        "a repair with nothing to recover still reported work: {report}"
+    );
+
     daemon.cli_ok(&["destroy", "--force", "repairbox"]);
     drop(daemon);
     let _ = fs::remove_dir_all(&state);
