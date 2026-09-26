@@ -21,8 +21,8 @@ pub use lifecycle::{
 pub(crate) use mounts::ensure_rootfs_ready_for_workspace;
 pub use types::{
     BootstrapMethod, RootfsTier, SandboxLimits, SandboxLimitsUpdate, SandboxListItem,
-    SandboxMetadata, SandboxStatus, SandboxStatusReport, DEFAULT_DEBIAN_MIRROR,
-    DEFAULT_DEBIAN_SUITE,
+    SandboxMetadata, SandboxResizeReport, SandboxStatus, SandboxStatusReport,
+    DEFAULT_DEBIAN_MIRROR, DEFAULT_DEBIAN_SUITE,
 };
 pub(crate) use util::validate_debootstrap_inputs;
 pub use util::{

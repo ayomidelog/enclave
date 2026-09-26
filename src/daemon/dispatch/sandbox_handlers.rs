@@ -47,6 +47,32 @@ pub(super) fn dispatch_sandbox_update(params: &Value, config: &DaemonConfig) -> 
     Ok(serde_json::to_value(updated)?)
 }
 
+/// Change a sandbox's resource limits, as an explicit operator request.
+///
+/// `sandbox.update` exists for reconciling a definition and is quiet about values the
+/// sandbox already has. This is the resize: it requires at least one limit, it refuses
+/// a disk budget below what the sandbox's workspaces already allocate, and it reports
+/// what changed so the caller can say so.
+pub(super) fn dispatch_sandbox_resize(params: &Value, config: &DaemonConfig) -> Result<Value> {
+    let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let limits = parse_sandbox_limits_update(params)?;
+    if limits.is_empty() {
+        bail!("sandbox.resize requires at least one of 'memory_mb', 'disk_mb', or 'max_procs'");
+    }
+    let before = sandbox::sandbox_status(&config.state_dir, selector)?;
+    let updated = sandbox::update_sandbox_limits(&config.state_dir, selector, &limits)?;
+    // A memory or process limit is a cgroup value, so a running sandbox is brought
+    // up to it without being restarted. The disk budget needs nothing at runtime: it
+    // is enforced where an allocation is granted.
+    crate::workspace::sync_sandbox_runtime_limits(&config.state_dir, &updated.id)?;
+    Ok(serde_json::json!({
+        "sandbox": updated,
+        "previous_memory_bytes": before.limits.memory_bytes,
+        "previous_disk_bytes": before.limits.disk_bytes,
+        "previous_max_processes": before.limits.max_processes,
+    }))
+}
+
 pub(super) fn dispatch_sandbox_start(params: &Value, config: &DaemonConfig) -> Result<Value> {
     let selector = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let previous_state = sandbox_state_before(&config.state_dir, selector);

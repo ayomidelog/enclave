@@ -84,14 +84,35 @@ pub(super) fn parse_workspace_limits_create(params: &Value) -> Result<workspace:
     Ok(limits)
 }
 
-pub(super) fn parse_required_disk_bytes(params: &Value) -> Result<u64> {
-    let disk_mb = params
-        .get("disk_mb")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| invalid("missing 'disk_mb' unsigned integer"))?;
-    disk_mb
-        .checked_mul(1024 * 1024)
-        .ok_or_else(|| invalid("'disk_mb' is too large"))
+/// A disk allocation the caller asked for, when they asked for one.
+///
+/// Absent is different from zero: a resize that only changes memory omits the disk
+/// field entirely, and the workspace keeps the image it has.
+pub(super) fn parse_optional_disk_bytes(params: &Value) -> Result<Option<u64>> {
+    // The nested option is flattened: for a resize the interesting distinction is
+    // "a value was given" against "the field was omitted", not the update path's
+    // "clear it" against "leave it".
+    parse_optional_u64_field(params, "disk_mb")?
+        .flatten()
+        .map(|value| {
+            value
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| invalid("'disk_mb' is too large"))
+        })
+        .transpose()
+}
+
+/// A memory limit the caller asked for, when they asked for one.
+///
+/// The value is nested because memory can be cleared: `None` inside `Some` means the
+/// caller asked for no limit, and the outer `None` means they did not mention memory.
+pub(super) fn parse_optional_memory_bytes(params: &Value) -> Result<Option<Option<u64>>> {
+    let memory_bytes =
+        checked_optional_megabytes(parse_optional_u64_field(params, "memory_mb")?, "memory_mb")?;
+    if let Some(Some(bytes)) = memory_bytes {
+        crate::resource_limits::validate_memory_bytes(Some(bytes))?;
+    }
+    Ok(memory_bytes)
 }
 
 pub(super) fn parse_workspace_limits_update(
@@ -159,6 +180,7 @@ pub(super) fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::San
             .and_then(Value::as_u64)
             .map(|v| v.saturating_mul(1024 * 1024)),
         max_processes: params.get("max_procs").and_then(Value::as_u64),
+        disk_bytes: checked_megabytes(params.get("disk_mb").and_then(Value::as_u64), "disk_mb")?,
     };
     limits.validate()?;
     Ok(limits)
@@ -170,5 +192,9 @@ pub(super) fn parse_sandbox_limits_update(params: &Value) -> Result<sandbox::San
         memory_bytes: parse_optional_u64_field(params, "memory_mb")?
             .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
         max_processes: parse_optional_u64_field(params, "max_procs")?,
+        disk_bytes: checked_optional_megabytes(
+            parse_optional_u64_field(params, "disk_mb")?,
+            "disk_mb",
+        )?,
     })
 }

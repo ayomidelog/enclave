@@ -53,6 +53,9 @@ pub struct CreateArgs {
     pub cpu_percent: Option<f64>,
     #[arg(long)]
     pub max_procs: Option<u64>,
+    /// Total disk budget for the sandbox's workspaces in MiB.
+    #[arg(long, value_name = "MIB")]
+    pub disk_mb: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -62,6 +65,33 @@ pub struct DestroyArgs {
     /// Remove the registry record even when host resources could not be released
     #[arg(long, default_value_t = false)]
     pub force: bool,
+}
+
+/// Change the resource limits of an existing sandbox.
+///
+/// Every field is optional and an omitted one is left alone, so raising the memory
+/// limit does not disturb the disk budget and vice versa. A sandbox is a shared
+/// root filesystem rather than an image, so its disk limit is the budget its
+/// workspaces' allocations are measured against.
+#[derive(Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("target")
+        .args(["memory_mb", "disk_mb", "max_procs"])
+        .required(true)
+        .multiple(true)
+))]
+pub struct SandboxResizeArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    /// Aggregate memory limit for the sandbox in MiB. Omit to leave memory alone.
+    #[arg(long, value_name = "MIB")]
+    pub memory_mb: Option<u64>,
+    /// Total disk budget for the sandbox's workspaces in MiB. Omit to leave it alone.
+    #[arg(long, value_name = "MIB")]
+    pub disk_mb: Option<u64>,
+    /// Maximum aggregate processes in the sandbox. Omit to leave it alone.
+    #[arg(long, value_name = "COUNT")]
+    pub max_procs: Option<u64>,
 }
 
 #[derive(Args, Debug)]

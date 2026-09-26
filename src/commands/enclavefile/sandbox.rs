@@ -46,6 +46,7 @@ pub(super) fn create_and_setup_sandbox(
         "memory_mb": ef.sandbox.memory_mb,
         "cpu_percent": ef.sandbox.cpu_percent,
         "max_procs": ef.sandbox.max_procs,
+        "disk_mb": ef.sandbox.disk_mb,
     });
     send(socket, "sandbox.create", request)?;
 
@@ -63,6 +64,7 @@ pub(super) fn reconcile_sandbox_definition(socket: &Path, ef: &Enclavefile) -> R
             "memory_mb": ef.sandbox.memory_mb,
             "cpu_percent": ef.sandbox.cpu_percent,
             "max_procs": ef.sandbox.max_procs,
+            "disk_mb": ef.sandbox.disk_mb,
         }),
     )?;
     Ok(())

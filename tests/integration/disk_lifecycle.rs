@@ -209,3 +209,88 @@ fn stopping_a_quota_workspace_releases_its_loop_device() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+
+/// A resize that cannot be performed must not stop the workspace to find out.
+///
+/// A disk resize has to stop the runtime to touch the image, so every reason the
+/// request could be refused is checked first. A refusal that arrived after the stop
+/// would leave a workspace the operator never asked to stop down, and the retry that
+/// follows a refused resize would find it stopped rather than running.
+#[test]
+#[ignore = "requires root privileges, namespace/mount support, and loopback ext4 mounts"]
+fn a_refused_resize_leaves_the_workspace_running() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-disk-refused");
+    prepare_cached_rootfs(&state, "bookworm");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-disk-refused-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let initial_bytes = 64 * 1024 * 1024;
+    let workspace = create_workspace(
+        &state,
+        &sandbox.id,
+        "refused",
+        WorkspaceLimits {
+            disk_bytes: Some(initial_bytes),
+            ..WorkspaceLimits::default()
+        },
+    )
+    .expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let pid = started.runtime_pid.expect("runtime pid");
+
+    // Below the floor the workspace's own allocation must respect.
+    resize_workspace_disk(&state, &sandbox.id, &workspace.id, 1024 * 1024)
+        .expect_err("a resize below the floor must be refused");
+
+    let after = list_workspaces(&state, Some(&sandbox.id))
+        .expect("list workspaces")
+        .into_iter()
+        .find(|item| item.id == workspace.id)
+        .expect("workspace metadata");
+    assert_eq!(
+        after.status,
+        enclave::workspace::WorkspaceStatus::Running,
+        "a refused resize must leave the workspace running"
+    );
+    assert_eq!(
+        after.runtime_pid,
+        Some(pid),
+        "the refused resize must not have replaced the runtime"
+    );
+    assert_eq!(
+        after.limits.disk_bytes,
+        Some(initial_bytes),
+        "the refused resize must not have recorded the size it refused"
+    );
+    assert_eq!(
+        fs::metadata(Path::new(&workspace.workspace_path).join("fs.img"))
+            .expect("disk image metadata")
+            .len(),
+        initial_bytes,
+        "the refused resize must not have grown the image"
+    );
+
+    // And the workspace is still usable, which is the point of not stopping it.
+    let marker = Path::new("/proc")
+        .join(pid.to_string())
+        .join("root/home/still-here.txt");
+    fs::write(&marker, "alive").expect("write inside the running workspace");
+
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}

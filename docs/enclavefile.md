@@ -47,6 +47,7 @@ Defines the sandbox environment.
 | `memory_mb` | No | — | Aggregate sandbox memory cap across all running workspaces. Requires cgroup v2 for enforcement. |
 | `cpu_percent` | No | — | Aggregate sandbox CPU share as a percentage of total machine CPU capacity. Requires cgroup v2 for enforcement. |
 | `max_procs` | No | — | Aggregate sandbox process-count cap. Requires cgroup v2 for enforcement. |
+| `disk_mb` | No | — | Total disk budget for the sandbox's workspaces. A sandbox rootfs is a shared lower layer rather than an image, so this caps the sum of its workspaces' `disk_mb` allocations and is enforced when a workspace is created or grown. Change it on an existing sandbox with `enclave resize <sandbox> --disk-mb N`. |
 | `setup` | No | `[]` | List of shell commands run inside the sandbox root via `chroot` during creation and on later `enclave up` / `enclave restart` runs. Use idempotent commands. |
 
 ### Setup Commands
@@ -180,7 +181,7 @@ Workspace names must:
 
 - `enclave up` when the sandbox already exists skips sandbox creation, re-applies setup commands, and starts workspaces.
 - `enclave up` and `enclave restart` reconcile declared sandbox/workspace resource limits onto existing environments; changing an existing `disk_mb` allocation requires the explicit `workspace resize` command.
-- `enclave workspace resize <sandbox> <workspace> --disk-mb N` increases an existing Enclave-managed `fs.img` allocation and its ext4 filesystem. A running workspace is restarted through the normal lifecycle and published ports are restored; host-backed `workspace_dir`/`path` mounts and allocation decreases are not supported.
+- `enclave workspace resize <sandbox> <workspace> [--disk-mb N] [--memory-mb N]` changes an existing Enclave-managed workspace. The disk is the `fs.img` allocation and the ext4 filesystem inside it, and it can be grown or shrunk; a disk change restarts a running workspace through the normal lifecycle and restores its published ports. Memory is a cgroup value, so a memory change is applied to the running runtime without interrupting it. Omitted limits are left alone. A shrink is refused when the filesystem holds more data than the target, and the message names the smallest allocation that would work; host-backed `workspace_dir`/`path` mounts have no managed disk to resize.
 - Setup commands run at creation time and are re-applied on later `up` / `restart` runs.
 - `--rebuild` forces sandbox destruction and recreation, re-running all setup commands.
 - If `up` fails after creating or starting a sandbox that was previously absent or stopped, Enclave attempts to stop it before returning the error. A previously paused sandbox is re-paused; a sandbox that was already running is left running. A failed rollback is included in the reported error.

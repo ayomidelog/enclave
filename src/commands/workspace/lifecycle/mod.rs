@@ -58,32 +58,57 @@ pub(super) fn run_workspace_create(
     Ok(())
 }
 
+/// Resize a workspace's disk, its memory, or both.
+///
+/// Each limit is reported as the change it was, so a resize that only touched memory
+/// does not look like it moved the disk as well.
 pub(super) fn run_workspace_resize(
     ctx: &WorkspaceCommandContext<'_>,
     args: WorkspaceResizeArgs,
 ) -> Result<()> {
+    // Only the limits the operator named are sent. A field carrying `null` means
+    // "clear this limit" to the daemon, so including an absent one would turn
+    // "resize the disk" into "resize the disk and remove the memory limit".
+    let mut params = serde_json::Map::new();
+    params.insert("sandbox".to_string(), json!(args.sandbox));
+    params.insert("workspace".to_string(), json!(args.workspace));
+    if let Some(disk_mb) = args.disk_mb {
+        params.insert("disk_mb".to_string(), json!(disk_mb));
+    }
+    if let Some(memory_mb) = args.memory_mb {
+        params.insert("memory_mb".to_string(), json!(memory_mb));
+    }
     let response = send_managed(
         ctx.socket,
         "workspace.resize",
-        json!({
-            "sandbox": args.sandbox,
-            "workspace": args.workspace,
-            "disk_mb": args.disk_mb,
-        }),
+        serde_json::Value::Object(params),
     )?;
     let result: crate::workspace::WorkspaceResizeResult = serde_json::from_value(response)?;
+    let render = |bytes: u64| format!("{} MiB", bytes / (1024 * 1024));
     if result.previous_disk_bytes == result.new_disk_bytes {
         println!(
-            "workspace {} already has a {} MiB disk allocation",
+            "workspace {} keeps its {} disk allocation",
             result.workspace_name,
-            result.new_disk_bytes / (1024 * 1024)
+            render(result.new_disk_bytes)
         );
     } else {
         println!(
-            "resized workspace {} from {} MiB to {} MiB",
+            "resized workspace {} disk from {} to {}",
             result.workspace_name,
-            result.previous_disk_bytes / (1024 * 1024),
-            result.new_disk_bytes / (1024 * 1024)
+            render(result.previous_disk_bytes),
+            render(result.new_disk_bytes)
+        );
+    }
+    let memory = |bytes: Option<u64>| match bytes {
+        Some(bytes) => render(bytes),
+        None => "unlimited".to_string(),
+    };
+    if result.previous_memory_bytes != result.new_memory_bytes {
+        println!(
+            "resized workspace {} memory from {} to {}",
+            result.workspace_name,
+            memory(result.previous_memory_bytes),
+            memory(result.new_memory_bytes)
         );
     }
     if result.restarted {

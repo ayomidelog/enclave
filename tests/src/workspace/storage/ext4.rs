@@ -1,7 +1,7 @@
 use std::fs;
 
-use super::{filesystem_size, parse_superblock};
-use crate::workspace::storage::{increase_workspace_disk_allocation, workspace_disk_image_path};
+use super::{filesystem_size, parse_geometry, parse_superblock};
+use crate::workspace::storage::{resize_workspace_disk_allocation, workspace_disk_image_path};
 use crate::workspace::types::{WorkspaceLimits, WorkspaceMetadata};
 use crate::workspace::WorkspaceStatus;
 
@@ -45,6 +45,33 @@ fn parse_superblock_rejects_an_impossible_block_size() {
     assert!(error
         .to_string()
         .contains("unsupported ext4 block size shift"));
+}
+
+/// The block count is what a resize is expressed in, so it has to be exact.
+///
+/// A resize that asked `resize2fs` for a size rounded the wrong way would leave the
+/// filesystem and the image file a fraction of a block apart, which is the state the
+/// whole module exists to avoid.
+#[test]
+fn geometry_reports_the_block_size_and_count_a_resize_needs() {
+    let superblock = superblock_bytes(2, 512, false);
+    let geometry = parse_geometry(&superblock).unwrap();
+    assert_eq!(geometry.block_size, 4096);
+    assert_eq!(geometry.block_count, 512);
+    assert_eq!(geometry.size_bytes(), 2 * 1024 * 1024);
+}
+
+#[test]
+fn geometry_rounds_a_byte_count_down_to_whole_blocks() {
+    let superblock = superblock_bytes(2, 512, false);
+    let geometry = parse_geometry(&superblock).unwrap();
+    // Exactly one block.
+    assert_eq!(geometry.blocks_in(4096), 1);
+    // One byte short of a block is no blocks at all, rather than a block that would
+    // overrun the size that was asked for.
+    assert_eq!(geometry.blocks_in(4095), 0);
+    assert_eq!(geometry.blocks_in(8192), 2);
+    assert_eq!(geometry.blocks_in(8191), 1);
 }
 
 fn resize_fixture(temp_dir: &std::path::Path) -> WorkspaceMetadata {
@@ -125,7 +152,7 @@ fn failed_resize_restores_the_previous_image_size() {
     file.set_len(32 * 1024 * 1024).unwrap();
     drop(file);
 
-    let error = increase_workspace_disk_allocation(&workspace, 64 * 1024 * 1024)
+    let error = resize_workspace_disk_allocation(&workspace, 64 * 1024 * 1024)
         .expect_err("a resize that cannot check the filesystem must fail");
     let rendered = format!("{error:#}");
     assert!(

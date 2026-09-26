@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::resource_limits::validate_cpu_percent;
+use crate::resource_limits::{validate_cpu_percent, validate_memory_bytes};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WorkspaceLimits {
@@ -31,6 +31,7 @@ impl WorkspaceLimits {
         if let Some(cpu_percent) = self.cpu_percent {
             validate_cpu_percent(cpu_percent)?;
         }
+        validate_memory_bytes(self.memory_bytes)?;
         Ok(())
     }
 

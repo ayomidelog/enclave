@@ -31,12 +31,74 @@ fn workspace_resize_parses_target_disk_size() {
     };
     assert_eq!(args.sandbox, "sb");
     assert_eq!(args.workspace, "ws");
-    assert_eq!(args.disk_mb, 2048);
+    assert_eq!(args.disk_mb, Some(2048));
+    assert_eq!(args.memory_mb, None);
 }
 
+/// Either limit on its own is a resize; neither is not.
 #[test]
-fn workspace_resize_requires_disk_size() {
-    assert!(Cli::try_parse_from(["enclave", "workspace", "resize", "sb", "ws"]).is_err());
+fn workspace_resize_accepts_either_limit_and_requires_one() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "workspace",
+        "resize",
+        "sb",
+        "ws",
+        "--memory-mb",
+        "512",
+    ]);
+    let Commands::Workspace { command } = cli.command else {
+        panic!("expected workspace command");
+    };
+    let WorkspaceCommands::Resize(args) = command else {
+        panic!("expected workspace resize command");
+    };
+    assert_eq!(args.disk_mb, None);
+    assert_eq!(args.memory_mb, Some(512));
+
+    // Both together, which is one stop and one resize rather than two.
+    let cli = Cli::parse_from([
+        "enclave",
+        "workspace",
+        "resize",
+        "sb",
+        "ws",
+        "--disk-mb",
+        "2048",
+        "--memory-mb",
+        "1024",
+    ]);
+    let Commands::Workspace { command } = cli.command else {
+        panic!("expected workspace command");
+    };
+    let WorkspaceCommands::Resize(args) = command else {
+        panic!("expected workspace resize command");
+    };
+    assert_eq!(args.disk_mb, Some(2048));
+    assert_eq!(args.memory_mb, Some(1024));
+
+    assert!(
+        Cli::try_parse_from(["enclave", "workspace", "resize", "sb", "ws"]).is_err(),
+        "a resize with no limit to change must be refused"
+    );
+}
+
+/// A sandbox resize takes the same shape: any one limit, at least one.
+#[test]
+fn sandbox_resize_parses_each_limit_and_requires_one() {
+    let cli = Cli::parse_from(["enclave", "resize", "sb", "--disk-mb", "4096"]);
+    let Commands::Resize(args) = cli.command else {
+        panic!("expected sandbox resize command");
+    };
+    assert_eq!(args.sandbox, "sb");
+    assert_eq!(args.disk_mb, Some(4096));
+    assert_eq!(args.memory_mb, None);
+    assert_eq!(args.max_procs, None);
+
+    assert!(
+        Cli::try_parse_from(["enclave", "resize", "sb"]).is_err(),
+        "a sandbox resize with no limit to change must be refused"
+    );
 }
 
 #[test]

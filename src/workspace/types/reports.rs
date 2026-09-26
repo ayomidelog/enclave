@@ -25,6 +25,10 @@ pub struct WorkspaceResizeResult {
     pub workspace_name: String,
     pub previous_disk_bytes: u64,
     pub new_disk_bytes: u64,
+    #[serde(default)]
+    pub previous_memory_bytes: Option<u64>,
+    #[serde(default)]
+    pub new_memory_bytes: Option<u64>,
     pub restarted: bool,
 }
 

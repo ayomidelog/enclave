@@ -30,6 +30,19 @@ use home::{ensure_home_base_skeleton, resolve_home_mount_source};
 pub(crate) use definition::{normalize_auth_providers, normalize_env_tokens, validate_name};
 pub(crate) use home::ensure_traversable_directory_permissions;
 
+/// The disk the sandbox's workspaces have already been promised.
+///
+/// Every workspace with a managed allocation holds it whether or not its runtime is
+/// running, because the image file exists at that size on the host. A sandbox budget
+/// is measured against this, so a stopped workspace still counts.
+pub(crate) fn sandbox_workspace_disk_bytes(sandbox: &crate::registry::RegistrySandbox) -> u64 {
+    sandbox
+        .workspaces
+        .values()
+        .filter_map(|workspace| workspace.limits.disk_bytes)
+        .fold(0u64, u64::saturating_add)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceCreateOptions {
     pub limits: WorkspaceLimits,
@@ -111,6 +124,14 @@ pub fn create_workspace_with_options(
                 ));
             }
         }
+
+        // A sandbox disk budget is enforced here, where the allocation is granted,
+        // rather than checked later: a workspace that is created and only then found
+        // to be over budget would have to be deleted to fix it.
+        sandbox_entry.metadata.limits.check_disk_budget(
+            sandbox_workspace_disk_bytes(sandbox_entry),
+            limits.disk_bytes.unwrap_or(0),
+        )?;
 
         Ok(sandbox_entry.metadata.clone())
     })?;

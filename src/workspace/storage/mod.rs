@@ -64,7 +64,7 @@ mod unmount;
 
 pub use definition::{validate_workspace_storage_limits, verify_workspace_source};
 pub use mount::{create_workspace_storage, ensure_workspace_storage_ready};
-pub use resize::increase_workspace_disk_allocation;
+pub use resize::{plan_workspace_disk_resize, resize_workspace_disk_allocation};
 pub use unmount::ensure_workspace_storage_unmounted;
 
 // Used by workspace lifecycle modules and their tests.

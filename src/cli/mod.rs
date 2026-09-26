@@ -17,7 +17,8 @@ pub use admin::{
     RootfsFetchArgs, RootfsImportArgs,
 };
 pub use common::{
-    AuthProviderArgs, CreateArgs, DestroyArgs, DoctorArgs, PsArgs, RestartArgs, UpArgs, WipeArgs,
+    AuthProviderArgs, CreateArgs, DestroyArgs, DoctorArgs, PsArgs, RestartArgs, SandboxResizeArgs,
+    UpArgs, WipeArgs,
 };
 pub use daemon::{RunArgs, StartArgs};
 pub use session::{
@@ -88,6 +89,7 @@ pub enum Commands {
         #[arg(value_parser = parse_entity_name)]
         sandbox: String,
     },
+    Resize(SandboxResizeArgs),
     Destroy(DestroyArgs),
     List,
     Stats,

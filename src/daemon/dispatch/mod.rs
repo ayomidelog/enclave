@@ -40,9 +40,10 @@ use daemon_handlers::{
     dispatch_shutdown,
 };
 use params::{
-    parse_cleanup_mode, parse_optional_bool_field, parse_required_disk_bytes,
-    parse_sandbox_limits_create, parse_sandbox_limits_update, parse_string_array,
-    parse_workspace_limits_create, parse_workspace_limits_update, require_param_str,
+    parse_cleanup_mode, parse_optional_bool_field, parse_optional_disk_bytes,
+    parse_optional_memory_bytes, parse_sandbox_limits_create, parse_sandbox_limits_update,
+    parse_string_array, parse_workspace_limits_create, parse_workspace_limits_update,
+    require_param_str,
 };
 use policy_handlers::{
     dispatch_policy_clear, dispatch_policy_get, dispatch_policy_rule, dispatch_policy_set_default,
@@ -55,9 +56,9 @@ use ports::{
 use sandbox_exec_setup::dispatch_sandbox_exec_setup;
 use sandbox_handlers::{
     dispatch_sandbox_create, dispatch_sandbox_destroy, dispatch_sandbox_list,
-    dispatch_sandbox_pause, dispatch_sandbox_remove, dispatch_sandbox_resume,
-    dispatch_sandbox_start, dispatch_sandbox_status, dispatch_sandbox_stop,
-    dispatch_sandbox_update, dispatch_sandbox_wipe,
+    dispatch_sandbox_pause, dispatch_sandbox_remove, dispatch_sandbox_resize,
+    dispatch_sandbox_resume, dispatch_sandbox_start, dispatch_sandbox_status,
+    dispatch_sandbox_stop, dispatch_sandbox_update, dispatch_sandbox_wipe,
 };
 use snapshots::{
     dispatch_workspace_restore, dispatch_workspace_snapshot, dispatch_workspace_snapshot_export,
@@ -107,6 +108,7 @@ pub(crate) fn dispatch(
         Action::Init => dispatch_init(config),
         Action::SandboxCreate => dispatch_sandbox_create(&request.params, config),
         Action::SandboxUpdate => dispatch_sandbox_update(&request.params, config),
+        Action::SandboxResize => dispatch_sandbox_resize(&request.params, config),
         Action::SandboxStart => dispatch_sandbox_start(&request.params, config),
         Action::SandboxStop => dispatch_sandbox_stop(&request.params, config, port_publisher),
         Action::SandboxPause => dispatch_sandbox_pause(&request.params, config, port_publisher),

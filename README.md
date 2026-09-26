@@ -336,6 +336,32 @@ If a workspace needs to serve a dev app back to the host browser, add
 `ports = ["127.0.0.1:3001:3000/tcp"]` in the `Enclavefile` or use
 `sudo enclave workspace port publish ...` after startup.
 
+## Changing resources on a running environment
+
+Limits are set at creation and changed afterwards with `resize`. Every target is
+optional, so raising one leaves the others alone:
+
+```bash
+# A workspace: memory is a cgroup value and does not interrupt the workspace;
+# a disk change restarts it the way any image resize has to.
+sudo enclave workspace resize devbox api --memory-mb 2048
+sudo enclave workspace resize devbox api --disk-mb 8192
+
+# A sandbox: memory and process limits apply to a running sandbox, and
+# --disk-mb sets the budget its workspaces' allocations are measured against.
+sudo enclave resize devbox --memory-mb 8192
+sudo enclave resize devbox --disk-mb 32768
+```
+
+Both directions work. A disk allocation can be shrunk, and a shrink that the data
+does not fit in is refused before anything is written, naming the smallest allocation
+that would work. A sandbox's disk budget is a cap rather than a size: a sandbox rootfs
+is a shared lower layer, so what it allocates is the sum of its workspaces' images,
+and a workspace cannot be created or grown past the budget. Every reason a request
+could be refused is checked before a running workspace is stopped for it, so a refused
+resize leaves it running. See the [Command Reference](docs/commands.md) for the full
+surface.
+
 ## Lifecycle tiers
 
 Enclave has three ways to put a workspace away, and they preserve different things.

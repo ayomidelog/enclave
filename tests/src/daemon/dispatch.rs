@@ -123,22 +123,43 @@ fn parse_string_array_rejects_non_string_elements() {
     assert!(parse_string_array(&params, "command").is_err());
 }
 
+/// An omitted disk field means "leave the disk alone", which is not the same as zero.
 #[test]
-fn parse_required_disk_bytes_uses_checked_mib_conversion() {
-    let params = serde_json::json!({"disk_mb": 64});
+fn parse_optional_disk_bytes_distinguishes_absent_from_a_value() {
     assert_eq!(
-        parse_required_disk_bytes(&params).unwrap(),
-        64 * 1024 * 1024
+        parse_optional_disk_bytes(&serde_json::json!({})).unwrap(),
+        None
+    );
+    assert_eq!(
+        parse_optional_disk_bytes(&serde_json::json!({"disk_mb": 64})).unwrap(),
+        Some(64 * 1024 * 1024)
     );
 }
 
 #[test]
-fn parse_required_disk_bytes_rejects_missing_and_overflowing_values() {
-    assert!(parse_required_disk_bytes(&serde_json::json!({})).is_err());
-    assert!(parse_required_disk_bytes(&serde_json::json!({
-        "disk_mb": u64::MAX
-    }))
-    .is_err());
+fn parse_optional_disk_bytes_rejects_an_overflowing_value() {
+    assert!(parse_optional_disk_bytes(&serde_json::json!({"disk_mb": u64::MAX})).is_err());
+}
+
+/// Memory is nested because a caller can ask for no limit at all.
+#[test]
+fn parse_optional_memory_bytes_distinguishes_absent_from_cleared() {
+    assert_eq!(
+        parse_optional_memory_bytes(&serde_json::json!({})).unwrap(),
+        None
+    );
+    assert_eq!(
+        parse_optional_memory_bytes(&serde_json::json!({"memory_mb": 512})).unwrap(),
+        Some(Some(512 * 1024 * 1024))
+    );
+}
+
+/// A limit the runtime cannot start inside is refused where it is set.
+#[test]
+fn parse_optional_memory_bytes_refuses_a_limit_below_the_floor() {
+    let error = parse_optional_memory_bytes(&serde_json::json!({"memory_mb": 1}))
+        .expect_err("a 1 MiB limit must be refused");
+    assert!(error.to_string().contains("at least"), "{error}");
 }
 
 #[test]

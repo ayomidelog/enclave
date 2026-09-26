@@ -16,6 +16,8 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::cli::DestroyArgs;
+use crate::cli::SandboxResizeArgs;
+use crate::sandbox::SandboxResizeReport;
 
 use super::super::{
     print_operation_id, print_state_transition, report_retained_resources, send_managed,
@@ -45,6 +47,69 @@ pub(crate) fn run_pause(socket: &Path, sandbox: &str) -> Result<()> {
 
 pub(crate) fn run_resume(socket: &Path, sandbox: &str) -> Result<()> {
     run_sandbox_state_change(socket, "sandbox.resume", sandbox, "resumed")
+}
+
+/// Change a sandbox's resource limits.
+///
+/// Every field is optional, so raising memory does not disturb the disk budget. The
+/// daemon answers with what the limits were, which is what makes the report a
+/// comparison rather than a claim.
+pub(crate) fn run_resize(socket: &Path, args: SandboxResizeArgs) -> Result<()> {
+    let SandboxResizeArgs {
+        sandbox,
+        memory_mb,
+        disk_mb,
+        max_procs,
+    } = args;
+    tracing::info!("resizing sandbox '{}'...", sandbox);
+    // Only the limits the operator named are sent. A field carrying `null` means
+    // "clear this limit" to the daemon, so including an absent one would turn
+    // "raise the disk budget" into "raise the disk budget and remove the memory
+    // limit".
+    let mut params = serde_json::Map::new();
+    params.insert("sandbox".to_string(), json!(sandbox));
+    if let Some(memory_mb) = memory_mb {
+        params.insert("memory_mb".to_string(), json!(memory_mb));
+    }
+    if let Some(disk_mb) = disk_mb {
+        params.insert("disk_mb".to_string(), json!(disk_mb));
+    }
+    if let Some(max_procs) = max_procs {
+        params.insert("max_procs".to_string(), json!(max_procs));
+    }
+    let response = send_managed(socket, "sandbox.resize", serde_json::Value::Object(params))?;
+    let report: SandboxResizeReport = serde_json::from_value(response)?;
+    println!("resized sandbox '{}'", report.sandbox.id);
+    let limits = &report.sandbox.limits;
+    report_limit("memory", report.previous_memory_bytes, limits.memory_bytes);
+    report_limit("disk budget", report.previous_disk_bytes, limits.disk_bytes);
+    report_limit(
+        "max processes",
+        report.previous_max_processes,
+        limits.max_processes,
+    );
+    print_operation_id();
+    Ok(())
+}
+
+/// One limit, as it was and as it is now.
+///
+/// A limit that did not move is reported as unchanged rather than as a change to the
+/// same number, so a resize that only touched one field does not look like it moved
+/// three.
+fn report_limit(label: &str, previous: Option<u64>, current: Option<u64>) {
+    let render = |value: Option<u64>| match value {
+        Some(bytes) if label == "memory" || label == "disk budget" => {
+            format!("{} MiB", bytes / (1024 * 1024))
+        }
+        Some(value) => value.to_string(),
+        None => "unlimited".to_string(),
+    };
+    if previous == current {
+        println!("  {label}: {} (unchanged)", render(current));
+    } else {
+        println!("  {label}: {} -> {}", render(previous), render(current));
+    }
 }
 
 pub(crate) fn run_destroy(socket: &Path, args: DestroyArgs) -> Result<()> {

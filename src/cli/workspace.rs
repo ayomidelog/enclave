@@ -28,13 +28,23 @@ pub struct WorkspaceCreateArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("target")
+        .args(["disk_mb", "memory_mb"])
+        .required(true)
+        .multiple(true)
+))]
 pub struct WorkspaceResizeArgs {
     #[arg(value_parser = parse_entity_name)]
     pub sandbox: String,
     #[arg(value_parser = parse_entity_name)]
     pub workspace: String,
+    /// Target disk allocation in MiB. Omit to leave the disk alone.
     #[arg(long, value_name = "MIB")]
-    pub disk_mb: u64,
+    pub disk_mb: Option<u64>,
+    /// Target memory limit in MiB. Omit to leave memory alone.
+    #[arg(long, value_name = "MIB")]
+    pub memory_mb: Option<u64>,
 }
 
 #[derive(Args, Debug)]

@@ -54,22 +54,27 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_resize(
 ) -> Result<Value> {
     let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
-    let new_disk_bytes = parse_required_disk_bytes(params)?;
+    let new_disk_bytes = parse_optional_disk_bytes(params)?;
+    let new_memory_bytes = parse_optional_memory_bytes(params)?;
+    if new_disk_bytes.is_none() && new_memory_bytes.is_none() {
+        bail!("workspace.resize requires 'disk_mb' or 'memory_mb'");
+    }
     let current = workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-    if current.status.is_running()
-        && current
-            .limits
-            .disk_bytes
-            .is_some_and(|bytes| bytes < new_disk_bytes)
-    {
+    // A disk resize stops and restarts a running workspace, which drops its published
+    // ports until the relaunch puts them back. They are withdrawn before the stop so
+    // the host never has a listener forwarding to a runtime that is gone. A memory
+    // resize does not interrupt anything, so it leaves the ports alone.
+    let disk_changes = new_disk_bytes.is_some_and(|bytes| current.limits.disk_bytes != Some(bytes));
+    if current.status.is_running() && disk_changes {
         port_publisher.clear_workspace_ports(&current.sandbox_id, &current.id);
     }
 
-    let result = workspace::resize_workspace_disk_with_security(
+    let result = workspace::resize_workspace_with_security(
         &config.state_dir,
         sandbox,
         workspace_selector,
         new_disk_bytes,
+        new_memory_bytes,
         config.workspace_apparmor_profile.as_deref(),
         config.workspace_selinux_label.as_deref(),
     )?;

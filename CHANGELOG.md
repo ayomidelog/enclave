@@ -42,6 +42,24 @@ binary alone.
 
 ### Added
 
+- Resizing in both directions. `enclave workspace resize <sandbox> <workspace>` now
+  takes `--memory-mb` as well as `--disk-mb`, and both can be raised or lowered. An
+  omitted limit is left alone. Memory is a cgroup value, so changing it does not
+  interrupt a running workspace; a disk change stops and restarts the workspace the
+  way any image resize has to. Growing and shrinking are the same two steps in
+  opposite order — a grow enlarges the image first, a shrink shrinks the filesystem
+  first — and either way the result is verified from the ext4 superblock, so an image
+  and a filesystem that disagree are reported rather than accepted. A shrink is
+  refused before anything is written when the filesystem holds more data than the
+  target, and the message names the smallest allocation that would work.
+- `enclave resize <sandbox>` for a sandbox's resource limits: `--memory-mb`,
+  `--disk-mb`, and `--max-procs`, each optional and each left alone when omitted.
+  Memory and process limits are applied to a running sandbox through its cgroup
+  without a restart. A sandbox rootfs is a shared lower layer rather than an image, so
+  its `--disk-mb` is a budget measured against the sum of its workspaces'
+  allocations: a workspace cannot be created or grown past it, and a budget below what
+  the workspaces already allocate is refused, naming the total. A sandbox can also
+  declare the budget in its Enclavefile, and `enclave create` takes `--disk-mb`.
 - A lifecycle journal. Every lifecycle operation runs under one operation id, which
   is written to a durable record under `<state_dir>/operations/` with its target and
   current phase, returned in the daemon response, and printed by mutating commands. A

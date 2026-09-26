@@ -1,11 +1,18 @@
-//! Resizing a workspace disk image, and relaunching what was running.
+//! Resizing a workspace's disk and memory allocation, and relaunching what was
+//! running.
 //!
-//! The image is resized with the workspace stopped, and the registry is told the
-//! size that is actually on disk before anything is relaunched, so a failure part
-//! way through leaves a record that describes the real image rather than the one
-//! that was asked for.
+//! The two limits need different work. Memory is a cgroup value, so it is applied to
+//! the runtime that is already there and a running workspace is never interrupted for
+//! it. Disk is an image and the filesystem inside it, which can only be resized with
+//! the workspace stopped, so a disk resize stops the runtime, resizes, and relaunches
+//! it.
+//!
+//! The registry is told the size that is actually on disk before anything is
+//! relaunched, so a failure part way through leaves a record that describes the real
+//! image rather than the one that was asked for.
 
 use super::*;
+use crate::workspace::sync_workspace_runtime_limits;
 
 /// What a resize needs from the registry, read under the lock so the resize
 /// itself can run without holding it.
@@ -15,13 +22,24 @@ struct ResizePlan {
     sandbox: SandboxMetadata,
     workspace: WorkspaceMetadata,
     previous_disk_bytes: u64,
+    /// The disk the sandbox's workspaces hold apart from the one being resized.
+    ///
+    /// Read with the plan so the budget check and the resize describe the same
+    /// moment: a workspace created in between is refused its own allocation under
+    /// the same lock, so neither of them can take the sandbox past its budget.
+    other_workspace_disk_bytes: u64,
 }
 
-pub fn resize_workspace_disk_with_security(
+/// Resize a workspace's disk, its memory, or both.
+///
+/// Either argument may be absent, which leaves that limit alone. A value equal to
+/// what the workspace already has is not a change and is reported as such.
+pub fn resize_workspace_with_security(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
     workspace_selector: &str,
-    new_disk_bytes: u64,
+    new_disk_bytes: Option<u64>,
+    new_memory_bytes: Option<Option<u64>>,
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
 ) -> Result<WorkspaceResizeResult> {
@@ -32,16 +50,81 @@ pub fn resize_workspace_disk_with_security(
     // serialized by the daemon lease, not by this lock.
     let plan = read_resize_plan(state_dir, sandbox_selector, workspace_selector)?;
 
-    if new_disk_bytes == plan.previous_disk_bytes {
-        return Ok(plan.result(plan.previous_disk_bytes, false));
+    let disk_change = new_disk_bytes.filter(|bytes| *bytes != plan.previous_disk_bytes);
+    let memory_change =
+        new_memory_bytes.filter(|bytes| *bytes != plan.workspace.limits.memory_bytes);
+
+    if disk_change.is_none() && memory_change.is_none() {
+        return Ok(plan.result(
+            plan.previous_disk_bytes,
+            plan.workspace.limits.memory_bytes,
+            false,
+        ));
     }
 
+    // Every reason this request could be refused is checked here, before anything is
+    // stopped or written. A disk resize stops the runtime, and a refusal after that
+    // point would leave a workspace down for a request that was never possible.
+    //
+    // A grow also has to fit the sandbox's disk budget. A shrink always fits: it
+    // releases space rather than taking it.
+    if let Some(new_disk_bytes) = disk_change {
+        if new_disk_bytes > plan.previous_disk_bytes {
+            plan.sandbox
+                .limits
+                .check_disk_budget(plan.other_workspace_disk_bytes, new_disk_bytes)?;
+        }
+        // This checks the floor, the image, and whether anything still holds it.
+        crate::workspace::storage::plan_workspace_disk_resize(&plan.workspace, new_disk_bytes)?;
+    }
+
+    // Memory is recorded first. It is cheap, it does not disturb the runtime, and
+    // doing it before the disk work means a disk failure leaves the memory limit the
+    // caller asked for rather than silently discarding it.
+    if let Some(memory_bytes) = memory_change {
+        set_workspace_memory_bytes(state_dir, &plan, memory_bytes)?;
+    }
+
+    let (new_disk_bytes, restarted) = match disk_change {
+        Some(new_disk_bytes) => resize_workspace_image(
+            state_dir,
+            &plan,
+            new_disk_bytes,
+            apparmor_profile,
+            selinux_label,
+        )?,
+        None => {
+            // No image work, so a running runtime keeps running and only its cgroup
+            // is brought up to the new limit.
+            sync_workspace_runtime_limits(state_dir, &plan.sandbox_id, &plan.workspace_id)?;
+            (plan.previous_disk_bytes, false)
+        }
+    };
+
+    Ok(plan.result(
+        new_disk_bytes,
+        memory_change.unwrap_or(plan.workspace.limits.memory_bytes),
+        restarted,
+    ))
+}
+
+/// Stop the workspace if it is running, resize its image, and relaunch it.
+///
+/// Returns the disk size that is now on disk, which is the one the registry was told
+/// about, and whether a running runtime was relaunched for it.
+fn resize_workspace_image(
+    state_dir: &std::path::Path,
+    plan: &ResizePlan,
+    new_disk_bytes: u64,
+    apparmor_profile: Option<&str>,
+    selinux_label: Option<&str>,
+) -> Result<(u64, bool)> {
     let was_running = plan.workspace.status.is_running();
 
     // Stop the runtime before the image is touched and record the stop, so the
     // registry never claims a running runtime whose image is being resized.
     if was_running {
-        stop_workspace_for_resize(state_dir, &plan)?;
+        stop_workspace_for_resize(state_dir, plan)?;
     }
 
     crate::workspace::ensure_workspace_storage_unmounted(&plan.workspace).with_context(|| {
@@ -51,31 +134,35 @@ pub fn resize_workspace_disk_with_security(
         )
     })?;
 
-    let resize = crate::workspace::storage::increase_workspace_disk_allocation(
+    let resize = crate::workspace::storage::resize_workspace_disk_allocation(
         &plan.workspace,
         new_disk_bytes,
     )?;
 
     // Record the size that is actually on disk before relaunching, so a failure
     // during the restart leaves the registry describing the real image.
-    set_workspace_disk_bytes(state_dir, &plan, resize.new_bytes)?;
+    set_workspace_disk_bytes(state_dir, plan, resize.new_bytes)?;
 
-    let restarted = if was_running {
-        restart_workspace_after_resize(state_dir, &plan, apparmor_profile, selinux_label)?
-    } else {
-        false
-    };
-
-    Ok(plan.result(resize.new_bytes, restarted))
+    if was_running {
+        restart_workspace_after_resize(state_dir, plan, apparmor_profile, selinux_label)?;
+    }
+    Ok((resize.new_bytes, was_running))
 }
 
 impl ResizePlan {
-    fn result(&self, new_disk_bytes: u64, restarted: bool) -> WorkspaceResizeResult {
+    fn result(
+        &self,
+        new_disk_bytes: u64,
+        new_memory_bytes: Option<u64>,
+        restarted: bool,
+    ) -> WorkspaceResizeResult {
         WorkspaceResizeResult {
             workspace_id: self.workspace_id.clone(),
             workspace_name: self.workspace.name.clone(),
             previous_disk_bytes: self.previous_disk_bytes,
             new_disk_bytes,
+            previous_memory_bytes: self.workspace.limits.memory_bytes,
+            new_memory_bytes,
             restarted,
         }
     }
@@ -123,12 +210,21 @@ fn read_resize_plan(
                 workspace.name
             );
         }
+        // The budget is measured on what the other workspaces hold, so a resize that
+        // replaces this workspace's allocation is not charged for both.
+        let other_workspace_disk_bytes = sandbox
+            .workspaces
+            .values()
+            .filter(|other| other.id != workspace_id)
+            .filter_map(|other| other.limits.disk_bytes)
+            .fold(0u64, u64::saturating_add);
         Ok(ResizePlan {
             sandbox_id,
             workspace_id,
             sandbox: sandbox.metadata.clone(),
             workspace,
             previous_disk_bytes,
+            other_workspace_disk_bytes,
         })
     })
 }
@@ -168,19 +264,46 @@ fn set_workspace_disk_bytes(
     })
 }
 
+fn set_workspace_memory_bytes(
+    state_dir: &std::path::Path,
+    plan: &ResizePlan,
+    new_memory_bytes: Option<u64>,
+) -> Result<()> {
+    with_registry_mut(state_dir, |registry| {
+        let workspace = registry
+            .sandboxes
+            .get_mut(&plan.sandbox_id)
+            .and_then(|sandbox| sandbox.workspaces.get_mut(&plan.workspace_id))
+            .ok_or_else(|| anyhow!("workspace '{}' not found", plan.workspace_id))?;
+        workspace.limits.memory_bytes = new_memory_bytes;
+        workspace.limits.validate()?;
+        persist_workspace_metadata(workspace)
+    })
+}
+
 fn restart_workspace_after_resize(
     state_dir: &std::path::Path,
     plan: &ResizePlan,
     apparmor_profile: Option<&str>,
     selinux_label: Option<&str>,
 ) -> Result<bool> {
+    // The relaunch reads the record rather than the plan, so the memory limit that
+    // was just written is the one the new runtime is started with.
+    let workspace = with_registry(state_dir, |registry| {
+        registry
+            .sandboxes
+            .get(&plan.sandbox_id)
+            .and_then(|sandbox| sandbox.workspaces.get(&plan.workspace_id))
+            .cloned()
+            .ok_or_else(|| anyhow!("workspace '{}' not found", plan.workspace_id))
+    })?;
     // Reserving the address durably marks the workspace as starting, so a crash
     // during the relaunch is visible instead of looking like a stopped workspace.
     let reserved_ip = mark_workspace_starting(state_dir, &plan.sandbox_id, &plan.workspace_id)?;
     let started = match launch_workspace_runtime(
         state_dir,
         &plan.sandbox,
-        &plan.workspace,
+        &workspace,
         apparmor_profile,
         selinux_label,
         &reserved_ip,
@@ -227,17 +350,19 @@ fn restart_workspace_after_resize(
     }
 }
 
+/// Resize a workspace's disk allocation.
 pub fn resize_workspace_disk(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
     workspace_selector: &str,
     new_disk_bytes: u64,
 ) -> Result<WorkspaceResizeResult> {
-    resize_workspace_disk_with_security(
+    resize_workspace_with_security(
         state_dir,
         sandbox_selector,
         workspace_selector,
-        new_disk_bytes,
+        Some(new_disk_bytes),
+        None,
         None,
         None,
     )

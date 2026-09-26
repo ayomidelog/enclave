@@ -11,6 +11,16 @@ pub fn update_sandbox_limits(
             .sandboxes
             .get_mut(&sandbox_id)
             .ok_or_else(|| anyhow!("sandbox '{}' not found", selector))?;
+        // A budget below what the sandbox already allocates is refused rather than
+        // stored: the workspaces holding that space already exist, so the sandbox
+        // would be over its own limit the moment it was set and nothing would bring it
+        // back inside until one of them was shrunk or destroyed.
+        if let Some(budget) = limits.disk_bytes {
+            let mut prospective = entry.metadata.limits.clone();
+            prospective.disk_bytes = budget;
+            prospective
+                .check_disk_budget_covers(crate::workspace::sandbox_workspace_disk_bytes(entry))?;
+        }
         if entry.metadata.limits.apply_update(limits)? {
             persist_sandbox_metadata(&entry.metadata)?;
         }

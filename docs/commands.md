@@ -107,6 +107,7 @@ enclave list
 enclave stats
 enclave ps
 enclave ps --local    # alias: --project
+enclave resize  <sandbox> [--memory-mb N] [--disk-mb N] [--max-procs N]
 enclave status  <sandbox>
 enclave remove  <sandbox-id>
 enclave wipe
@@ -119,6 +120,7 @@ enclave wipe
 | `stop` | Stop all workspaces in the sandbox, then stop the sandbox. |
 | `pause` | Freeze the sandbox cgroup while preserving workspace processes, namespaces, mounts, and storage for fast resume. |
 | `resume` | Thaw a paused sandbox and best-effort restore its published ports. Port conflicts are reported without stopping workspaces. |
+| `resize` | Change a sandbox's resource limits. Each target is optional and an omitted one is left alone. Memory and process limits are cgroup values and are applied to a running sandbox without restarting it. `--disk-mb` sets the total disk budget the sandbox's workspaces are measured against, since a sandbox rootfs is a shared lower layer rather than an image of its own; a budget below what the workspaces already allocate is refused, naming the total. |
 | `destroy` | Stop and permanently delete a sandbox and all its workspaces. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List all sandboxes. |
 | `stats` | Show live stats for all running workspaces across all sandboxes. |
@@ -206,7 +208,7 @@ Read-only requests such as `workspace status` are not journaled and print no id.
 
 ```bash
 enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
-enclave workspace resize  <sandbox> <workspace> --disk-mb N
+enclave workspace resize  <sandbox> <workspace> [--disk-mb N] [--memory-mb N]
 enclave workspace cp      <sandbox> <workspace> <src> <dst>
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>
@@ -230,7 +232,7 @@ enclave workspace stats   <workspace>
 | Command | Description |
 |---------|-------------|
 | `create` | Create a new workspace inside a sandbox with optional resource limits. |
-| `resize` | Increase the disk allocation of an Enclave-managed workspace. The target is an absolute size in MiB; host-backed workspace directories and decreases are not supported. |
+| `resize` | Change a workspace's disk allocation, its memory limit, or both. Each target is an absolute size in MiB and an omitted one is left alone. The disk can be grown or shrunk; shrinking is refused when the filesystem holds more data than the target, and the message names the smallest allocation that would work. A disk change stops and restarts a running workspace; a memory change is applied to the running runtime through its cgroup without interrupting it. Host-backed `workspace_dir`/`path` workspaces have no managed disk to resize. |
 | `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. Transfers stage data before committing it, reject special files, and do not overwrite an existing destination entry. |
 | `start` | Start a workspace session (namespaces + mounts). |
 | `stop` | Stop a running workspace session. |

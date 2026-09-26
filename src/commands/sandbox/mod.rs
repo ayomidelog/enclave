@@ -15,4 +15,4 @@ mod lifecycle;
 
 pub(crate) use create::run_create;
 pub(crate) use inspect::{run_list, run_remove, run_status, run_wipe};
-pub(crate) use lifecycle::{run_destroy, run_pause, run_resume, run_start, run_stop};
+pub(crate) use lifecycle::{run_destroy, run_pause, run_resize, run_resume, run_start, run_stop};

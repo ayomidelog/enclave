@@ -127,6 +127,7 @@ pub fn run() -> Result<()> {
         Commands::Ps(args) => ps::run_ps(&cli.socket, args),
         Commands::Status { sandbox } => sandbox::run_status(&cli.socket, &sandbox),
         Commands::Remove { sandbox_id } => sandbox::run_remove(&cli.socket, &sandbox_id),
+        Commands::Resize(args) => sandbox::run_resize(&cli.socket, args),
         Commands::Wipe(args) => sandbox::run_wipe(&cli.socket, args),
         Commands::Workspace { command } => workspace::run_workspace_command(&cli.socket, command),
         Commands::Snapshot { command } => workspace::run_snapshot_command(&cli.socket, command),

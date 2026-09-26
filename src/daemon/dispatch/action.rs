@@ -7,6 +7,13 @@ pub(super) enum Action {
     Init,
     SandboxCreate,
     SandboxUpdate,
+    /// Change the resource limits of an existing sandbox.
+    ///
+    /// Distinct from `SandboxUpdate`, which reconciles a sandbox's definition from an
+    /// Enclavefile and never fails on a value the sandbox already has. A resize is an
+    /// explicit operator request, so it is refused when it would put the sandbox over
+    /// its own budget or set a limit nothing could run inside.
+    SandboxResize,
     SandboxStart,
     SandboxStop,
     SandboxPause,
@@ -66,6 +73,7 @@ impl Action {
             self,
             Self::SandboxCreate
                 | Self::SandboxUpdate
+                | Self::SandboxResize
                 | Self::SandboxStart
                 | Self::SandboxStop
                 | Self::SandboxPause
@@ -120,6 +128,7 @@ impl Action {
             "init" => Self::Init,
             "sandbox.create" => Self::SandboxCreate,
             "sandbox.update" => Self::SandboxUpdate,
+            "sandbox.resize" => Self::SandboxResize,
             "sandbox.start" => Self::SandboxStart,
             "sandbox.stop" => Self::SandboxStop,
             "sandbox.pause" => Self::SandboxPause,
