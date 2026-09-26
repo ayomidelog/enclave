@@ -1,6 +1,7 @@
 //! The fixture a crash test builds and the assertion it ends with.
 
 use std::fs;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -246,6 +247,31 @@ impl CrashFixture {
     pub(super) fn spawn(&self, args: &[&str]) -> Child {
         self.daemon.spawn(args)
     }
+
+    /// Take the registry lock so the daemon cannot commit a transition.
+    pub(super) fn hold_registry_lock(&self) -> RegistryLockGuard {
+        RegistryLockGuard::acquire(&self.state.join("registry.lock"))
+    }
+
+    /// The status the registry records for the fixture's workspace.
+    ///
+    /// Read from the file rather than through the CLI on purpose: a test holding
+    /// the registry lock would block a request that reads the registry too.
+    pub(super) fn registry_workspace_status(&self) -> String {
+        let path = self.state.join("registry.json");
+        let raw = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read the registry {}: {error}", path.display()));
+        let registry: serde_json::Value =
+            serde_json::from_str(&raw).expect("the registry is valid json");
+        let sandbox_id = self.sandbox_id();
+        let workspace_id = self.workspace_id();
+        registry["sandboxes"][&sandbox_id]["workspaces"][&workspace_id]["status"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("the registry does not record a status for workspace '{workspace_id}'")
+            })
+            .to_string()
+    }
 }
 
 impl Drop for CrashFixture {
@@ -256,6 +282,53 @@ impl Drop for CrashFixture {
         let _ = self.daemon.cli(&["daemon", "stop"]);
         let _ = fs::remove_dir_all(&self.state);
         let _ = fs::remove_dir_all(&self.socket_dir);
+    }
+}
+
+/// The registry lock, held for as long as this guard lives.
+///
+/// The commit a start performs is the only step of a launch that takes the
+/// registry lock, so a test that holds the lock from outside decides when the
+/// commit can happen rather than racing it. That is what makes the window
+/// between a running runtime and the record that names it a window a test can
+/// act inside: it stays open until the guard is dropped.
+///
+/// The lock is `flock(2)` on the same file the daemon uses, so holding it blocks
+/// the daemon's own attempt rather than being advisory to this process alone.
+pub(super) struct RegistryLockGuard {
+    file: fs::File,
+}
+
+impl RegistryLockGuard {
+    /// Take the registry lock, waiting briefly if the daemon is between writes.
+    fn acquire(path: &Path) -> Self {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .unwrap_or_else(|error| panic!("open the registry lock {}: {error}", path.display()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc == 0 {
+                return Self { file };
+            }
+            let error = std::io::Error::last_os_error();
+            assert!(
+                Instant::now() < deadline,
+                "could not take the registry lock {}: {error}",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for RegistryLockGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
     }
 }
 

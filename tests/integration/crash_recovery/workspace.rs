@@ -56,6 +56,12 @@ fn a_daemon_killed_during_a_workspace_launch_recovers() {
 /// starting. A recovery that trusted the record would leave a runtime nothing describes;
 /// one that trusted the process would adopt a runtime whose identity was never committed.
 /// What the daemon does instead is roll back, which is what this asserts.
+///
+/// The window is a few filesystem writes wide, which a fast host closes before a test
+/// can react to the phase marker it watches for, so the test holds the registry lock
+/// for the whole launch. Committing the runtime identity is the one step of a launch
+/// that takes that lock, so the daemon cannot close the window while the guard is held,
+/// and the status read below proves the kill landed on the near side of it.
 #[test]
 #[ignore = "requires root privileges and namespace/mount support"]
 fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
@@ -70,6 +76,17 @@ fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
         &fixture.sandbox_name,
         &fixture.workspace_name,
     ]);
+    // The reservation is taken under the registry lock before this phase is written,
+    // so waiting for it is what keeps the guard from blocking the start before it has
+    // a runtime to leave behind. The launch itself is still ahead, and the commit is
+    // behind that.
+    assert!(
+        fixture
+            .daemon
+            .wait_for_phase("workspace.start", "launch_runtime", Duration::from_secs(20)),
+        "the start never reached its launch phase, so killing here would test nothing"
+    );
+    let lock = fixture.hold_registry_lock();
     assert!(
         fixture.daemon.wait_for_phase(
             "workspace.start",
@@ -78,8 +95,15 @@ fn a_daemon_killed_before_a_workspace_start_commits_recovers() {
         ),
         "the start never reached its commit phase, so killing here would test nothing"
     );
+    assert_eq!(
+        fixture.registry_workspace_status(),
+        "starting",
+        "the start committed its runtime metadata before the daemon was killed, so this \
+         run tested nothing: the registry lock was not held across the commit"
+    );
     fixture.daemon.kill();
     reap(child);
+    drop(lock);
     fixture.daemon.start();
 
     assert_recovered(&fixture);
