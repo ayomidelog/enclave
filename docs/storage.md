@@ -98,6 +98,44 @@ Each workspace starts from the shared sandbox rootfs, but its writable home area
 - In both cases, `/home` is presented through an idmapped bind mount rather than a raw host bind.
 - `enclave workspace cp` operates on the live mounted workspace filesystem. It is a streaming transfer and does not create a separate archive or durable copy in Enclave state.
 
+### What the quota-backed backend costs
+
+`disk_mb` selects a different storage backend rather than a size on the same one:
+the workspace's `/home`, its private `/tmp`, and its root OverlayFS writes all
+live on a sparse ext4 image attached to a loop device, instead of on a directory
+in the state tree. That buys enforced quota, and it costs the loop attach, the
+mount, and the overlay setup on every start.
+
+Measured on the validation host (AMD EPYC, kernel 6.8.0, ext2/ext3 state
+directory), with a 256 MiB quota against a default directory-backed workspace in
+the same sandbox, one sample each and no special tuning:
+
+| step | directory-backed | quota-backed |
+|---|---|---|
+| create | 173 ms | 438 ms |
+| first start | 21 ms | 21 ms |
+| stop after create | 74 ms | 109 ms |
+| start after a stop | 114–138 ms | 140–169 ms |
+| stop after a start | 101–106 ms | 97–108 ms |
+| destroy | 40 ms | 49 ms |
+
+Two of those rows are worth reading carefully. Creation is the expensive step,
+because it is where `mkfs.ext4` runs; a start that finds the image already
+attached skips the mount entirely, which is why the first start matches the
+directory tier. Every start after a stop attaches the image again, which is the
+55 ms difference in that row, and it is the number to compare against a pause and
+resume rather than against a cold boot.
+
+Cleanup is the other half of a backend's behavior. A stop unmounts the image and
+detaches its loop device; the kernel releases an autoclear device 22–48 ms after
+the unmount on this host, and Enclave waits for that release and verifies it
+rather than reporting success on the unmount alone. `enclave workspace destroy`
+proves the same thing through its certificate, so a workspace whose loop device
+survived is reported as an incomplete cleanup rather than a completed one.
+`enclave doctor` reports any loop device still backing an image under the state
+directory. `tools/perf/live-quota.sh` runs the whole sequence and fails if a loop
+device is left behind.
+
 ## Runtime and snapshot data
 
 - `workspaces/<workspace-id>/runtime/` stores runtime metadata such as PID, logs, and readiness markers. Persistent `workspace exec` diagnostics are appended to `session-helper.log`; the helper socket itself uses a short private path under `/run/enclave` and is removed when the runtime identity is invalidated.

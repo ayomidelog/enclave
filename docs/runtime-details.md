@@ -93,6 +93,65 @@ Rough ballpark on a 4-core x86_64 host (NVMe):
 
 Numbers vary by host hardware, suite, and setup commands. The key tradeoff: one shared rootfs means the bootstrap cost is paid once regardless of workspace count.
 
+### Where a workspace start spends its time
+
+The ballpark above is a total. What is worth knowing before optimizing anything is
+the share each phase has of it, because two phases that each cost a fifth are worth
+different work than one that costs two fifths. `tools/perf/phases.sh` reads that
+breakdown out of a daemon log written with `ENCLAVE_PERF=1`.
+
+Medians of eight steady-state starts of one workspace, release binary, validation
+host (AMD EPYC, kernel 6.8.0), `ENCLAVE_PERF=1`, one up worker:
+
+| phase | median | share of the request |
+|---|---|---|
+| `workspace.start.network` | 51 ms | 39% |
+| `workspace.start.session` | 32 ms | 25% |
+| `workspace.start.intent` | 15 ms | 11% |
+| `workspace.start.commit` | 15 ms | 12% |
+| `workspace.start.cgroup` | 9 ms | 7% |
+| `workspace.start.commit_registry` | 7 ms | 5% |
+| `workspace.start.auth` | 0.2 ms | 0.1% |
+| `workspace.start.storage` | 0.01 ms | 0.0% |
+| `daemon.request` (the total) | 130 ms | 100% |
+
+Two things are worth reading from that table rather than from the totals. Storage
+is effectively free on the default tier, so a storage optimization on a
+directory-backed workspace buys nothing; the quota tier is where storage work
+appears, and `docs/storage.md` has that breakdown. The network phase is the
+largest, and almost all of it is kernel work rather than process spawns: the two
+`ip` invocations cost about 4.5 ms each, against 24 ms for the veth pair and 26 ms
+for the anti-spoofing rules the kernel and `iptables` do. That is why
+`src/network/veth.rs` documents the decision not to replace `ip` with rtnetlink:
+it would remove about 10 ms of a 130 ms start and none of the kernel work.
+
+### Why the session is several processes
+
+The session phase is the second largest, and the plan proposes evaluating a
+persistent runtime manager with prewarmed namespace templates against it. Measured,
+the phase does not support that work.
+
+Of the 32 ms median, 4 ms is the `setsid` fork and exec, 26 ms is the readiness
+wait, and under 0.1 ms is staging the helper binary. The readiness wait is not
+spinning: it is an inotify watch on the runtime directory, so it costs one poll
+descriptor and no wakeups, and it ends the moment the session writes its ready
+file. The time inside it is the session doing its own work in its own namespaces:
+`session.init.namespace_refs`, the mounts, the pivot, and the hardening. A pooled
+or prewarmed runtime would have to be reset to a known state before it could be
+handed to a workspace, and that reset is the same mounts and the same pivot, so the
+only part a pool could remove is the 4 ms fork and exec. Against that stands a
+pool that holds a live namespace per idle workspace, which is memory and cgroup
+state the host pays for whether or not anyone starts a workspace, and a reset path
+that has to be proven as strong as a fresh launch before it can be trusted to hand
+out isolation. That is a large amount of code and a new class of risk for about 3%
+of a start.
+
+What the phase does have is a fixed 5 s readiness deadline
+(`ENCLAVE_SESSION_READY_MS`) that a healthy start never approaches, and a load
+failure recognized from the session log rather than waited out. Both are the
+properties that matter here: a start that cannot succeed fails with the reason
+rather than after the deadline.
+
 ### Lifecycle and shutdown controls
 
 | Variable | Default | Effect |
