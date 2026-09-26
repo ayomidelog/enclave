@@ -30,7 +30,9 @@ sudo env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh
 ```
 
 Any extra arguments are passed to the test binary, so one test can be run the
-same way it runs in the suite:
+same way it runs in the suite. The suite runs its tests one at a time, because two
+would compete for the same bridge and cgroup root; pass your own `--test-threads`
+and the script forwards that instead:
 
 ```bash
 sudo env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh --test-threads=1 integration::lifecycle
@@ -51,19 +53,47 @@ it needs rather than by what it covers.
 The `Makefile` wraps the common cases: `make test`, `make test-unit`,
 `make test-integration`, `make test-stress`, `make check`, and `make clippy`.
 
-Before you push, the three checks CI runs on every branch are:
+Before you push, run what CI runs. `tools/ci/verify.sh` is the unprivileged gate,
+and it is the same script the release workflow runs, so there is one definition of
+"verified" rather than two that drift apart:
 
 ```bash
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets -- --skip integration:: --skip stress::
+bash tools/ci/verify.sh
 ```
 
-CI also runs the privileged suite on its own runner, and the performance gate:
+It runs, in order: `cargo fmt --check`, `cargo check --all-targets --locked`,
+`cargo clippy --all-targets --locked -- -D warnings`, `cargo doc` with
+`RUSTDOCFLAGS=-D warnings`, `shellcheck -x -S warning` over `scripts/`,
+`tools/ci/`, and `tools/perf/`, and the tests. The pull-request workflow runs the
+same commands as separate steps so a failure names the check that produced it;
+when you add one to either, add it to both.
+
+The rest of CI is the part that needs more than a compiler:
 
 ```bash
 tools/perf/check-thresholds.sh
+tools/ci/check-lifecycle-report.sh
 ```
+
+`check-thresholds.sh` is the performance gate, and it fails on a regression rather
+than requiring an improvement. `check-lifecycle-report.sh` fails when the lifecycle
+report predates the script that generates it, since a hosted runner cannot take
+that measurement and a report nobody re-took should not ship. The privileged suite
+and the stress suite each get their own runner, because neither can share a host
+with anything else, and the workflows themselves are linted so a typo in one costs
+a ten-second job rather than a failed run.
+
+The jobs are `workflows`, `checks`, `perf`, `privileged`, and `stress`, and a
+`summary` job reports all five. Point a branch protection rule at `summary`: it
+fails when any job fails or is cancelled, so a job that never ran cannot read as
+green, and adding a job does not need a change to the rule.
+
+When a privileged or stress job fails, CI collects the host state the run left
+behind and uploads it as an artifact: cgroups and what is in them, interfaces,
+firewall rules, mounts, loop devices, processes, and each daemon's log. A lifecycle
+failure is a statement about host state, and the runner is destroyed when the job
+ends, so that artifact is often the whole diagnosis. You can run the same collector
+locally with `bash tools/ci/collect-host-state.sh host-state`.
 
 ### Where a test goes
 
@@ -227,14 +257,12 @@ code path runs.
 ## Releases
 
 A release is a tag matching `v*`. `.github/workflows/release.yml` then re-runs
-formatting, `cargo check`, clippy, the unprivileged tests, and the performance
-gate, and builds the archive on Ubuntu 22.04 so it runs against the older glibc of
-the supported distributions. That is worth remembering if you touch the build.
+`tools/ci/verify.sh` — the same gate a branch runs — plus the performance gate and
+the lifecycle report check, and builds the archive on Ubuntu 22.04 so it runs
+against the older glibc of the supported distributions. That is worth remembering
+if you touch the build. The archive is unpacked, checked against the checksum
+published beside it, and executed before it is attached, because the archive is
+what a user downloads rather than the binary in the build directory.
 
-Two checks are worth knowing about because they change what a pull request has to
-carry. The release workflow verifies that `docs/lifecycle-report.md` is newer than
-the script that generates it: a hosted runner cannot take the measurement, so the
-report is re-taken on a privileged host and committed with the change that moved
-the number. And the privileged suite runs in `.github/workflows/rust.yml` on every
-push, on a runner it can own, so a change to the lifecycle is checked against real
-host state before it is merged rather than at release time.
+The release also attaches the committed lifecycle report to the GitHub release and
+keeps it as a run artifact, so the numbers a release claims travel with it.

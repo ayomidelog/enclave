@@ -112,12 +112,94 @@ fn release_workflow_runs_verification_before_release() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/release.yml"))
         .expect("read release workflow");
     assert!(workflow.contains("workflow_dispatch:"));
-    assert!(workflow.contains("cargo fmt --all -- --check"));
-    assert!(workflow.contains("cargo check --all-targets"));
-    assert!(workflow.contains("cargo clippy --all-targets -- -D warnings"));
-    assert!(workflow.contains("cargo test --all-targets -- --skip integration:: --skip stress::"));
+    assert!(
+        workflow.contains("tools/ci/verify.sh"),
+        "the release must run the same verification a branch runs"
+    );
     assert!(workflow.contains("cargo build --release --locked"));
     assert!(workflow.contains("softprops/action-gh-release@v2"));
+
+    // The commands themselves live in the script, so that the release workflow and
+    // the pull-request workflow cannot drift apart. Checking the workflow alone
+    // would then pass on a script that had stopped checking anything, so the
+    // checks are pinned here too.
+    let verify = fs::read_to_string(repo_root().join("tools/ci/verify.sh"))
+        .expect("read the verification script");
+    for check in [
+        "cargo fmt --all -- --check",
+        "cargo check --all-targets --locked",
+        "cargo clippy --all-targets --locked -- -D warnings",
+        "cargo test --all-targets --locked",
+        "--skip integration:: --skip stress::",
+        "RUSTDOCFLAGS",
+        "shellcheck",
+    ] {
+        assert!(
+            verify.contains(check),
+            "the verification script must run {check}"
+        );
+    }
+}
+
+/// The stress suite drives repeated churn and concurrent lifecycle operations. It
+/// needs the same host as the privileged suite, so it runs through the same script
+/// that checks for it, and this pins that it is still wired in.
+#[test]
+fn continuous_integration_runs_the_stress_suite() {
+    let workflow = fs::read_to_string(repo_root().join(".github/workflows/rust.yml"))
+        .expect("read the rust workflow");
+    assert!(
+        workflow.contains("ENCLAVE_SUITE=stress_suite"),
+        "the stress suite must be selected by name"
+    );
+    assert!(
+        workflow.contains("tools/ci/privileged-suite.sh"),
+        "the stress suite must go through the host checks"
+    );
+}
+
+/// The published lifecycle report cannot go stale without a check failing.
+///
+/// The report is measured on a privileged host and committed, so no hosted runner
+/// can regenerate it. What both workflows can do is refuse a report that predates
+/// the script that produces it, and this pins that they do.
+#[test]
+fn the_lifecycle_report_check_is_wired_into_ci() {
+    for workflow in [
+        ".github/workflows/rust.yml",
+        ".github/workflows/release.yml",
+    ] {
+        let text = fs::read_to_string(repo_root().join(workflow))
+            .unwrap_or_else(|error| panic!("read {workflow}: {error}"));
+        assert!(
+            text.contains("tools/ci/check-lifecycle-report.sh"),
+            "{workflow} must check that the lifecycle report is current"
+        );
+    }
+}
+
+/// The scripts the workflows call are committed with their executable bit.
+///
+/// A workflow that references a script which is not committed, or is committed
+/// without the bit, fails on the runner rather than here.
+#[test]
+fn the_ci_helper_scripts_are_committed_and_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for name in [
+        "privileged-suite.sh",
+        "verify.sh",
+        "check-lifecycle-report.sh",
+        "collect-host-state.sh",
+    ] {
+        let path = repo_root().join("tools/ci").join(name);
+        let metadata = fs::metadata(&path)
+            .unwrap_or_else(|error| panic!("tools/ci/{name} is missing: {error}"));
+        assert!(
+            metadata.permissions().mode() & 0o111 != 0,
+            "tools/ci/{name} must be executable"
+        );
+    }
 }
 
 /// The privileged suite is wired into CI, and the wiring stays complete.

@@ -6,78 +6,96 @@ on:
       - "v*"
   workflow_dispatch:
 
+# No concurrency group: a release is a statement about one commit, and cancelling
+# it because another tag arrived would leave the first tag without an archive.
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
 jobs:
+  # The same unprivileged gate the pull-request workflow runs, through the same
+  # script, so a release cannot be gated on something weaker than a branch. It is
+  # deliberately not a copy of the workflow: one definition, run twice.
   verify:
+    name: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
         with:
-          toolchain: 1.85.0
-          components: clippy, rustfmt
+          # The lifecycle report check compares commit times.
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
 
-      - name: Cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: Cargo check
-        run: cargo check --all-targets
-
-      - name: Cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Cargo test
-        run: |
-          cargo test --all-targets -- --skip integration:: --skip stress::
+      - name: Formatting, lint, docs, scripts, and tests
+        run: bash tools/ci/verify.sh
 
       - name: Performance regression gate
         run: tools/perf/check-thresholds.sh
 
       # The lifecycle latency report is measured on a privileged host, which a
       # hosted runner is not, so the workflow checks the committed report against
-      # the tree it describes rather than regenerating it. A report whose template
-      # or script has changed since it was written is stale, and a release should
+      # the tree it describes rather than regenerating it. A report whose script or
+      # template has changed since it was written is stale, and a release should
       # not carry numbers nobody re-took.
       - name: Lifecycle report is current
-        run: |
-          if [[ ! -s docs/lifecycle-report.md ]]; then
-            printf 'docs/lifecycle-report.md is missing or empty\n' >&2
-            exit 1
-          fi
-          stale=$(find docs/lifecycle-report.md -newer tools/perf/lifecycle-report.sh -print -quit)
-          if [[ -z "$stale" ]]; then
-            printf 'docs/lifecycle-report.md is older than the script that generates it; rerun ENCLAVE_LIVE_ITERATIONS=12 tools/perf/lifecycle-report.sh\n' >&2
-            exit 1
-          fi
+        run: tools/ci/check-lifecycle-report.sh
 
   build-and-release:
+    name: build-and-release
     needs: verify
     # Build against glibc 2.35 so release binaries also run on Ubuntu 22.04
     # and Debian 12, instead of inheriting the newer ubuntu-latest libc.
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     permissions:
       contents: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
         with:
-          toolchain: 1.85.0
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
 
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Package binary
+      - name: Package the archive
         run: |
+          set -euo pipefail
           test -f target/release/enclave
           cp target/release/enclave enclave-linux-x86_64
           tar -czf enclave-linux-x86_64.tar.gz enclave-linux-x86_64
-          sha256sum enclave-linux-x86_64.tar.gz > enclave-linux-x86_64.tar.gz.sha256
+          sha256sum enclave-linux-x86_64.tar.gz >enclave-linux-x86_64.tar.gz.sha256
+
+      # The archive is what a user downloads, so it is unpacked, checked against the
+      # checksum published beside it, and executed here rather than assumed to work
+      # because the binary inside the build directory did.
+      - name: Check the archive unpacks, matches its checksum, and runs
+        run: |
+          set -euo pipefail
+          sha256sum -c enclave-linux-x86_64.tar.gz.sha256
+          work=$(mktemp -d)
+          tar -xzf enclave-linux-x86_64.tar.gz -C "$work"
+          "$work/enclave-linux-x86_64" --version
+
+      - name: Attach the lifecycle report
+        run: cp docs/lifecycle-report.md lifecycle-report.md
+
+      - name: Summarize the release
+        run: |
+          {
+            echo '## Release archive'
+            echo
+            echo '```'
+            ./enclave-linux-x86_64 --version
+            cat enclave-linux-x86_64.tar.gz.sha256
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -86,4 +104,15 @@ jobs:
           files: |
             enclave-linux-x86_64.tar.gz
             enclave-linux-x86_64.tar.gz.sha256
+            lifecycle-report.md
           generate_release_notes: true
+
+      # The report the release claims is the report it was measured against, so it
+      # is kept with the run as well as with the release. A tag pushed from a
+      # branch, which is what a manual dispatch is, still gets the artifact.
+      - name: Upload the lifecycle report
+        uses: actions/upload-artifact@v4
+        with:
+          name: lifecycle-report
+          path: lifecycle-report.md
+          retention-days: 90

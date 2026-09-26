@@ -1,0 +1,55 @@
+name: Set up the pinned toolchain
+# One place that installs the toolchain and warms the cargo cache, so the four
+# jobs that need them cannot drift apart in how they do it.
+#
+description: >-
+  Install the Rust toolchain that rust-toolchain.toml pins, and restore the cargo
+  download cache. The channel is read from the file rather than repeated here, so
+  the pin has one source of truth and a bump to it reaches every job.
+
+outputs:
+  channel:
+    description: The toolchain channel that was installed.
+    value: ${{ steps.pin.outputs.channel }}
+  lock:
+    description: A short digest of Cargo.lock, used to key the cache.
+    value: ${{ steps.pin.outputs.lock }}
+
+runs:
+  using: composite
+  steps:
+    - name: Read the pinned channel and the lock digest
+      id: pin
+      shell: bash
+      run: |
+        set -euo pipefail
+        channel=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain.toml | head -1)
+        if [[ -z "$channel" ]]; then
+          echo "::error file=rust-toolchain.toml::no channel is pinned"
+          exit 1
+        fi
+        # The lock digest is part of the cache key so a dependency change starts a
+        # fresh cache rather than restoring one built against other versions.
+        lock=$(sha256sum Cargo.lock | cut -c1-16)
+        printf 'channel=%s\n' "$channel" >>"$GITHUB_OUTPUT"
+        printf 'lock=%s\n' "$lock" >>"$GITHUB_OUTPUT"
+        printf 'pinned toolchain %s, Cargo.lock %s\n' "$channel" "$lock"
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ steps.pin.outputs.channel }}
+        components: clippy, rustfmt
+
+    # Only the download cache, never target/. A build of this tree fills 13 GB
+    # there, past the 10 GB a repository is allowed, so caching it would evict
+    # everything else and spend longer being uploaded and restored than the
+    # rebuild it saves. The registry is what a cold runner actually waits on.
+    - name: Cache the cargo download cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-${{ runner.os }}-${{ steps.pin.outputs.channel }}-${{ steps.pin.outputs.lock }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ steps.pin.outputs.channel }}-

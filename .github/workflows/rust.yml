@@ -5,35 +5,109 @@ on:
     branches:
       - "**"
   pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch supersedes the run in flight: the older
+# commit's result cannot change a decision about the newer one, so it is cancelled
+# rather than paid for. The group is per ref, so two branches still run together.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace on a panic is what makes a failing test diagnosable; without it a
+  # CI failure is a line number and no stack.
+  RUST_BACKTRACE: "1"
 
 jobs:
-  checks:
+  # The workflows are code, and a typo in one costs a run to find. actionlint
+  # checks the syntax, the expression syntax, the runner labels, the inputs and
+  # outputs of every action including the local one, and shellchecks every run
+  # block. It is the tool's own image, pinned to a version rather than to `latest`,
+  # because this job decides whether the rest of CI is trustworthy.
+  workflows:
+    name: workflows
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - name: Lint the workflows and the local action
+        uses: docker://rhysd/actionlint:1.7.12
         with:
-          toolchain: 1.85.0
-          components: clippy, rustfmt
+          args: -color
 
-      - name: Cargo fmt
+  # The unprivileged gate. These are the checks a change has to pass before it is
+  # worth spending a machine on the suites that need a host, and they are split
+  # into steps rather than one script so a failure names the check that produced
+  # it. tools/ci/verify.sh runs the same commands for a release; when you add one
+  # here, add it there too.
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Formatting
         run: cargo fmt --all -- --check
 
-      - name: Cargo check
-        run: cargo check --all-targets
+      # `check` before `clippy` on purpose: a type error reported by rustc is
+      # easier to read than the same error reported through a lint, and the second
+      # command is cheap once the first has built the crate.
+      - name: Compiles, all targets
+        run: cargo check --all-targets --locked
 
-      - name: Cargo clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Cargo test (unit + default suites)
+      # Documentation is code here: the module docs are where the decisions and the
+      # measurements behind them are recorded, so an unclosed tag or a broken
+      # intra-doc link is a defect rather than a cosmetic one.
+      - name: Documentation
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      # The scripts under scripts/, tools/ci/, and tools/perf/ are part of the
+      # product: the release workflow and the published benchmarks run them.
+      - name: Shell scripts
         run: |
-          cargo test --all-targets -- --skip integration:: --skip stress::
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
+          shellcheck -x -S warning scripts/*.sh tools/ci/*.sh tools/perf/*.sh
+
+      # `--no-fail-fast` so one failing test does not hide the rest. The two
+      # skipped prefixes are the suites that need root; they run below.
+      - name: Tests
+        run: |
+          cargo test --all-targets --locked --no-fail-fast \
+            -- --skip integration:: --skip stress::
+
+  # The performance gate and the published report. The gate fails on a regression
+  # rather than requiring an improvement. The report check compares commit times,
+  # so it needs full history.
+  perf:
+    name: perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
 
       - name: Performance regression gate
         run: tools/perf/check-thresholds.sh
+
+      - name: Lifecycle report is current
+        run: tools/ci/check-lifecycle-report.sh
 
   # The privileged suite is the only one that exercises the lifecycle end to end:
   # it creates namespaces, mounts, loop devices, cgroups, and firewall rules, and
@@ -43,31 +117,114 @@ jobs:
   #
   # It needs a machine it can own, because it mounts, creates interfaces, and
   # writes to the cgroup root. A hosted runner has the kernel and the privileges,
-  # but it is shared with nothing else of ours, so running it there is the closest
-  # thing to the validation host this is developed against. The suite starts its
-  # own daemon in its own state directory for every test, so it never touches a
+  # and it is not shared with anything else of ours, so running it there is the
+  # closest thing to the validation host this is developed against. Every test
+  # starts its own daemon in its own state directory, so the suite never touches a
   # sandbox that is already running.
   privileged:
+    name: privileged
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.85.0
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
       # The fixture rootfs is built from a static shell, and the suite shells out
-      # to the same tools the daemon does.
-      - name: Install host tools the suite needs
+      # to the same tools the daemon does. tools/ci/privileged-suite.sh checks for
+      # these before it runs and names any that are missing.
+      - name: Install the host tools the suite needs
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             busybox-static iproute2 iptables util-linux coreutils e2fsprogs tar
 
       - name: Build the test binaries
-        run: cargo build --tests
+        run: cargo build --tests --locked
 
-      - name: Run the privileged integration suite
+      - name: Run the privileged lifecycle suite
         run: sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh
+
+      # The runner is destroyed when the job ends, and a lifecycle failure is a
+      # statement about host state. Capture that state before it goes.
+      - name: Collect the host state the run left behind
+        if: failure()
+        run: sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/collect-host-state.sh host-state
+
+      - name: Upload the host state
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: privileged-host-state
+          path: host-state
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The stress suite drives repeated sandbox churn and concurrent lifecycle
+  # operations. It needs the same host as the privileged suite, so it goes through
+  # the same checks rather than repeating them here.
+  stress:
+    name: stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Install the host tools the suite needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static iproute2 iptables util-linux coreutils e2fsprogs tar
+
+      - name: Build the test binaries
+        run: cargo build --tests --locked
+
+      - name: Run the stress suite
+        run: |
+          sudo -E env "PATH=$PATH" "HOME=$HOME" ENCLAVE_SUITE=stress_suite \
+            bash tools/ci/privileged-suite.sh
+
+      - name: Collect the host state the run left behind
+        if: failure()
+        run: sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/collect-host-state.sh host-state
+
+      - name: Upload the host state
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-host-state
+          path: host-state
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # One place that says whether the whole thing passed. Point a branch protection
+  # rule at this job rather than at the four above, so adding a job does not need a
+  # change to the rule, and so a job that never ran cannot read as green.
+  summary:
+    name: summary
+    if: always()
+    needs: [workflows, checks, perf, privileged, stress]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write the job table
+        run: |
+          {
+            echo '## CI'
+            echo
+            echo '| job | result |'
+            echo '| --- | --- |'
+            echo '| workflows | ${{ needs.workflows.result }} |'
+            echo '| checks | ${{ needs.checks.result }} |'
+            echo '| perf | ${{ needs.perf.result }} |'
+            echo '| privileged | ${{ needs.privileged.result }} |'
+            echo '| stress | ${{ needs.stress.result }} |'
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      # `always()` above means this job runs even when the others failed, which is
+      # what makes the table useful. It has to fail with them, or a required check
+      # is green while the work it gates is red.
+      - name: Fail if any job did not pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo 'a job did not pass; see the table above' >&2
+          exit 1
