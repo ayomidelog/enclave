@@ -22,6 +22,7 @@ One file, one command, entire environment running.
 - [Roadmap](docs/roadmap.md)
 - [Lifecycle Latency Report](docs/lifecycle-report.md)
 - [Performance Harness](tools/perf/README.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Runtime recovery
 
