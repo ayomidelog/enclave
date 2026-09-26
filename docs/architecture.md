@@ -106,10 +106,18 @@ The registry records transitional states so a crash is never ambiguous:
 
 A transitional state means an operation is in flight and the recorded runtime
 identity may not be final yet. Nothing else may start a competing operation on that
-resource, and a daemon that starts and finds one resolves it deterministically:
-an interrupted start is rolled back and an interrupted stop is completed, never
-resumed. Resuming a half-started runtime would adopt a process whose identity the
-record does not prove.
+resource, and a daemon that starts and finds one resolves it deterministically: an
+interrupted start is rolled back and an interrupted stop is completed. Neither is
+resumed, because resuming a half-started runtime would adopt a process whose identity
+the record does not prove.
+
+The one case that completes rather than rolls back is the one where the record does
+prove it. A launch writes the workspace's own record — status, runtime pid, start
+time, and namespace references — before it commits the registry, so a daemon killed
+between those two leaves the on-disk copy saying `running` while the registry still
+says `starting`. Repair adopts the on-disk copy, which is the precedence rule below,
+and the status is then no longer transitional, so recovery finds a runtime whose
+recorded identity matches and keeps it. The start is complete, not half-finished.
 
 Cleanup is proved rather than asserted. A stop captures the resources the workspace
 owns before it signals anything, then verifies the host afterwards — runtime pid and

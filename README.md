@@ -469,8 +469,11 @@ sudo enclave doctor --repair
 `doctor --repair` reconciles stale registry records, workspace namespace references,
 mounts, and safe orphaned files, and resolves an interrupted lifecycle transition
 rather than only reporting it: an interrupted stop is completed and an interrupted
-start is rolled back. Destructive commands require a running daemon by default; use
-`sudo enclave daemon start` or opt in for one command with `--start-daemon`.
+start is rolled back, unless the launch had already written the workspace's own
+record, in which case the next daemon completes the start because that record names
+the runtime and its start time. Destructive commands require a running daemon by
+default; use `sudo enclave daemon start` or opt in for one command with
+`--start-daemon`.
 
 Every lifecycle operation runs under one operation id. Mutating commands print it, a
 failure names it, and the id identifies the operation's durable record under the

@@ -33,7 +33,8 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
     record success while a runtime, cgroup, mount, loop device, interface, rule, or
     file is still held.
   - Transitional lifecycle states with deterministic recovery: an interrupted start
-    is rolled back and an interrupted stop is completed, never resumed.
+    is rolled back and an interrupted stop is completed, never resumed, except for a
+    start whose own record was already written, which the next daemon completes.
   - A published p50/p95/p99 lifecycle report taken with the release binary and the
     host it was measured on, with a per-tier benchmark for each lifecycle tier.
 - **Host capability diagnostics**
