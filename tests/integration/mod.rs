@@ -2,6 +2,7 @@ mod auth_flow;
 mod cgroup_cleanup;
 mod cgroup_failure;
 mod cgroup_limits;
+mod cleanup_failure;
 mod cleanup_safety;
 mod concurrency;
 mod concurrent_ops;

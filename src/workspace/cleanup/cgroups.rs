@@ -19,21 +19,16 @@ pub(crate) fn remove_workspace_cgroups(
     let sandbox_path = std::path::PathBuf::from("/sys/fs/cgroup")
         .join(crate::sandbox::cgroup::sandbox_cgroup_name(&sandbox.id))
         .join(&workspace_name);
+    // Each removal already names the path it could not remove, so the only label
+    // worth adding is the one that says which of the two removals this was.
     let mut errors = Vec::new();
-    let mut attempts = vec![(
-        sandbox_path.display().to_string(),
-        crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path),
-    )];
+    if let Err(error) = crate::sandbox::cgroup::remove_cgroup_path(&sandbox_path) {
+        errors.push(format!("{error:#}"));
+    }
     if let Some(pid) = pid {
         let legacy_name = legacy_workspace_cgroup_name(pid);
-        attempts.push((
-            format!("legacy {legacy_name}"),
-            crate::sandbox::cgroup::remove_workspace_cgroup(&legacy_name),
-        ));
-    }
-    for (label, result) in attempts {
-        if let Err(error) = result {
-            errors.push(format!("{label}: {error:#}"));
+        if let Err(error) = crate::sandbox::cgroup::remove_workspace_cgroup(&legacy_name) {
+            errors.push(format!("legacy pid-named cgroup: {error:#}"));
         }
     }
     if errors.is_empty() {
