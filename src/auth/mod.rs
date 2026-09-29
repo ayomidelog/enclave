@@ -13,6 +13,7 @@ mod inject;
 mod manager;
 mod providers;
 mod scope;
+mod scrub;
 mod storage;
 
 pub use audit::{AuditAction, AuditEvent};
@@ -23,4 +24,5 @@ pub use providers::{
     validate_provider_name,
 };
 pub use scope::{validate_user_id, TokenScope};
+pub use scrub::scrub_secrets;
 pub use storage::{StoreOutcome, StoredToken};

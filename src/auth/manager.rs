@@ -172,6 +172,34 @@ impl AuthManager {
         tokens
     }
 
+    /// The tokens a workspace holds, without the warnings `resolve_tokens` emits.
+    ///
+    /// This runs on every command rather than once per start, so a provider with
+    /// nothing stored would otherwise warn on every exec. A token that cannot be
+    /// read is skipped for the same reason: it is not in the workspace either, so
+    /// there is nothing to scrub.
+    pub fn tokens_for_command(
+        &self,
+        owner: Option<&str>,
+        auth_providers: &[String],
+    ) -> Vec<WorkspaceAuthToken> {
+        let scope = TokenScope::for_owner(owner);
+        auth_providers
+            .iter()
+            .filter_map(|provider| {
+                let env_var = providers::provider_env_var(provider)?;
+                let token = storage::load_token(&self.state_dir, &scope, provider)
+                    .ok()
+                    .flatten()?;
+                Some(WorkspaceAuthToken {
+                    provider: provider.clone(),
+                    env_var: env_var.to_string(),
+                    token,
+                })
+            })
+            .collect()
+    }
+
     fn resolve_env_tokens(
         &self,
         owner: Option<&str>,

@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -46,16 +47,50 @@ pub(super) fn run_workspace_exec_direct(
     if args.command.is_empty() {
         bail!("workspace exec requires at least one command argument");
     }
+
+    // The output of a command can contain a token the workspace holds, and the
+    // output travels further than the workspace does. Scrubbing happens in the
+    // daemon, which is the only side that holds the values, so this asks for the
+    // command to be run there. `--no-scrub` keeps the direct streaming path,
+    // which is what a caller who wants a terminal or a pipe needs.
+    if args.no_scrub {
+        tracing::warn!(
+            "--no-scrub: the output of this command is printed exactly as it was written, including any injected token value"
+        );
+        let response = send_managed(
+            ctx.socket,
+            "workspace.runtime",
+            serde_json::json!({
+                "sandbox": args.sandbox_id,
+                "workspace": args.workspace_id,
+            }),
+        )?;
+        let runtime: WorkspaceRuntimeInfo = serde_json::from_value(response)?;
+        return run_internal_workspace_command(runtime, &args.cwd, &args.command, true);
+    }
+
     let response = send_managed(
         ctx.socket,
-        "workspace.runtime",
+        "workspace.exec",
         serde_json::json!({
             "sandbox": args.sandbox_id,
             "workspace": args.workspace_id,
+            "cwd": args.cwd,
+            "command": args.command,
+            "scrub": true,
         }),
     )?;
-    let runtime: WorkspaceRuntimeInfo = serde_json::from_value(response)?;
-    run_internal_workspace_command(runtime, &args.cwd, &args.command, true)
+    let result: crate::workspace::WorkspaceExecResult = serde_json::from_value(response)?;
+    let mut stdout = std::io::stdout();
+    stdout.write_all(result.stdout.as_bytes())?;
+    stdout.flush()?;
+    let mut stderr = std::io::stderr();
+    stderr.write_all(result.stderr.as_bytes())?;
+    stderr.flush()?;
+    if result.exit_code != 0 {
+        std::process::exit(result.exit_code);
+    }
+    Ok(())
 }
 
 fn run_internal_workspace_command(
