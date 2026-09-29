@@ -6,27 +6,12 @@ use enclave::auth::{AuthManager, TokenScope};
 use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
 };
-use enclave::workspace::{destroy_workspace, start_workspace, stop_workspace, WorkspaceLimits};
+use enclave::workspace::{
+    destroy_workspace, exec_workspace_command, start_workspace, stop_workspace,
+    WorkspaceCreateOptions, WorkspaceLimits,
+};
 
-fn root_only() -> bool {
-    unsafe { libc::geteuid() == 0 }
-}
-
-fn prepare_cached_rootfs(state_dir: &Path, suite: &str) {
-    let cache = state_dir.join("sandboxes").join("rootfs-cache").join(suite);
-    fs::create_dir_all(cache.join("bin")).expect("create bin");
-    fs::create_dir_all(cache.join("etc")).expect("create etc");
-    fs::create_dir_all(cache.join("usr")).expect("create usr");
-    fs::write(cache.join("bin/sh"), "#!/bin/sh\nexit 0\n").expect("write shell");
-}
-
-fn state_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("{}-{}", name, std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create state dir");
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("secure state dir");
-    dir
-}
+use super::support::{prepare_cached_rootfs, root_only, state_dir};
 
 #[test]
 #[ignore = "requires root privileges and namespace/mount support"]
@@ -144,6 +129,224 @@ fn workspace_start_writes_declared_auth_token_file() {
         !shared_rootfs_env_token.exists(),
         "environment token should not be written into shared sandbox rootfs"
     );
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// A workspace can ask for a credential the provider table does not contain, and
+/// the value it prints is scrubbed out of the captured output.
+///
+/// This is the end-to-end shape of the feature: a slot stored under a free-form
+/// name, a workspace that names the variable it wants, and output that comes back
+/// with the value removed. The value is a canary, so finding it anywhere in the
+/// output or in the audit log is the failure.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn a_free_form_environment_token_is_injected_and_scrubbed() {
+    if !root_only() {
+        return;
+    }
+
+    const CANARY: &str = "hunter2-canary-value";
+    let state = state_dir("enclave-int-auth-free-form");
+    prepare_cached_rootfs(&state, "bookworm");
+    let manager = AuthManager::new(&state);
+    manager
+        .store_token(
+            &TokenScope::User("alice".to_string()),
+            "netflix-password",
+            CANARY,
+            false,
+        )
+        .expect("store the slot");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-auth-free-form-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let workspace = enclave::workspace::create_workspace_with_options(
+        &state,
+        &sandbox.id,
+        "vault",
+        WorkspaceCreateOptions {
+            limits: WorkspaceLimits::default(),
+            owner: Some("alice".to_string()),
+            env_tokens: vec!["NETFLIX_PASSWORD".to_string()],
+            ..WorkspaceCreateOptions::default()
+        },
+    )
+    .expect("create workspace");
+
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let pid = started.runtime_pid.expect("runtime pid");
+    let env_token_path = Path::new("/proc")
+        .join(pid.to_string())
+        .join("root/run/enclave/env/NETFLIX_PASSWORD");
+    assert_eq!(
+        fs::read_to_string(&env_token_path).expect("read the injected variable"),
+        CANARY,
+        "the slot's value must reach the workspace under the variable it asked for"
+    );
+
+    let result = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf 'value=%s' \"$NETFLIX_PASSWORD\"".to_string(),
+        ],
+    )
+    .expect("execute a command that prints the variable");
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+    assert!(
+        result.stdout.contains("[REDACTED]"),
+        "the value must be replaced in the output: {}",
+        result.stdout
+    );
+    assert!(
+        !result.stdout.contains(CANARY),
+        "the value must not survive into the output: {}",
+        result.stdout
+    );
+
+    let log = fs::read_to_string(state.join("auth/audit.log")).expect("read the audit log");
+    assert!(
+        !log.contains(CANARY),
+        "the audit log must never contain a value: {log}"
+    );
+    let injects: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every audit line is json"))
+        .filter(|event: &serde_json::Value| event["action"] == "inject")
+        .collect();
+    // One for the start, one for the command: the same credential reaching the
+    // workspace twice is two events, and a command that resolved nothing would
+    // have added none.
+    assert_eq!(injects.len(), 2, "one inject per operation: {log}");
+    for event in injects {
+        assert_eq!(event["provider"], "netflix-password");
+        assert_eq!(event["user"], "alice");
+        assert_eq!(event["workspace"], workspace.id);
+    }
+
+    stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
+    destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
+
+/// Revoking a credential takes effect on the next command, not the next restart.
+///
+/// The wrapper inside the workspace re-reads its env directory for every command,
+/// so re-resolving the store before each command is what makes a revocation
+/// immediate. Without it the workspace would keep handing out a credential the
+/// store no longer has until it was restarted.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn a_revoked_environment_token_is_gone_from_the_next_command() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-auth-revoked");
+    prepare_cached_rootfs(&state, "bookworm");
+    let manager = AuthManager::new(&state);
+    let alice = TokenScope::User("alice".to_string());
+    manager
+        .store_token(&alice, "netflix-password", "hunter2", false)
+        .expect("store the slot");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-auth-revoked-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let workspace = enclave::workspace::create_workspace_with_options(
+        &state,
+        &sandbox.id,
+        "vault",
+        WorkspaceCreateOptions {
+            limits: WorkspaceLimits::default(),
+            owner: Some("alice".to_string()),
+            env_tokens: vec!["NETFLIX_PASSWORD".to_string()],
+            ..WorkspaceCreateOptions::default()
+        },
+    )
+    .expect("create workspace");
+    let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+    let pid = started.runtime_pid.expect("runtime pid");
+    let env_token_path = Path::new("/proc")
+        .join(pid.to_string())
+        .join("root/run/enclave/env/NETFLIX_PASSWORD");
+    assert!(env_token_path.exists(), "the token starts out injected");
+
+    assert!(
+        manager
+            .delete_token(&alice, "netflix-password")
+            .expect("revoke"),
+        "the slot must have been there to remove"
+    );
+
+    let result = exec_workspace_command(
+        &state,
+        &sandbox.id,
+        &workspace.id,
+        "/home",
+        &[
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf 'value=[%s]' \"$NETFLIX_PASSWORD\"".to_string(),
+        ],
+    )
+    .expect("execute a command after the revocation");
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout={} stderr={}",
+        result.stdout, result.stderr
+    );
+    assert_eq!(
+        result.stdout, "value=[]",
+        "a revoked credential must not be exported: {}",
+        result.stdout
+    );
+    assert!(
+        !env_token_path.exists(),
+        "the revoked token must be removed from the workspace, not left behind"
+    );
+
+    // The start recorded its injection; the command after the revocation injected
+    // nothing, so it recorded nothing.
+    let log = fs::read_to_string(state.join("auth/audit.log")).expect("read the audit log");
+    let injects = log
+        .lines()
+        .filter(|line| line.contains("\"action\":\"inject\""))
+        .count();
+    assert_eq!(injects, 1, "one inject, from the start: {log}");
 
     stop_workspace(&state, &sandbox.id, &workspace.id).expect("stop workspace");
     destroy_workspace(&state, &sandbox.id, &workspace.id).expect("destroy workspace");
