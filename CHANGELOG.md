@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 2.2.0 - 2026-09-29
+
+### Fixed
+
+- A wipe racing a workspace start no longer leaves a workspace directory on the
+  host that no registry record describes. A launch writes the workspace's own
+  record before it commits, and writing that record creates the directory it goes
+  in, so a destroy that removed the record and the directory while the launch was
+  in flight had its work undone behind it: the launch put the directory back,
+  then refused to commit because the record it meant to update was gone, and its
+  rollback released the cgroup, the network, and the mounts but not the files.
+  The start's rollback now removes the directory when the record is gone. It
+  leaves the directory alone whenever the record survives, so a start that fails
+  for its own reason does not delete a healthy workspace's files, and a registry
+  that cannot be read counts as registered. Measured on the race test, which runs
+  the two operations against each other with one cleanup worker and twenty
+  workspaces queued ahead of the target: 8 passes of 20 before, 20 of 20 after.
+
 ## 2.1.0 - 2026-09-29
 
 This release adds an optional `owner` field to a workspace record and the token
