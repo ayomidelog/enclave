@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+use super::audit::{self, AuditAction, AuditEvent};
 use super::scope::TokenScope;
 use super::storage::{self, StoreOutcome, StoredToken};
 use super::{inject, providers};
@@ -19,6 +20,18 @@ pub struct WorkspaceAuthToken {
     pub provider: String,
     pub env_var: String,
     pub token: String,
+}
+
+/// The workspace a token is being resolved for.
+///
+/// The ids travel with the owner because an audit event about a token reaching a
+/// workspace has to name the workspace and the namespace it came from, and
+/// splitting them across arguments invites recording one without the other.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkspaceAuthTarget<'a> {
+    pub sandbox_id: &'a str,
+    pub workspace_id: &'a str,
+    pub owner: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +57,14 @@ impl AuthManager {
         token: &str,
         force: bool,
     ) -> Result<StoreOutcome> {
-        storage::store_token(&self.state_dir, scope, provider, token, force)
+        let outcome = storage::store_token(&self.state_dir, scope, provider, token, force)?;
+        if outcome.stored() {
+            audit::record(
+                &self.state_dir,
+                &AuditEvent::for_namespace(AuditAction::Store, scope.user_id(), provider),
+            )?;
+        }
+        Ok(outcome)
     }
 
     pub fn list_tokens(&self, scope: &TokenScope) -> Result<Vec<StoredToken>> {
@@ -60,21 +80,51 @@ impl AuthManager {
     }
 
     pub fn delete_token(&self, scope: &TokenScope, provider: &str) -> Result<bool> {
-        storage::delete_token(&self.state_dir, scope, provider)
+        let removed = storage::delete_token(&self.state_dir, scope, provider)?;
+        if removed {
+            audit::record(
+                &self.state_dir,
+                &AuditEvent::for_namespace(AuditAction::Revoke, scope.user_id(), provider),
+            )?;
+        }
+        Ok(removed)
     }
 
     /// Resolve this workspace's tokens and write them into its namespace.
     pub fn sync_workspace_auth(
         &self,
         workspace_rootfs: &str,
-        owner: Option<&str>,
+        target: &WorkspaceAuthTarget<'_>,
         auth_providers: &[String],
         env_tokens: &[String],
     ) -> Result<Vec<WorkspaceAuthToken>> {
-        let tokens = self.resolve_tokens(owner, auth_providers);
-        let env = self.resolve_env_tokens(owner, env_tokens);
+        let tokens = self.resolve_tokens(target.owner, auth_providers);
+        let env = self.resolve_env_tokens(target.owner, env_tokens);
         inject::write_workspace_auth(workspace_rootfs, &tokens, &env)?;
+        // Audited after the write, so the log describes injections that
+        // happened rather than ones that were attempted.
+        for token in &tokens {
+            self.audit_inject(target, &token.provider)?;
+        }
         Ok(tokens)
+    }
+
+    /// Record that a token reached a workspace.
+    ///
+    /// The daemon's exec path calls this too: there the token is already in the
+    /// workspace and is being handed to a specific command, which is the event
+    /// an operator asking "when was this credential used" wants.
+    pub fn audit_inject(&self, target: &WorkspaceAuthTarget<'_>, provider: &str) -> Result<()> {
+        audit::record(
+            &self.state_dir,
+            &AuditEvent::for_workspace(
+                AuditAction::Inject,
+                target.owner,
+                provider,
+                target.sandbox_id,
+                target.workspace_id,
+            ),
+        )
     }
 
     /// The tokens a workspace would be given, without writing them anywhere.

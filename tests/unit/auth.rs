@@ -3,6 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use enclave::auth::{
     provider_env_var, provider_for_env_var, workspace_env_wrapper_script, AuthManager, TokenScope,
+    WorkspaceAuthTarget,
 };
 
 fn temp_state_dir(name: &str) -> std::path::PathBuf {
@@ -118,7 +119,12 @@ fn workspace_wrapper_configures_git_and_gh_auth_environment() {
 fn sync_workspace_auth_rejects_non_proc_namespace_root_path() {
     let state_dir = temp_state_dir("sync-auth-path");
     let manager = AuthManager::new(&state_dir);
-    let result = manager.sync_workspace_auth("/tmp/not-a-workspace-root", None, &[], &[]);
+    let target = WorkspaceAuthTarget {
+        sandbox_id: "sandbox",
+        workspace_id: "workspace",
+        owner: None,
+    };
+    let result = manager.sync_workspace_auth("/tmp/not-a-workspace-root", &target, &[], &[]);
     assert!(result.is_err());
     let _ = fs::remove_dir_all(state_dir);
 }

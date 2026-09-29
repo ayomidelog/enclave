@@ -19,6 +19,7 @@ mod config_defaults;
 mod confirm;
 mod daemon;
 mod enclavefile;
+mod exit;
 mod internal;
 mod policy;
 mod ps;
@@ -31,7 +32,9 @@ mod transition;
 mod workspace;
 
 use anyhow::{bail, Result};
+
 use clap::{CommandFactory, FromArgMatches};
+pub use exit::exit_code_of;
 use serde_json::json;
 
 use crate::cli::{Cli, Commands, InternalCommands};

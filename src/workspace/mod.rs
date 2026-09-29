@@ -39,6 +39,7 @@ pub(crate) use control::{
     freeze_workspaces_in_sandbox, reconcile_workspace_runtime_state,
     resize_workspace_with_security, stop_running_workspaces_in_sandbox,
     update_workspace_definition, workspace_metadata, workspace_runtime_is_active,
+    WorkspaceDefinitionUpdate,
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;

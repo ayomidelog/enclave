@@ -72,11 +72,13 @@ pub(super) fn update_workspace_definition_with_runtime(
         state_dir,
         sandbox,
         workspace_selector,
-        auth_providers,
-        owner,
-        env_tokens,
-        published_ports.clone(),
-        limits_update.clone(),
+        workspace::WorkspaceDefinitionUpdate {
+            auth_providers,
+            owner,
+            env_tokens,
+            published_ports: published_ports.clone(),
+            limits: limits_update.clone(),
+        },
     )?;
 
     if !limits_update.is_empty() {
@@ -144,18 +146,20 @@ pub(super) fn rollback_workspace_definition_update(
         state_dir,
         &previous.sandbox_id,
         &previous.id,
-        Some(previous.auth_providers.clone()),
-        Some(previous.owner.clone()),
-        Some(previous.env_tokens.clone()),
-        Some(previous.published_ports.clone()),
-        workspace::WorkspaceLimitsUpdate {
-            clear_tmp_on_restart: Some(previous.clear_tmp_on_restart),
-            cpu_seconds: Some(previous.limits.cpu_seconds),
-            cpu_percent: Some(previous.limits.cpu_percent),
-            memory_bytes: Some(previous.limits.memory_bytes),
-            max_processes: Some(previous.limits.max_processes),
-            max_open_files: Some(previous.limits.max_open_files),
-            disk_bytes: Some(previous.limits.disk_bytes),
+        workspace::WorkspaceDefinitionUpdate {
+            auth_providers: Some(previous.auth_providers.clone()),
+            owner: Some(previous.owner.clone()),
+            env_tokens: Some(previous.env_tokens.clone()),
+            published_ports: Some(previous.published_ports.clone()),
+            limits: workspace::WorkspaceLimitsUpdate {
+                clear_tmp_on_restart: Some(previous.clear_tmp_on_restart),
+                cpu_seconds: Some(previous.limits.cpu_seconds),
+                cpu_percent: Some(previous.limits.cpu_percent),
+                memory_bytes: Some(previous.limits.memory_bytes),
+                max_processes: Some(previous.limits.max_processes),
+                max_open_files: Some(previous.limits.max_open_files),
+                disk_bytes: Some(previous.limits.disk_bytes),
+            },
         },
     ) {
         tracing::warn!(

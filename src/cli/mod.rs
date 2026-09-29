@@ -1,4 +1,5 @@
 mod admin;
+mod auth;
 mod common;
 mod daemon;
 mod session;
@@ -16,9 +17,9 @@ pub use admin::{
     PolicyClearArgs, PolicyDefaultArgs, PolicyRuleArgs, RegistryRepairArgs, RootfsExportArgs,
     RootfsFetchArgs, RootfsImportArgs,
 };
+pub use auth::{AuthListArgs, AuthProviderArgs, AuthStoreArgs};
 pub use common::{
-    AuthProviderArgs, CreateArgs, DestroyArgs, DoctorArgs, PsArgs, RestartArgs, SandboxResizeArgs,
-    UpArgs, WipeArgs,
+    CreateArgs, DestroyArgs, DoctorArgs, PsArgs, RestartArgs, SandboxResizeArgs, UpArgs, WipeArgs,
 };
 pub use daemon::{RunArgs, StartArgs};
 pub use session::{
@@ -215,7 +216,8 @@ pub enum PolicyCommands {
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
     Login(AuthProviderArgs),
-    List,
+    Store(AuthStoreArgs),
+    List(AuthListArgs),
     Logout(AuthProviderArgs),
 }
 

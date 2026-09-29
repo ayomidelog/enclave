@@ -4,7 +4,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use enclave::auth::{validate_user_id, AuthManager, StoreOutcome, TokenScope};
+use enclave::auth::{validate_user_id, AuthManager, TokenScope};
 
 fn temp_state_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(

@@ -1,17 +1,33 @@
 use super::*;
 
+/// The parts of a workspace definition a caller may change.
+///
+/// Every field is optional and means "leave this alone", which is what lets one
+/// request change the limits without disturbing the declared ports. `owner` has
+/// a third state because a binding can be removed as well as set.
+pub struct WorkspaceDefinitionUpdate {
+    pub auth_providers: Option<Vec<String>>,
+    /// `None` leaves the binding alone, `Some(None)` clears it, and
+    /// `Some(Some(id))` binds the workspace to that auth namespace.
+    pub owner: Option<Option<String>>,
+    pub env_tokens: Option<Vec<String>>,
+    pub published_ports: Option<Vec<PublishedPortSpec>>,
+    pub limits: WorkspaceLimitsUpdate,
+}
+
 pub fn update_workspace_definition(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
     workspace_selector: &str,
-    auth_providers: Option<Vec<String>>,
-    // None leaves the binding alone, Some(None) clears it, and Some(Some(id))
-    // binds the workspace to that auth namespace.
-    owner: Option<Option<String>>,
-    env_tokens: Option<Vec<String>>,
-    published_ports: Option<Vec<PublishedPortSpec>>,
-    limits_update: WorkspaceLimitsUpdate,
+    update: WorkspaceDefinitionUpdate,
 ) -> Result<WorkspaceMetadata> {
+    let WorkspaceDefinitionUpdate {
+        auth_providers,
+        owner,
+        env_tokens,
+        published_ports,
+        limits: limits_update,
+    } = update;
     let auth_providers = auth_providers
         .map(crate::workspace::create::normalize_auth_providers)
         .transpose()?;
