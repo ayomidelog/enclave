@@ -26,6 +26,15 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
 
 ## Recently completed
 
+- **Per-user provider credentials**
+  - Tokens live in a namespace: the state directory's shared one, or
+    `auth/users/<user_id>/`. A workspace selects one with `owner`, and a workspace
+    with no owner keeps the shared token it always had.
+  - `auth store` provisions a token non-interactively, reading the value from
+    standard input so it stays out of the shell history and the process list, and
+    reporting its outcome in the exit status.
+  - Every store, revoke, and inject is appended to a metadata-only audit log, and
+    `workspace exec` scrubs injected token values out of the output it captures.
 - **Lifecycle observability and recovery**
   - One operation id per lifecycle request, written to a durable journal with its
     target and phase, returned to the caller, and printed by mutating commands.

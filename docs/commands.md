@@ -326,10 +326,10 @@ output, glob expansion, resumable transfers, or parallel directory transfer.
 ## Auth
 
 ```bash
-enclave auth login  [--user <user_id>] <provider>
-enclave auth store  --user <user_id> --provider <name> [--force]
-enclave auth list   [--user <user_id>]
-enclave auth logout [--user <user_id>] <provider>
+enclave auth login  [--state-dir PATH] [--user <user_id>] <provider>
+enclave auth store  [--state-dir PATH] --user <user_id> --provider <name> [--force]
+enclave auth list   [--state-dir PATH] [--user <user_id>]
+enclave auth logout [--state-dir PATH] [--user <user_id>] <provider>
 ```
 
 | Command | Description |
@@ -338,6 +338,10 @@ enclave auth logout [--user <user_id>] <provider>
 | `auth store` | Read a token from stdin without prompting. For scripts. |
 | `auth list` | List stored providers and when each was stored. Never the values. |
 | `auth logout` | Delete a stored token. |
+
+These commands act on a state directory rather than on a running daemon, so
+`--state-dir` names the one to use and defaults to the invoking user's. They
+require root, like every command that touches host state.
 
 ### Token namespaces
 

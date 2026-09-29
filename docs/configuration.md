@@ -65,6 +65,7 @@ The `state_dir` contains all Enclave state:
 
 ```text
 <state_dir>/
+├── auth/              # Provider tokens and their audit log
 ├── registry.json      # Sandbox & workspace metadata
 ├── registry.lock      # Advisory file lock
 ├── policy.json        # Authorization rules
@@ -72,4 +73,6 @@ The `state_dir` contains all Enclave state:
 └── sandboxes/         # Sandbox data directories
 ```
 
-See [Architecture](architecture.md) for the full state layout.
+See [Storage](storage.md) for the full state layout, including the per-user token
+namespaces under `auth/`, and [Architecture](architecture.md) for how the
+directories are used.

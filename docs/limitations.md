@@ -15,6 +15,34 @@ Enclave is intentionally scoped to local Linux development workflows. These are 
 - **No first-class service networking**: workspaces share the Enclave bridge, but direct workspace-to-workspace forwarding is blocked by default. There is no built-in service discovery, service mesh, or allow-list workflow for selectively re-enabling cross-workspace traffic.
 - **UID-based policy only**: the policy engine operates per-UID. Per-workspace or per-sandbox ACLs are not yet supported.
 
+## Credentials and command output
+
+- **A token namespace scopes workspaces, not host users**: `owner` is a validated
+  name, and Enclave does not check that it corresponds to a host user. The `auth`
+  commands run as root and write whichever namespace they are told to, so the
+  feature decides which credential a workspace is given, not who is allowed to
+  provision one. Treat it as scoping between your own workspaces or agents, not as
+  an isolation boundary between mutually untrusting host users.
+- **Scrubbing covers captured `workspace exec` output only**: the daemon replaces
+  an injected token value in the stdout and stderr it returns. It does not cover an
+  interactive `workspace enter` session, a command run with `--no-scrub`, or
+  anything a command writes somewhere else — a file, a log of its own, or a
+  network request. A workspace holds the token and can always print it; scrubbing
+  keeps it out of the paths that travel further than the workspace does, not out of
+  the workspace.
+- **`workspace exec` buffers, and does not forward standard input**: it runs the
+  command through the daemon so the output can be scrubbed, which means output
+  arrives when the command finishes rather than as it is written, and only the
+  first 16 MiB of it is captured. Use `--no-scrub` for a command that reads
+  standard input, streams, needs a terminal, or writes more than that; the
+  trade-off is that the output is then printed exactly as the command wrote it.
+- **Provider scoping is per workspace, not per command**: a workspace's tokens are
+  resolved when it starts, so every command run in it sees the same set. There is
+  no way to run one command with a different provider set from the next.
+- **A token is replaced, not rotated**: storing a token again overwrites the file,
+  and the workspace picks it up on its next start. There is no expiry, no refresh,
+  and no overlap window where an old and a new value are both valid.
+
 ## Storage and lifecycle
 
 - **Copy-based snapshots**: snapshots are full directory copies. Use `enclave workspace snapshot-gc` to enforce retention and reclaim disk space.

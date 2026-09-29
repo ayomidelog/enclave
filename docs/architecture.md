@@ -191,6 +191,8 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 |--------|---------|
 | `src/cli/` | Clap argument definitions |
 | `src/commands/` | CLI command handlers (sandbox, workspace, enclavefile, daemon, ps, rootfs, policy) |
+| `src/auth/` | Provider tokens: the provider table, the namespace a token belongs to, the files at rest, injection into a workspace, the audit log, and output scrubbing |
+| `src/commands/auth/` | The `auth` command group, split by the command each part serves |
 | `src/commands/workspace/enter.rs` | `workspace enter` frontend, and the `workspace exec` direct path behind `--no-scrub` |
 | `src/commands/internal/` | Hidden internal commands for hardened session loops, runtime namespace entry, and persistent command helpers |
 | `src/client.rs` | Unix socket JSON client |
