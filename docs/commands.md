@@ -382,9 +382,8 @@ letters, digits, and `-`, plus `_` as the first character. `_` is allowed there
 because the slot for an environment token is its name lowercased with `_` written
 as `-`, and a leading `_` is kept rather than written as `-` so that a slot never
 begins with `-`; a name with `_` anywhere else is one no environment token could
-ever ask for. `enclave auth list`
-prints stored slots under `Stored environment token slots:` in the shared
-namespace, and alongside the providers in a user's.
+ever ask for. `enclave auth list` prints stored slots under `Stored environment
+token slots:` in the shared namespace, and alongside the providers in a user's.
 
 ### Storing a token from a script
 
