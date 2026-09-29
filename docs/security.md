@@ -117,6 +117,50 @@ A workspace left in a transitional state by an interrupted operation is resolved
 
 The registry repair command (`enclave registry repair --strict`) can be used for deeper cleanup of stale on-disk state.
 
+## Provider Credentials
+
+A provider token is a credential Enclave holds on a user's behalf, so where it
+lives, who can reach it, and what happens to it when it is used are all part of
+the security model.
+
+**A token belongs to a namespace.** `<state_dir>/auth/<provider>.token` is the
+shared namespace, which is what every workspace used before namespaces existed.
+`<state_dir>/auth/users/<user_id>/<provider>.token` is one user's. A workspace
+selects one with `owner`; a workspace with no `owner` reads the shared one. An
+owner with nothing stored gets nothing rather than falling back to the shared
+token, because the fallback would hand one user another user's credential.
+
+**A token is checked before it is read.** The file must be a regular file, not a
+symlink, owned by the effective uid, mode `0600`, and a user's namespace
+directory must be `0700`. A symlink is refused rather than followed, because
+following one would read a file outside the namespace the caller asked for. The
+checks are the same ones the shared namespace has always had.
+
+**A token value is only ever read from standard input.** `auth store` takes no
+flag for it, because an argument is visible in the process list to every user on
+the host and so is the environment of a running process. `auth list` prints
+provider names and dates and never a value.
+
+**A token is scrubbed out of captured command output.** `workspace exec` returns
+the output of a command that may print a credential it holds — `env`, a failing
+request that echoes its headers, a script that logs what it was given. The daemon
+replaces every occurrence of each injected value with `[REDACTED]` before it
+returns that output, because the output travels further than the workspace does:
+into a terminal, a log, a CI job, a bug report. `--no-scrub` turns this off for
+debugging and is recorded in the daemon log. An interactive `workspace enter`
+session is not captured by anything that could scrub it, so it is not covered;
+neither is a command run with `--no-scrub`.
+
+**Every store, revoke, and inject is recorded.** `<state_dir>/auth/audit.log` is
+an append-only JSON-lines file, mode `0600`, fsynced on write. Each event names
+the action, the namespace, the provider, and the workspace. There is no field for
+the token value, so a value cannot reach the log by a caller filling one in, and
+the log can be read and shipped without handling a secret. An `inject` is written
+twice for one credential's life: once when the token enters the workspace at
+start, and once per command that runs with it. The second is recorded whether or
+not the value appeared in that command's output, because the credential was
+available to it either way.
+
 ## Request Limits
 
 - **Per-UID rate limiting**: the daemon enforces per-UID request rate limiting to prevent a single user from monopolizing the daemon.

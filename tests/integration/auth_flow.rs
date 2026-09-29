@@ -240,3 +240,90 @@ fn a_dropped_provider_token_is_removed_on_restart() {
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
 }
+
+/// Each workspace is given its owner's token, and only its owner's.
+///
+/// This is the whole point of the feature: two workspaces on one sandbox that
+/// declare the same provider must not end up with the same credential. The
+/// assertion is on the file the workspace actually holds, because that is what
+/// the wrapper reads when a command runs.
+#[test]
+#[ignore = "requires root privileges and namespace/mount support"]
+fn a_workspace_is_given_its_owners_token_and_not_another_users() {
+    if !root_only() {
+        return;
+    }
+
+    let state = state_dir("enclave-int-auth-owner");
+    prepare_cached_rootfs(&state, "bookworm");
+    let manager = AuthManager::new(&state);
+    manager
+        .store_token(
+            &TokenScope::User("alice".to_string()),
+            "github",
+            "alice-token",
+            false,
+        )
+        .expect("store alice's token");
+    manager
+        .store_token(
+            &TokenScope::User("bob".to_string()),
+            "github",
+            "bob-token",
+            false,
+        )
+        .expect("store bob's token");
+    manager
+        .store_token(&TokenScope::Shared, "github", "shared-token", false)
+        .expect("store the shared token");
+
+    let sandbox = create_sandbox(
+        &state,
+        "debootstrap",
+        "itest-auth-owner-sandbox",
+        "bookworm",
+        "http://deb.debian.org/debian",
+        &BootstrapMethod::CachedRootfs,
+    )
+    .expect("create sandbox");
+    start_sandbox(&state, &sandbox.id).expect("start sandbox");
+
+    let create = |name: &str, owner: Option<&str>| {
+        let workspace = enclave::workspace::create_workspace_with_options(
+            &state,
+            &sandbox.id,
+            name,
+            enclave::workspace::WorkspaceCreateOptions {
+                limits: WorkspaceLimits::default(),
+                auth_providers: vec!["github".to_string()],
+                owner: owner.map(str::to_string),
+                ..enclave::workspace::WorkspaceCreateOptions::default()
+            },
+        )
+        .expect("create workspace");
+        let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
+        let pid = started.runtime_pid.expect("runtime pid");
+        let token_path = Path::new("/proc")
+            .join(pid.to_string())
+            .join("root/run/enclave/auth/github.token");
+        let contents = fs::read_to_string(&token_path).ok();
+        (workspace.id, contents)
+    };
+
+    let (alice_workspace, alice_token) = create("alice-ws", Some("alice"));
+    let (bob_workspace, bob_token) = create("bob-ws", Some("bob"));
+    let (plain_workspace, plain_token) = create("plain-ws", None);
+
+    assert_eq!(alice_token.as_deref(), Some("alice-token"));
+    assert_eq!(bob_token.as_deref(), Some("bob-token"));
+    // No owner keeps the namespace every workspace used before this existed.
+    assert_eq!(plain_token.as_deref(), Some("shared-token"));
+
+    for workspace in [&alice_workspace, &bob_workspace, &plain_workspace] {
+        stop_workspace(&state, &sandbox.id, workspace).expect("stop workspace");
+        destroy_workspace(&state, &sandbox.id, workspace).expect("destroy workspace");
+    }
+    stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
+    destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
+    let _ = fs::remove_dir_all(state);
+}
