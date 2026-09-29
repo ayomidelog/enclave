@@ -34,8 +34,13 @@ pub(crate) fn normalize_auth_providers(auth_providers: Vec<String>) -> Result<Ve
         if provider.is_empty() {
             continue;
         }
-        crate::auth::provider_env_var(&provider)
-            .ok_or_else(|| anyhow!("unsupported auth provider '{}'", provider))?;
+        crate::auth::provider_env_var(&provider).ok_or_else(|| {
+            anyhow!(
+                "unsupported auth provider '{}'; supported providers: {}",
+                provider,
+                crate::auth::supported_providers().join(", ")
+            )
+        })?;
         normalized.insert(provider);
     }
     Ok(normalized.into_iter().collect())
@@ -59,6 +64,14 @@ pub(crate) fn normalize_owner(owner: Option<String>) -> Result<Option<String>> {
     Ok(Some(owner))
 }
 
+/// Validate the environment tokens a workspace asks for.
+///
+/// Any well-formed variable name is accepted: a name that is not one of the
+/// providers' is how a workspace asks for a credential the provider table does
+/// not contain, and its value comes from the store slot the name derives. The
+/// rule is checked here rather than only where a token is stored, because a name
+/// that could never resolve would leave a workspace asking for a credential that
+/// silently never arrives.
 pub(crate) fn normalize_env_tokens(env_tokens: Vec<String>) -> Result<Vec<String>> {
     let mut normalized = std::collections::BTreeSet::new();
     for env_token in env_tokens {
@@ -66,8 +79,8 @@ pub(crate) fn normalize_env_tokens(env_tokens: Vec<String>) -> Result<Vec<String
         if env_token.is_empty() {
             continue;
         }
-        crate::auth::provider_for_env_var(&env_token)
-            .ok_or_else(|| anyhow!("unsupported environment token '{}'", env_token))?;
+        crate::auth::validate_env_token_name(&env_token)
+            .map_err(|err| anyhow!("invalid environment token '{env_token}': {err}"))?;
         normalized.insert(env_token);
     }
     Ok(normalized.into_iter().collect())

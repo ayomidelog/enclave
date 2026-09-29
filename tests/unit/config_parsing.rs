@@ -96,9 +96,11 @@ env_tokens = [" enclave_token "]
     assert_eq!(workspace.env_tokens, vec![" enclave_token ".to_string()]);
 }
 
+/// An environment token is a variable name a workspace asks for, not a name from
+/// the provider table, so any well-formed one is accepted.
 #[test]
-fn rejects_unknown_workspace_env_token() {
-    let result = parse_enclavefile(
+fn accepts_a_workspace_env_token_that_is_not_a_provider() {
+    let enclavefile = parse_enclavefile(
         r#"
 [sandbox]
 name = "devbox"
@@ -106,6 +108,23 @@ name = "devbox"
 [workspace.api]
 name = "api"
 env_tokens = ["SECRET_API_KEY"]
+"#,
+    )
+    .expect("a well-formed variable name should parse");
+    let workspace = enclavefile.workspace.get("api").expect("workspace exists");
+    assert_eq!(workspace.env_tokens, vec!["SECRET_API_KEY".to_string()]);
+}
+
+#[test]
+fn rejects_a_workspace_env_token_that_could_never_be_injected() {
+    let result = parse_enclavefile(
+        r#"
+[sandbox]
+name = "devbox"
+
+[workspace.api]
+name = "api"
+env_tokens = ["SECRET-API-KEY"]
 "#,
     );
     assert!(result.is_err());

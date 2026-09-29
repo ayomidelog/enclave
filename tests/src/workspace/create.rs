@@ -59,3 +59,42 @@ fn normalize_env_tokens_trims_uppercases_and_deduplicates() {
     .expect("normalize env tokens");
     assert_eq!(tokens, vec!["ENCLAVE_TOKEN".to_string()]);
 }
+
+/// A workspace may ask for a credential the provider table has never heard of.
+///
+/// The name is the variable it wants, and the value comes from the store slot
+/// derived from it, so anything the store can be given a name for is a name a
+/// workspace may ask for.
+#[test]
+fn normalize_env_tokens_accepts_a_name_that_is_not_a_provider() {
+    let tokens = normalize_env_tokens(vec![
+        "netflix_password".to_string(),
+        "GTBANK_CARD_NUMBER".to_string(),
+    ])
+    .expect("normalize env tokens");
+    assert_eq!(
+        tokens,
+        vec![
+            "GTBANK_CARD_NUMBER".to_string(),
+            "NETFLIX_PASSWORD".to_string()
+        ]
+    );
+}
+
+/// A name that could never be written into the workspace is refused where it is
+/// declared, rather than stored and silently never injected.
+#[test]
+fn normalize_env_tokens_rejects_a_name_it_could_never_inject() {
+    for invalid in [
+        "NETFLIX-PASSWORD",
+        "1TOKEN",
+        "_TOKEN",
+        "TOKEN NAME",
+        "TOKEN=X",
+    ] {
+        assert!(
+            normalize_env_tokens(vec![invalid.to_string()]).is_err(),
+            "{invalid:?} must be refused"
+        );
+    }
+}

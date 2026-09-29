@@ -158,7 +158,7 @@ fn scrub_injected_tokens(
     stderr: &mut String,
 ) -> Result<()> {
     let manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
-    let tokens = manager.resolved_credentials(
+    let tokens = manager.resolve_workspace_credentials(
         workspace.owner.as_deref(),
         &workspace.auth_providers,
         &workspace.env_tokens,
@@ -174,8 +174,8 @@ fn scrub_injected_tokens(
         workspace_id: &workspace.id,
         owner: workspace.owner.as_deref(),
     };
-    let providers: Vec<String> = tokens.iter().map(|token| token.provider.clone()).collect();
-    if let Err(err) = manager.audit_inject(&target, &providers) {
+    let names: Vec<String> = tokens.iter().map(|token| token.name.clone()).collect();
+    if let Err(err) = manager.audit_inject(&target, &names) {
         tracing::warn!(
             "failed to record the auth injection for workspace {}: {err:#}",
             workspace.id

@@ -1,23 +1,38 @@
-//! Resolving the tokens a workspace is entitled to.
+//! Resolving the credentials a workspace is entitled to.
 //!
-//! This is the facade the rest of the tree uses. It answers one question —
-//! which tokens does this workspace get — and the answer depends on the
+//! This is the facade the rest of the tree uses. It answers one question — which
+//! credentials does this workspace get — and the answer depends on the
 //! workspace's owner, so the resolution lives here rather than at the call site
 //! that happens to be starting a workspace.
+//!
+//! Two declarations end up here. An `auth` provider names one of the fixed
+//! providers, and the wrapper inside the workspace exports it from the provider
+//! table. An `env_token` names the variable the workspace asks for, which is a
+//! provider's variable or a name the provider table has never heard of; its value
+//! comes from the store slot that name derives. Downstream they are the same
+//! thing — a name, a variable, and a value — so they resolve to the same type.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 
 use super::audit::{self, AuditAction, AuditEvent};
+use super::names;
 use super::scope::TokenScope;
 use super::storage::{self, StoreOutcome, StoredToken};
 use super::{inject, providers};
 
-/// One provider's token, resolved and ready to be written into a workspace.
+/// One credential, resolved and ready to be written into a workspace.
+///
+/// `name` is what the store is keyed by and what the audit log records: a
+/// provider's name, or the slot a free-form environment token reads from. It is
+/// the credential's identity, so the same credential declared two ways is one
+/// name and one event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceAuthToken {
-    pub provider: String,
+    pub name: String,
+    /// The variable the workspace sees the value as, and the file name the
+    /// wrapper reads it from.
     pub env_var: String,
     pub token: String,
 }
@@ -32,6 +47,24 @@ pub struct WorkspaceAuthTarget<'a> {
     pub sandbox_id: &'a str,
     pub workspace_id: &'a str,
     pub owner: Option<&'a str>,
+}
+
+/// How much a credential that did not resolve should say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Report {
+    /// Log it. A start resolves once, so a workspace that comes up without a
+    /// credential it asked for is worth knowing about.
+    Warn,
+    /// Say nothing. A command resolves on every exec, so the same warning would
+    /// repeat for a workspace that simply has nothing stored, and the repetition
+    /// would bury the warnings that matter.
+    Quiet,
+}
+
+impl Report {
+    fn warns(self) -> bool {
+        matches!(self, Self::Warn)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -53,15 +86,15 @@ impl AuthManager {
     pub fn store_token(
         &self,
         scope: &TokenScope,
-        provider: &str,
+        name: &str,
         token: &str,
         force: bool,
     ) -> Result<StoreOutcome> {
-        let outcome = storage::store_token(&self.state_dir, scope, provider, token, force)?;
+        let outcome = storage::store_token(&self.state_dir, scope, name, token, force)?;
         if outcome.stored() {
             audit::record(
                 &self.state_dir,
-                &AuditEvent::for_namespace(AuditAction::Store, scope.user_id(), provider),
+                &AuditEvent::for_namespace(AuditAction::Store, scope.user_id(), name),
             )?;
         }
         Ok(outcome)
@@ -71,43 +104,68 @@ impl AuthManager {
         storage::list_tokens(&self.state_dir, scope)
     }
 
-    pub fn token_exists(&self, scope: &TokenScope, provider: &str) -> Result<bool> {
-        storage::token_exists(&self.state_dir, scope, provider)
+    pub fn token_exists(&self, scope: &TokenScope, name: &str) -> Result<bool> {
+        storage::token_exists(&self.state_dir, scope, name)
     }
 
-    pub fn load_token(&self, scope: &TokenScope, provider: &str) -> Result<Option<String>> {
-        storage::load_token(&self.state_dir, scope, provider)
+    pub fn load_token(&self, scope: &TokenScope, name: &str) -> Result<Option<String>> {
+        storage::load_token(&self.state_dir, scope, name)
     }
 
-    pub fn delete_token(&self, scope: &TokenScope, provider: &str) -> Result<bool> {
-        let removed = storage::delete_token(&self.state_dir, scope, provider)?;
+    pub fn delete_token(&self, scope: &TokenScope, name: &str) -> Result<bool> {
+        let removed = storage::delete_token(&self.state_dir, scope, name)?;
         if removed {
             audit::record(
                 &self.state_dir,
-                &AuditEvent::for_namespace(AuditAction::Revoke, scope.user_id(), provider),
+                &AuditEvent::for_namespace(AuditAction::Revoke, scope.user_id(), name),
             )?;
         }
         Ok(removed)
     }
 
-    /// Resolve this workspace's tokens and write them into its namespace.
+    /// Resolve this workspace's credentials, write them into its namespace, and
+    /// record that they reached it.
     pub fn sync_workspace_auth(
         &self,
         workspace_rootfs: &str,
         target: &WorkspaceAuthTarget<'_>,
         auth_providers: &[String],
         env_tokens: &[String],
-    ) -> Result<Vec<WorkspaceAuthToken>> {
-        let tokens = self.resolve_tokens(target.owner, auth_providers);
-        let env = self.resolve_env_tokens(target.owner, env_tokens);
-        inject::write_workspace_auth(workspace_rootfs, &tokens, &env)?;
+    ) -> Result<()> {
+        let injected =
+            self.inject_workspace_auth(workspace_rootfs, target, auth_providers, env_tokens)?;
         // Audited after the write, so the log describes injections that
-        // happened rather than ones that were attempted. A provider declared as
-        // both an `auth` provider and an `env_token` is one credential, so it is
-        // one event.
-        let injected = injected_providers(&tokens, &env);
-        self.audit_inject(target, &injected)?;
-        Ok(tokens)
+        // happened rather than ones that were attempted.
+        self.audit_inject(target, &names(&injected))?;
+        Ok(())
+    }
+
+    /// Resolve this workspace's credentials and write them into its namespace.
+    ///
+    /// Returns what was written. A credential the store had nothing for is not in
+    /// the workspace either, so the returned list is what is actually there, and
+    /// that is what a caller scrubs out of a command's output and records.
+    pub fn inject_workspace_auth(
+        &self,
+        workspace_rootfs: &str,
+        target: &WorkspaceAuthTarget<'_>,
+        auth_providers: &[String],
+        env_tokens: &[String],
+    ) -> Result<Vec<WorkspaceAuthToken>> {
+        let (providers, env) =
+            self.resolve_credentials(target.owner, auth_providers, env_tokens, Report::Warn);
+        inject::write_workspace_auth(workspace_rootfs, &providers, &env)?;
+        let mut injected = providers;
+        for token in env {
+            // A provider declared both as an `auth` provider and as an
+            // `env_token` is one credential: the same value from the same slot.
+            // It is written twice, because the two declarations are two injection
+            // channels, but it is one credential and must be one event.
+            if !injected.iter().any(|existing| existing.name == token.name) {
+                injected.push(token);
+            }
+        }
+        Ok(injected)
     }
 
     /// Record that tokens reached a workspace.
@@ -146,146 +204,159 @@ impl AuthManager {
         owner: Option<&str>,
         auth_providers: &[String],
     ) -> Vec<WorkspaceAuthToken> {
-        let scope = TokenScope::for_owner(owner);
-        let mut tokens = Vec::new();
-        for provider in auth_providers {
-            let Some(env_var) = providers::provider_env_var(provider) else {
-                tracing::warn!(
-                    "workspace requested unsupported auth provider '{}'; skipping",
-                    provider
-                );
-                continue;
-            };
-
-            match storage::load_token(&self.state_dir, &scope, provider) {
-                Ok(Some(token)) => tokens.push(WorkspaceAuthToken {
-                    provider: provider.clone(),
-                    env_var: env_var.to_string(),
-                    token,
-                }),
-                Ok(None) => {
-                    tracing::warn!(
-                        "no auth token configured for provider '{}'; workspace will start without it",
-                        provider
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "failed to load auth token for provider '{}': {err:#}; skipping provider",
-                        provider
-                    );
-                }
-            }
-        }
-        tokens
+        self.provider_tokens(owner, auth_providers, Report::Warn)
     }
 
-    /// The tokens a workspace holds, without the warnings `resolve_tokens` emits.
+    /// Every credential a workspace's two declarations resolve to.
     ///
-    /// This runs on every command rather than once per start, so a provider with
-    /// nothing stored would otherwise warn on every exec. A token that cannot be
-    /// read is skipped for the same reason: it is not in the workspace either, so
-    /// there is nothing to scrub.
-    ///
-    /// Both the `auth` providers and the `env_tokens` are covered, because both
-    /// put a credential in the workspace and both are therefore worth scrubbing
-    /// out of a command's output. They are the same set the start injected from.
-    pub fn resolved_credentials(
+    /// This is the read-only view of the same resolution the start performs, and
+    /// it is what a caller uses to ask what a workspace would be given. A provider
+    /// named both ways appears once, because it is one credential.
+    pub fn resolve_workspace_credentials(
         &self,
         owner: Option<&str>,
         auth_providers: &[String],
         env_tokens: &[String],
     ) -> Vec<WorkspaceAuthToken> {
-        let scope = TokenScope::for_owner(owner);
-        let providers = provider_names(auth_providers, env_tokens);
-        providers
-            .iter()
-            .filter_map(|provider| {
-                let env_var = providers::provider_env_var(provider)?;
-                let token = storage::load_token(&self.state_dir, &scope, provider)
-                    .ok()
-                    .flatten()?;
-                Some(WorkspaceAuthToken {
-                    provider: provider.to_string(),
-                    env_var: env_var.to_string(),
-                    token,
-                })
-            })
-            .collect()
+        let (providers, env) =
+            self.resolve_credentials(owner, auth_providers, env_tokens, Report::Quiet);
+        let mut credentials = providers;
+        for token in env {
+            if !credentials
+                .iter()
+                .any(|existing| existing.name == token.name)
+            {
+                credentials.push(token);
+            }
+        }
+        credentials
     }
 
-    fn resolve_env_tokens(
+    /// The credentials a workspace's declarations resolve to, split by how they
+    /// are injected: a provider token is written to the workspace's auth
+    /// directory, where the wrapper's provider loop reads it, and an environment
+    /// token to its env directory, where the wrapper exports it under its own
+    /// name.
+    fn resolve_credentials(
         &self,
         owner: Option<&str>,
+        auth_providers: &[String],
         env_tokens: &[String],
-    ) -> Vec<(String, String)> {
+        report: Report,
+    ) -> (Vec<WorkspaceAuthToken>, Vec<WorkspaceAuthToken>) {
+        (
+            self.provider_tokens(owner, auth_providers, report),
+            self.env_tokens(owner, env_tokens, report),
+        )
+    }
+
+    fn provider_tokens(
+        &self,
+        owner: Option<&str>,
+        auth_providers: &[String],
+        report: Report,
+    ) -> Vec<WorkspaceAuthToken> {
         let scope = TokenScope::for_owner(owner);
         let mut tokens = Vec::new();
-        for env_var in env_tokens {
-            let Some(provider) = providers::provider_for_env_var(env_var) else {
-                tracing::warn!(
-                    "workspace requested unsupported environment token '{}'; skipping",
-                    env_var
-                );
+        for provider in auth_providers {
+            let Some(env_var) = providers::provider_env_var(provider) else {
+                if report.warns() {
+                    tracing::warn!(
+                        "workspace requested unsupported auth provider '{}'; skipping",
+                        provider
+                    );
+                }
                 continue;
             };
 
             match storage::load_token(&self.state_dir, &scope, provider) {
-                Ok(Some(token)) => tokens.push((env_var.clone(), token)),
-                Ok(None) => {
+                Ok(Some(token)) => tokens.push(WorkspaceAuthToken {
+                    name: provider.clone(),
+                    env_var: env_var.to_string(),
+                    token,
+                }),
+                Ok(None) if report.warns() => {
                     tracing::warn!(
-                        "no token configured for environment token '{}'; workspace will start without it",
-                        env_var
+                        "no auth token stored for provider '{}'; the workspace will start without it",
+                        provider
                     );
                 }
+                Err(err) if report.warns() => {
+                    tracing::warn!(
+                        "failed to load the auth token for provider '{}': {err:#}; skipping it",
+                        provider
+                    );
+                }
+                _ => {}
+            }
+        }
+        tokens
+    }
+
+    fn env_tokens(
+        &self,
+        owner: Option<&str>,
+        env_tokens: &[String],
+        report: Report,
+    ) -> Vec<WorkspaceAuthToken> {
+        let scope = TokenScope::for_owner(owner);
+        let mut tokens = Vec::new();
+        for env_var in env_tokens {
+            let slot = match env_token_slot(env_var) {
+                Ok(slot) => slot,
                 Err(err) => {
+                    if report.warns() {
+                        tracing::warn!(
+                            "workspace requested an unusable environment token '{}': {err:#}; skipping",
+                            env_var
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            match storage::load_token(&self.state_dir, &scope, &slot) {
+                Ok(Some(token)) => tokens.push(WorkspaceAuthToken {
+                    name: slot,
+                    env_var: env_var.clone(),
+                    token,
+                }),
+                Ok(None) if report.warns() => {
                     tracing::warn!(
-                        "failed to load environment token '{}': {err:#}; skipping token",
-                        env_var
+                        "no token stored for environment token '{}' (slot '{}'); the workspace will start without it",
+                        env_var,
+                        slot
                     );
                 }
+                Err(err) if report.warns() => {
+                    tracing::warn!(
+                        "failed to load environment token '{}' (slot '{}'): {err:#}; skipping it",
+                        env_var,
+                        slot
+                    );
+                }
+                _ => {}
             }
         }
         tokens
     }
 }
 
-/// The providers a workspace's two declarations name, deduplicated.
+/// The store slot an environment token reads its value from.
 ///
-/// `auth` names a provider directly; an `env_token` names the environment
-/// variable it is exported as, which maps back to the same provider. A provider
-/// declared both ways is one credential, so it is returned once.
-fn provider_names(auth_providers: &[String], env_tokens: &[String]) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    let mut push = |provider: &str| {
-        if !names.iter().any(|name| name == provider) {
-            names.push(provider.to_string());
-        }
-    };
-    for provider in auth_providers {
-        push(provider);
+/// A name that is one of the providers' variables reads that provider's token:
+/// that is what the name meant before free-form names existed, so a workspace
+/// declaring `env_tokens = ["GITHUB_TOKEN"]` keeps resolving. Any other
+/// well-formed name reads the slot derived from the name itself, which is what
+/// makes a credential the provider table has never heard of injectable.
+fn env_token_slot(env_var: &str) -> Result<String> {
+    match providers::provider_for_env_var(env_var) {
+        Some(provider) => Ok(provider.to_string()),
+        None => names::slot_for_env_token(env_var),
     }
-    for env_token in env_tokens {
-        if let Some(provider) = providers::provider_for_env_var(env_token) {
-            push(provider);
-        }
-    }
-    names
 }
 
-/// The providers whose values were actually written into a workspace.
-///
-/// This is what the audit records, so it is derived from what was injected rather
-/// than from what was declared: a provider with nothing stored is skipped by the
-/// resolver and must not appear as an injection that happened.
-fn injected_providers(tokens: &[WorkspaceAuthToken], env: &[(String, String)]) -> Vec<String> {
-    let mut providers: Vec<String> = tokens.iter().map(|token| token.provider.clone()).collect();
-    for (env_var, _) in env {
-        if let Some(provider) = providers::provider_for_env_var(env_var) {
-            if !providers.iter().any(|name| name == provider) {
-                providers.push(provider.to_string());
-            }
-        }
-    }
-    providers
+/// The names to record for credentials that reached a workspace.
+fn names(tokens: &[WorkspaceAuthToken]) -> Vec<String> {
+    tokens.iter().map(|token| token.name.clone()).collect()
 }
