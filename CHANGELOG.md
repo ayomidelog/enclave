@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Added
+
+- A workspace can ask for a credential that is not one of the built-in
+  providers. `env_tokens` now accepts any well-formed variable name, and the
+  value comes from the store slot the name derives: `env_tokens =
+  ["NETFLIX_PASSWORD"]` reads `<state_dir>/auth/users/<owner>/netflix-password.token`,
+  which `enclave auth store --user <owner> --provider netflix-password` writes.
+  A name that is one of the providers' variables still reads that provider's
+  token, so a workspace that declares `env_tokens = ["GITHUB_TOKEN"]` resolves
+  exactly as it did. A name that could never be injected — a lowercase one, one
+  with a `-` in it, or one starting with a digit — is refused where it is
+  declared rather than stored and silently never used. A leading `_` is kept in
+  the slot rather than written as `-`, so `_INTERNAL` reads `_internal` and a slot
+  never begins with `-`.
+- The store accepts any well-formed name, so a token can be held under a slot
+  rather than only under a provider. `auth list` reports those slots by name and
+  date in the shared namespace and alongside the providers in a user's, and
+  `auth login` and `auth logout` name them the same way.
+
+### Changed
+
+- A workspace's credentials are re-resolved and rewritten before every command
+  run through the daemon, so revoking a token takes effect on the next
+  `workspace exec` instead of the next restart. The credentials the command was
+  given are also what the scrubber and the audit use, so a command that resolved
+  nothing records nothing.
+- A stored name is either a provider or the slot an environment token derives,
+  and `_` is a valid first character only: the derivation writes every other `_`
+  of the variable name as `-`. A stored name with `_` anywhere else would be one
+  no environment token can ask for, which is a token that is stored and never
+  injected. Only `enclave`, `github`, and `npm` were ever storable before this
+  release, so nothing that worked can stop working.
+
 ## 2.2.0 - 2026-09-29
 
 ### Fixed

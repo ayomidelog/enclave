@@ -125,9 +125,10 @@ pub(super) fn parse_non_empty_arg(s: &str) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-/// A provider name, checked as a file-name component before it is used as one.
-pub(super) fn parse_provider_name(s: &str) -> Result<String, String> {
-    crate::auth::validate_provider_name(s).map_err(|err| err.to_string())?;
+/// A stored token's name, checked as a file-name component before it is used as
+/// one.
+pub(super) fn parse_token_name(s: &str) -> Result<String, String> {
+    crate::auth::validate_token_name(s).map_err(|err| err.to_string())?;
     Ok(s.to_string())
 }
 

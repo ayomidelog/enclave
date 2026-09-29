@@ -326,17 +326,17 @@ output, glob expansion, resumable transfers, or parallel directory transfer.
 ## Auth
 
 ```bash
-enclave auth login  [--state-dir PATH] [--user <user_id>] <provider>
+enclave auth login  [--state-dir PATH] [--user <user_id>] <name>
 enclave auth store  [--state-dir PATH] --user <user_id> --provider <name> [--force]
 enclave auth list   [--state-dir PATH] [--user <user_id>]
-enclave auth logout [--state-dir PATH] [--user <user_id>] <provider>
+enclave auth logout [--state-dir PATH] [--user <user_id>] <name>
 ```
 
 | Command | Description |
 |---------|-------------|
 | `auth login` | Read a token from a hidden stdin prompt and store it. |
 | `auth store` | Read a token from stdin without prompting. For scripts. |
-| `auth list` | List stored providers and when each was stored. Never the values. |
+| `auth list` | List stored names and when each was stored. Never the values. |
 | `auth logout` | Delete a stored token. |
 
 These commands act on a state directory rather than on a running daemon, so
@@ -349,14 +349,41 @@ A token belongs to a namespace. A workspace selects one with `owner`, and a
 workspace with no `owner` uses the shared namespace it always did.
 
 ```text
-<state_dir>/auth/<provider>.token                   the shared namespace
-<state_dir>/auth/users/<user_id>/<provider>.token   one user's namespace
+<state_dir>/auth/<name>.token                   the shared namespace
+<state_dir>/auth/users/<user_id>/<name>.token   one user's namespace
 ```
 
 `--user` selects a namespace on `login`, `store`, `list`, and `logout`. Without
 it they act on the shared one. A user id may contain ASCII letters, digits, and
 `+`, `-`, `_`, `.`, because it becomes a single directory name; anything else is
 rejected.
+
+### Token names
+
+The name a token is stored under is either one of the providers (`enclave`,
+`github`, `npm`) or the slot an environment token reads from. A workspace reaches
+the second kind by declaring the variable it wants, and the slot is that variable
+lowercased with `_` written as `-`:
+
+```bash
+printf '%s' "$NETFLIX_PASSWORD" | \
+  enclave auth store --user alice --provider netflix-password
+```
+
+```toml
+[workspace.vault]
+name = "vault"
+owner = "alice"
+env_tokens = ["NETFLIX_PASSWORD"]
+```
+
+A name is one file name component, so it may only contain lowercase ASCII
+letters, digits, and `-`, plus `_` as the first character. `_` is allowed there
+because the slot for an environment token is its name lowercased with `_` written
+as `-`, and a leading `_` is kept rather than written as `-` so that a slot never
+begins with `-`; a name with `_` anywhere else is one no environment token could
+ever ask for. `enclave auth list` prints stored slots under `Stored environment
+token slots:` in the shared namespace, and alongside the providers in a user's.
 
 ### Storing a token from a script
 
@@ -375,7 +402,7 @@ it. The outcome is reported in the exit status:
 |--------|---------|
 | `0` | Stored. |
 | `2` | A token is already stored; pass `--force` to replace it. |
-| `3` | The provider or the user id cannot be used. |
+| `3` | The token name or the user id cannot be used. |
 | `4` | The token could not be read or written. |
 
 ### Moving a token into a namespace

@@ -135,17 +135,18 @@ fn validate_enclavefile(enclavefile: &Enclavefile) -> Result<()> {
             let normalized = provider.trim().to_ascii_lowercase();
             crate::auth::provider_env_var(&normalized).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "Enclavefile: workspace.{}.auth contains unsupported provider '{}'",
+                    "Enclavefile: workspace.{}.auth contains unsupported provider '{}'; supported providers: {}",
                     key,
-                    provider
+                    provider,
+                    crate::auth::supported_providers().join(", ")
                 )
             })?;
         }
         for env_token in &ws.env_tokens {
             let normalized = env_token.trim().to_ascii_uppercase();
-            crate::auth::provider_for_env_var(&normalized).ok_or_else(|| {
+            crate::auth::validate_env_token_name(&normalized).map_err(|err| {
                 anyhow::anyhow!(
-                    "Enclavefile: workspace.{}.env_tokens contains unsupported token '{}'",
+                    "Enclavefile: workspace.{}.env_tokens contains invalid token '{}': {err}",
                     key,
                     env_token
                 )
@@ -203,6 +204,9 @@ setup = [
 # workspace_dir = "./project"
 # auth = ["github", "npm"]
 # owner = "alice"
+# env_tokens takes any variable name. A provider's variable reads that provider's
+# token; any other name reads the store slot it derives, so NETFLIX_PASSWORD is
+# stored with `enclave auth store --user alice --provider netflix-password`.
 # env_tokens = ["ENCLAVE_TOKEN"]
 # ports = ["127.0.0.1:3001:3000/tcp"]
 "#

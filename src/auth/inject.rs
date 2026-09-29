@@ -14,15 +14,19 @@ use super::providers::{supported_providers, PROVIDERS};
 use super::storage;
 use super::WorkspaceAuthToken;
 
-/// Write the resolved tokens into the workspace's namespace.
+/// Write the resolved credentials into the workspace's namespace.
 ///
 /// `workspace_rootfs` is the workspace's `/proc/<pid>/root`, not the shared
 /// sandbox rootfs: writing there would put one workspace's credentials in a
 /// directory every other workspace on the sandbox can read.
+///
+/// `tokens` are written to the auth directory, where the wrapper's provider loop
+/// reads them, and `env_tokens` to the env directory, where the wrapper exports
+/// whatever it finds under the file's own name.
 pub(super) fn write_workspace_auth(
     workspace_rootfs: &str,
     tokens: &[WorkspaceAuthToken],
-    env_tokens: &[(String, String)],
+    env_tokens: &[WorkspaceAuthToken],
 ) -> Result<()> {
     let rootfs = PathBuf::from(workspace_rootfs);
     if !rootfs.is_absolute() {
@@ -63,7 +67,7 @@ pub(super) fn write_workspace_auth(
         .with_context(|| format!("failed to create {}", env_dir.display()))?;
 
     for provider in supported_providers() {
-        let token_path = storage::token_path_for_provider(&auth_dir, provider)?;
+        let token_path = storage::token_path_for_name(&auth_dir, provider)?;
         if token_path.exists() {
             fs::remove_file(&token_path)
                 .with_context(|| format!("failed to remove {}", token_path.display()))?;
@@ -80,7 +84,7 @@ pub(super) fn write_workspace_auth(
     }
 
     for token in tokens {
-        let token_path = storage::token_path_for_provider(&auth_dir, &token.provider)?;
+        let token_path = storage::token_path_for_name(&auth_dir, &token.name)?;
         crate::fsutil::write_file_atomic_with(
             &token_path,
             token.token.as_bytes(),
@@ -89,11 +93,11 @@ pub(super) fn write_workspace_auth(
         )
         .with_context(|| format!("failed to write {}", token_path.display()))?;
     }
-    for (env_var, token) in env_tokens {
-        let token_path = env_dir.join(env_var);
+    for token in env_tokens {
+        let token_path = env_dir.join(&token.env_var);
         crate::fsutil::write_file_atomic_with(
             &token_path,
-            token.as_bytes(),
+            token.token.as_bytes(),
             0o400,
             crate::fsutil::Durability::BestEffort,
         )

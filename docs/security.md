@@ -130,6 +130,16 @@ selects one with `owner`; a workspace with no `owner` reads the shared one. An
 owner with nothing stored gets nothing rather than falling back to the shared
 token, because the fallback would hand one user another user's credential.
 
+**A token name is a file name.** It is a provider name or the slot an environment
+token derives, so the store holds one credential per name and no name can escape
+the namespace it is written into. The rule is the set of names that can be built
+into a path safely: lowercase ASCII letters, digits, `-`, and `_` as the first
+character only. `_` is a valid first character because the slot for an
+environment token is its name lowercased with `_` written as `-`, and a leading
+`_` is kept rather than written as `-` so that a slot never begins with `-`. A `_`
+anywhere else would be a second spelling of the same slot, which is a token that
+is stored and never injected.
+
 **A token is checked before it is read.** The file must be a regular file, not a
 symlink, owned by the effective uid, mode `0600`, and a user's namespace
 directory must be `0700`. A symlink is refused rather than followed, because
@@ -150,6 +160,14 @@ into a terminal, a log, a CI job, a bug report. `--no-scrub` turns this off for
 debugging and is recorded in the daemon log. An interactive `workspace enter`
 session is not captured by anything that could scrub it, so it is not covered;
 neither is a command run with `--no-scrub`.
+
+**A workspace's credentials are re-resolved before every command.** The files a
+workspace holds are rewritten from the store at the top of each daemon-run
+command, so revoking a token takes effect on the next command instead of the next
+restart, and a command is run with what the store holds now. A rewrite that fails
+fails the command rather than running it with a credential the store no longer
+has. The credentials that were written are also what the scrubber removes and what
+the audit records, so a command that resolved nothing records nothing.
 
 **Every store, revoke, and inject is recorded.** `<state_dir>/auth/audit.log` is
 an append-only JSON-lines file, mode `0600`, fsynced on write. Each event names

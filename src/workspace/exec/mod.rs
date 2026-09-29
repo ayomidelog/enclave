@@ -4,9 +4,12 @@
 //! the module is split by how the helper is driven: the daemon-side entry point
 //! resolves the workspace, runs the command, and records it; the arguments module
 //! builds the helper's argument lists; and the detached module launches a
-//! long-running command without keeping the request open.
+//! long-running command without keeping the request open. The credentials module
+//! is what a command is given before it runs and what is taken back out of what
+//! it wrote.
 
 mod args;
+mod credentials;
 mod detached;
 
 use std::path::Path;
@@ -104,6 +107,16 @@ pub fn exec_workspace_command_with_options(
     }
 
     let effective_cwd = sanitize_workspace_cwd(cwd);
+    let runtime_pid = credentials::running_runtime_pid(&workspace)?;
+    // The credentials are resolved and rewritten before the command runs, not
+    // only when the workspace started. A workspace outlives the credential it was
+    // given: a token can be re-stored or revoked while it is running, and the
+    // wrapper inside it re-reads its auth and env files for every command, so
+    // rewriting them here is what makes a revocation take effect on the next
+    // command instead of the next restart. What is returned is what the command
+    // was actually given, which is what the scrubber and the audit act on.
+    let injected = credentials::refresh(state_dir, &workspace, runtime_pid)?;
+
     let output = crate::workspace::with_workspace_storage_mounted(&workspace, || {
         session::execute_persistent_command(&workspace, &effective_cwd, command)
     })?;
@@ -112,14 +125,8 @@ pub fn exec_workspace_command_with_options(
     let mut stdout = output.stdout;
     let mut stderr = output.stderr;
     if options.scrub {
-        scrub_injected_tokens(state_dir, &workspace, &mut stdout, &mut stderr)?;
+        credentials::scrub(state_dir, &workspace, &injected, &mut stdout, &mut stderr)?;
     }
-    let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
-        anyhow!(
-            "workspace '{}' has no runtime pid after command execution",
-            workspace.id
-        )
-    })?;
     let (mount_ns, pid_ns) = session::read_namespace_refs(runtime_pid)
         .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
     if let Err(err) = logs::append_workspace_command_log(
@@ -143,45 +150,6 @@ pub fn exec_workspace_command_with_options(
         mount_ns,
         pid_ns,
     })
-}
-
-/// Replace the workspace's own token values in captured output.
-///
-/// The values come from the same namespace the start injected from, so a
-/// workspace is scrubbed of the tokens it actually holds. Each token that was
-/// scrubbed is also recorded, which is the event an operator asking "when was
-/// this credential used" wants.
-fn scrub_injected_tokens(
-    state_dir: &Path,
-    workspace: &WorkspaceMetadata,
-    stdout: &mut String,
-    stderr: &mut String,
-) -> Result<()> {
-    let manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
-    let tokens = manager.resolved_credentials(
-        workspace.owner.as_deref(),
-        &workspace.auth_providers,
-        &workspace.env_tokens,
-    );
-    if tokens.is_empty() {
-        return Ok(());
-    }
-    let secrets: Vec<String> = tokens.iter().map(|token| token.token.clone()).collect();
-    *stdout = crate::auth::scrub_secrets(stdout, &secrets);
-    *stderr = crate::auth::scrub_secrets(stderr, &secrets);
-    let target = crate::auth::WorkspaceAuthTarget {
-        sandbox_id: &workspace.sandbox_id,
-        workspace_id: &workspace.id,
-        owner: workspace.owner.as_deref(),
-    };
-    let providers: Vec<String> = tokens.iter().map(|token| token.provider.clone()).collect();
-    if let Err(err) = manager.audit_inject(&target, &providers) {
-        tracing::warn!(
-            "failed to record the auth injection for workspace {}: {err:#}",
-            workspace.id
-        );
-    }
-    Ok(())
 }
 
 pub(crate) fn spawn_workspace_command(

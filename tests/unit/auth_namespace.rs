@@ -279,7 +279,7 @@ fn a_provider_declared_both_ways_is_one_credential() {
         )
         .expect("store the token");
 
-    let credentials = manager.resolved_credentials(
+    let credentials = manager.resolve_workspace_credentials(
         Some("alice"),
         &["github".to_string()],
         &["GITHUB_TOKEN".to_string()],
@@ -289,7 +289,7 @@ fn a_provider_declared_both_ways_is_one_credential() {
         1,
         "the same provider declared twice is one credential: {credentials:?}"
     );
-    assert_eq!(credentials[0].provider, "github");
+    assert_eq!(credentials[0].name, "github");
     assert_eq!(credentials[0].token, "shared-value");
 
     let _ = fs::remove_dir_all(state_dir);
@@ -314,10 +314,94 @@ fn an_environment_token_alone_is_resolved() {
         .expect("store the token");
 
     let credentials =
-        manager.resolved_credentials(Some("alice"), &[], &["ENCLAVE_TOKEN".to_string()]);
+        manager.resolve_workspace_credentials(Some("alice"), &[], &["ENCLAVE_TOKEN".to_string()]);
     assert_eq!(credentials.len(), 1);
-    assert_eq!(credentials[0].provider, "enclave");
+    assert_eq!(credentials[0].name, "enclave");
     assert_eq!(credentials[0].token, "env-only-value");
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+/// A credential the provider table does not contain is stored under a slot
+/// derived from the variable name, and that is where the workspace reads it.
+#[test]
+fn a_free_form_environment_token_resolves_the_slot_its_name_derives() {
+    let state_dir = temp_state_dir("free-form");
+    let manager = AuthManager::new(&state_dir);
+    let alice = TokenScope::User("alice".to_string());
+    manager
+        .store_token(&alice, "netflix-password", "hunter2", false)
+        .expect("store a slot the provider table does not contain");
+
+    let credentials = manager.resolve_workspace_credentials(
+        Some("alice"),
+        &[],
+        &["NETFLIX_PASSWORD".to_string()],
+    );
+    assert_eq!(
+        credentials.len(),
+        1,
+        "the token must resolve: {credentials:?}"
+    );
+    assert_eq!(credentials[0].name, "netflix-password");
+    assert_eq!(credentials[0].env_var, "NETFLIX_PASSWORD");
+    assert_eq!(credentials[0].token, "hunter2");
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+/// The same isolation a provider token has, for a slot the table does not
+/// contain: one user's vault entry is not another user's.
+#[test]
+fn a_free_form_environment_token_is_scoped_to_its_owner() {
+    let state_dir = temp_state_dir("free-form-owner");
+    let manager = AuthManager::new(&state_dir);
+    manager
+        .store_token(
+            &TokenScope::User("alice".to_string()),
+            "netflix-password",
+            "alice-password",
+            false,
+        )
+        .expect("store alice's slot");
+    let env_tokens = vec!["NETFLIX_PASSWORD".to_string()];
+
+    let alice_credentials = manager.resolve_workspace_credentials(Some("alice"), &[], &env_tokens);
+    assert_eq!(alice_credentials.len(), 1);
+    assert_eq!(alice_credentials[0].token, "alice-password");
+
+    assert!(
+        manager
+            .resolve_workspace_credentials(Some("bob"), &[], &env_tokens)
+            .is_empty(),
+        "bob must not receive alice's credential"
+    );
+    assert!(
+        manager
+            .resolve_workspace_credentials(None, &[], &env_tokens)
+            .is_empty(),
+        "the shared namespace must not fall back to a user's credential"
+    );
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+/// A name that is one of the providers' variables keeps resolving to that
+/// provider, which is what every workspace that declared one before free-form
+/// names existed relies on.
+#[test]
+fn a_provider_variable_in_env_tokens_still_reads_the_provider_slot() {
+    let state_dir = temp_state_dir("provider-env-token");
+    let manager = AuthManager::new(&state_dir);
+    manager
+        .store_token(&TokenScope::Shared, "github", "ghp_legacy", false)
+        .expect("store the provider token");
+
+    let credentials =
+        manager.resolve_workspace_credentials(None, &[], &["GITHUB_TOKEN".to_string()]);
+    assert_eq!(credentials.len(), 1);
+    assert_eq!(credentials[0].name, "github");
+    assert_eq!(credentials[0].token, "ghp_legacy");
 
     let _ = fs::remove_dir_all(state_dir);
 }
