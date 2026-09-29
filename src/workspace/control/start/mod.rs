@@ -165,6 +165,11 @@ pub fn start_workspace_with_security(
             let _ = network::teardown_workspace_network(&started.assigned_ip, &workspace_id);
             let _ = crate::workspace::ensure_workspace_storage_unmounted(&workspace_snapshot);
             let _ = mark_workspace_start_failed(state_dir, &sandbox_id, &workspace_id);
+            sweep_directory_of_unregistered_workspace(
+                state_dir,
+                &sandbox_snapshot,
+                &workspace_snapshot,
+            );
             let _ = journal.fail(format!("{error:#}"));
             return Err(error).context("failed to record the launched workspace runtime");
         }
@@ -236,8 +241,62 @@ pub fn start_workspace_with_security(
                 error
             };
             let _ = mark_workspace_start_failed(state_dir, &sandbox_id, &workspace_id);
+            sweep_directory_of_unregistered_workspace(
+                state_dir,
+                &sandbox_snapshot,
+                &workspace_snapshot,
+            );
             let _ = journal.fail(format!("{failure:#}"));
             Err(failure)
         }
+    }
+}
+
+/// Remove the workspace directory when the record that described it is gone.
+///
+/// A launch writes the workspace's own record before it commits, and writing that
+/// record creates the directory it goes in. When a concurrent destroy removes the
+/// workspace while the launch is in flight, that write puts the directory back
+/// after the destroy has already removed it, and the commit is then refused
+/// because the record it meant to update no longer exists. What is left is a
+/// directory nothing names: the destroy has finished, and this launch has no
+/// record to keep it for.
+///
+/// So the rollback removes it, but only when the workspace really is gone. A
+/// workspace still in the registry is left alone, because then the directory is
+/// exactly what its record describes, and a registry that cannot be read is
+/// treated as "still registered" so that nothing is removed on a guess.
+pub(crate) fn sweep_directory_of_unregistered_workspace(
+    state_dir: &std::path::Path,
+    sandbox: &SandboxMetadata,
+    workspace: &WorkspaceMetadata,
+) {
+    let registered = crate::registry::with_registry(state_dir, |registry| {
+        Ok(registry
+            .sandboxes
+            .get(&sandbox.id)
+            .is_some_and(|entry| entry.workspaces.contains_key(&workspace.id)))
+    });
+    match registered {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            tracing::warn!(
+                "workspace '{}': cannot read the registry to decide whether a refused start left a directory behind: {error:#}",
+                workspace.id
+            );
+            return;
+        }
+    }
+    match cleanup::remove_workspace_directory_after_record_removal(sandbox, workspace) {
+        Ok(true) => tracing::warn!(
+            "workspace '{}': removed the directory a refused start recreated after its record was gone",
+            workspace.id
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            "workspace '{}': failed to remove the directory a refused start recreated: {error:#}",
+            workspace.id
+        ),
     }
 }

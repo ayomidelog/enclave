@@ -161,4 +161,5 @@ fn reconcile_sandbox(sandbox_dir: &std::path::Path) -> SandboxMetadata {
 mod cleanup;
 mod force;
 mod reconcile;
+mod start;
 mod update;
