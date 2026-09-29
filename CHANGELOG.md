@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.3.0 - 2026-09-29
+
 ### Added
 
 - A workspace can ask for a credential that is not one of the built-in
