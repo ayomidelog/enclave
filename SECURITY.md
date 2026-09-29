@@ -27,7 +27,16 @@ Do not open public issues for unpatched vulnerabilities.
 
 ## Security Scope
 
-For the current threat model, workspace storage exposure, setup-command caveats, and operational guidance, see [docs/security.md](docs/security.md).
+For the current threat model, workspace storage exposure, provider credential
+handling, setup-command caveats, and operational guidance, see
+[docs/security.md](docs/security.md).
+
+Provider tokens are stored in the state directory, scoped to a namespace, validated
+for ownership and mode before use, never accepted as a command-line argument, never
+written to a log, and scrubbed from the output of a captured `workspace exec` before
+it is returned. What that does and does not cover is in
+[docs/security.md](docs/security.md); what it does not do is in
+[docs/limitations.md](docs/limitations.md).
 
 For product constraints that affect deployment expectations, see [docs/limitations.md](docs/limitations.md).
 

@@ -185,6 +185,14 @@ A few rules the code follows that are easy to miss:
   writing is the measurement behind a constant, the reason one order was chosen
   over another, or the failure mode a branch exists to prevent. A comment that
   restates the next line is one to delete.
+- **A secret never reaches a log, an error, an argument, or a test.** A token value
+  is read from standard input and nowhere else, because an argument and an
+  environment variable are both visible to every user on the host through the
+  process list. Anything that reports on a credential names the provider and the
+  namespace and never the value, which is what makes the audit log safe to read and
+  ship. Output that a command produced goes through `src/auth/scrub.rs` before it
+  leaves the daemon. When you add a field to a record or an event, ask whether it
+  can hold a secret; if it can, do not add it.
 
 Prefer the smallest change that makes the behaviour correct. Enclave has no async
 runtime, no OCI stack, and a small dependency list on purpose; a new dependency
