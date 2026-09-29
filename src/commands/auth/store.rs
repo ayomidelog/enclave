@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use crate::auth::{validate_provider, validate_provider_name, validate_user_id, AuthManager};
+use crate::auth::{validate_token_name, validate_user_id, AuthManager};
 use crate::cli::AuthStoreArgs;
 use crate::commands::exit::{CliExit, EXIT_INVALID_INPUT, EXIT_IO, EXIT_TOKEN_EXISTS};
 
@@ -15,8 +15,7 @@ use super::token_input;
 pub(super) fn run(manager: &AuthManager, args: AuthStoreArgs) -> Result<()> {
     // Validated here rather than by the argument parser so an unusable value
     // reports the documented status instead of the parser's usage status.
-    validate_provider_name(&args.provider)
-        .and_then(|()| validate_provider(&args.provider))
+    validate_token_name(&args.provider)
         .map_err(|err| CliExit::error(EXIT_INVALID_INPUT, err.to_string()))?;
     validate_user_id(&args.user)
         .map_err(|err| CliExit::error(EXIT_INVALID_INPUT, err.to_string()))?;
@@ -39,13 +38,13 @@ pub(super) fn run(manager: &AuthManager, args: AuthStoreArgs) -> Result<()> {
         return Err(CliExit::error(
             EXIT_TOKEN_EXISTS,
             format!(
-                "a token for provider \"{}\" is already stored for user \"{}\"; pass --force to replace it",
+                "a token named \"{}\" is already stored for user \"{}\"; pass --force to replace it",
                 args.provider, args.user
             ),
         ));
     }
     println!(
-        "stored token for provider \"{}\" for user \"{}\"",
+        "stored token \"{}\" for user \"{}\"",
         args.provider, args.user
     );
     Ok(())

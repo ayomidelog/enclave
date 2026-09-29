@@ -3,6 +3,11 @@
 //! The module is split by the question each part answers. `paths` is where a
 //! scope's tokens live, `permissions` is the checks that make reading one safe,
 //! and this file is the operations over them: store, load, list, and remove.
+//!
+//! A file is named by a token name, which is a provider name or the slot an
+//! environment token reads from. The store itself does not care which: it holds
+//! what it was given a name for, and the resolution that decides whether a name
+//! can ever reach a workspace lives in `manager`.
 
 mod paths;
 mod permissions;
@@ -13,16 +18,18 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 
-use super::providers::{provider_env_var, validate_provider};
+use super::names::validate_token_name;
 use super::scope::TokenScope;
 
-pub(in crate::auth) use paths::{ensure_auth_dir, token_dir_if_exists, token_path_for_provider};
+pub(in crate::auth) use paths::{ensure_auth_dir, token_dir_if_exists, token_path_for_name};
 pub(in crate::auth) use permissions::validate_token_permissions;
 
 /// A token file that exists, with when it was stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredToken {
-    pub provider: String,
+    /// The name the token is stored under: a provider name, or the slot an
+    /// environment token reads from.
+    pub name: String,
     /// The file's modification time, which is when the token was last written.
     pub stored_at: SystemTime,
 }
@@ -59,9 +66,9 @@ pub(super) fn store_token(
     token: &str,
     force: bool,
 ) -> Result<StoreOutcome> {
-    validate_provider(provider)?;
+    validate_token_name(provider)?;
     let token_dir = paths::ensure_token_dir(state_dir, scope)?;
-    let token_path = token_path_for_provider(&token_dir, provider)?;
+    let token_path = token_path_for_name(&token_dir, provider)?;
     if token_path.exists() && !force {
         return Ok(StoreOutcome::Exists(token_path));
     }
@@ -78,11 +85,11 @@ pub(super) fn load_token(
     scope: &TokenScope,
     provider: &str,
 ) -> Result<Option<String>> {
-    validate_provider(provider)?;
+    validate_token_name(provider)?;
     let Some(token_dir) = token_dir_if_exists(state_dir, scope)? else {
         return Ok(None);
     };
-    let token_path = token_path_for_provider(&token_dir, provider)?;
+    let token_path = token_path_for_name(&token_dir, provider)?;
     if !token_path.exists() {
         return Ok(None);
     }
@@ -93,20 +100,20 @@ pub(super) fn load_token(
 }
 
 pub(super) fn token_exists(state_dir: &Path, scope: &TokenScope, provider: &str) -> Result<bool> {
-    validate_provider(provider)?;
+    validate_token_name(provider)?;
     let Some(token_dir) = token_dir_if_exists(state_dir, scope)? else {
         return Ok(false);
     };
-    let token_path = token_path_for_provider(&token_dir, provider)?;
+    let token_path = token_path_for_name(&token_dir, provider)?;
     Ok(token_path.exists())
 }
 
 pub(super) fn delete_token(state_dir: &Path, scope: &TokenScope, provider: &str) -> Result<bool> {
-    validate_provider(provider)?;
+    validate_token_name(provider)?;
     let Some(token_dir) = token_dir_if_exists(state_dir, scope)? else {
         return Ok(false);
     };
-    let token_path = token_path_for_provider(&token_dir, provider)?;
+    let token_path = token_path_for_name(&token_dir, provider)?;
     if !token_path.exists() {
         return Ok(false);
     }
@@ -130,24 +137,24 @@ pub(super) fn list_tokens(state_dir: &Path, scope: &TokenScope) -> Result<Vec<St
         let Some(name) = path.file_name().and_then(|file| file.to_str()) else {
             continue;
         };
-        let Some(provider) = name.strip_suffix(".token") else {
+        let Some(token_name) = name.strip_suffix(".token") else {
             continue;
         };
-        // A file whose mode is wrong is not usable, so it is not reported as
-        // configured. Reporting it would say a workspace will get a token that
+        // A file whose name or mode is wrong is not usable, so it is not reported
+        // as configured. Reporting it would say a workspace will get a token that
         // the loader will then refuse to read.
-        if provider_env_var(provider).is_none() || validate_token_permissions(&path).is_err() {
+        if validate_token_name(token_name).is_err() || validate_token_permissions(&path).is_err() {
             continue;
         }
         let metadata = fs::metadata(&path)
             .with_context(|| format!("failed to stat token file {}", path.display()))?;
         let stored_at = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         tokens.push(StoredToken {
-            provider: provider.to_string(),
+            name: token_name.to_string(),
             stored_at,
         });
     }
-    tokens.sort_by(|left, right| left.provider.cmp(&right.provider));
-    tokens.dedup_by(|left, right| left.provider == right.provider);
+    tokens.sort_by(|left, right| left.name.cmp(&right.name));
+    tokens.dedup_by(|left, right| left.name == right.name);
     Ok(tokens)
 }

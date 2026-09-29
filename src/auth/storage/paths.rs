@@ -1,12 +1,12 @@
 //! Where a scope's tokens live.
 //!
 //! The layout is the whole of this module: a scope maps to one directory, and a
-//! provider maps to one file inside it. Keeping the two mappings here is what
+//! token name maps to one file inside it. Keeping the two mappings here is what
 //! makes the layout checkable in one place rather than at each call site.
 //!
 //! ```text
-//! <state_dir>/auth/<provider>.token                   the shared namespace
-//! <state_dir>/auth/users/<user_id>/<provider>.token   one user's namespace
+//! <state_dir>/auth/<name>.token                   the shared namespace
+//! <state_dir>/auth/users/<user_id>/<name>.token   one user's namespace
 //! ```
 
 use std::fs;
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::super::providers::validate_provider;
+use super::super::names::validate_token_name;
 use super::super::scope::{validate_user_id, TokenScope};
 use super::permissions::ensure_private_dir;
 
@@ -95,9 +95,9 @@ pub(in crate::auth) fn ensure_auth_dir(state_dir: &Path) -> Result<PathBuf> {
     crate::fsutil::ensure_path_within(&state_dir, &auth_dir, "auth directory")
 }
 
-/// The file one provider's token lives in, inside a namespace directory.
-pub(in crate::auth) fn token_path_for_provider(auth_dir: &Path, provider: &str) -> Result<PathBuf> {
-    validate_provider(provider)?;
-    let file = format!("{provider}.token");
+/// The file one token name lives in, inside a namespace directory.
+pub(in crate::auth) fn token_path_for_name(auth_dir: &Path, name: &str) -> Result<PathBuf> {
+    validate_token_name(name)?;
+    let file = format!("{name}.token");
     Ok(auth_dir.join(file))
 }

@@ -60,10 +60,7 @@ fn token_load_accepts_current_user_owned_file_with_strict_mode() {
     let configured = manager
         .list_tokens(&TokenScope::Shared)
         .expect("list configured providers");
-    let providers: Vec<&str> = configured
-        .iter()
-        .map(|token| token.provider.as_str())
-        .collect();
+    let providers: Vec<&str> = configured.iter().map(|token| token.name.as_str()).collect();
     assert_eq!(providers, vec!["github"]);
 
     let _ = fs::remove_dir_all(state_dir);

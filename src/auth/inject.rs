@@ -63,7 +63,7 @@ pub(super) fn write_workspace_auth(
         .with_context(|| format!("failed to create {}", env_dir.display()))?;
 
     for provider in supported_providers() {
-        let token_path = storage::token_path_for_provider(&auth_dir, provider)?;
+        let token_path = storage::token_path_for_name(&auth_dir, provider)?;
         if token_path.exists() {
             fs::remove_file(&token_path)
                 .with_context(|| format!("failed to remove {}", token_path.display()))?;
@@ -80,7 +80,7 @@ pub(super) fn write_workspace_auth(
     }
 
     for token in tokens {
-        let token_path = storage::token_path_for_provider(&auth_dir, &token.provider)?;
+        let token_path = storage::token_path_for_name(&auth_dir, &token.provider)?;
         crate::fsutil::write_file_atomic_with(
             &token_path,
             token.token.as_bytes(),

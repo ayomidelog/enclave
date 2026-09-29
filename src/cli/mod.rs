@@ -17,7 +17,7 @@ pub use admin::{
     PolicyClearArgs, PolicyDefaultArgs, PolicyRuleArgs, RegistryRepairArgs, RootfsExportArgs,
     RootfsFetchArgs, RootfsImportArgs,
 };
-pub use auth::{AuthListArgs, AuthProviderArgs, AuthStoreArgs};
+pub use auth::{AuthListArgs, AuthStoreArgs, AuthTokenArgs};
 pub use common::{
     CreateArgs, DestroyArgs, DoctorArgs, PsArgs, RestartArgs, SandboxResizeArgs, UpArgs, WipeArgs,
 };
@@ -215,10 +215,10 @@ pub enum PolicyCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCommands {
-    Login(AuthProviderArgs),
+    Login(AuthTokenArgs),
     Store(AuthStoreArgs),
     List(AuthListArgs),
-    Logout(AuthProviderArgs),
+    Logout(AuthTokenArgs),
 }
 
 pub(super) fn default_socket_arg() -> PathBuf {

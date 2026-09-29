@@ -2,9 +2,9 @@
 //!
 //! The set is fixed rather than configurable: a provider is only useful if
 //! Enclave knows which variable to export for it, and the wrapper that runs
-//! inside a workspace is generated from this table.
-
-use anyhow::{bail, Result};
+//! inside a workspace is generated from this table. A credential that is not one
+//! of these is an environment token instead, named by the variable a workspace
+//! asks for; see [`super::names`].
 
 /// Each provider, and the environment variable a workspace sees it as.
 pub(super) const PROVIDERS: [(&str, &str); 3] = [
@@ -31,38 +31,4 @@ pub fn provider_for_env_var(env_var: &str) -> Option<&'static str> {
     PROVIDERS
         .iter()
         .find_map(|(name, env)| (*env == normalized).then_some(*name))
-}
-
-/// Whether Enclave can inject `provider` at all.
-pub fn validate_provider(provider: &str) -> Result<()> {
-    if provider_env_var(provider).is_none() {
-        bail!(
-            "unsupported auth provider '{}'; supported providers: {}",
-            provider,
-            supported_providers().join(", ")
-        );
-    }
-    Ok(())
-}
-
-/// Whether `provider` is a safe name to build a file name from.
-///
-/// This is separate from [`validate_provider`] because the two answer different
-/// questions. This one is the path rule: the name becomes one file name
-/// component, so it may not be empty and may not contain a separator or anything
-/// else that could change which file is written. The supported-provider check is
-/// the semantic rule, and it is what decides whether a token can ever be
-/// injected; both are applied, so a name has to be well formed *and* known.
-pub fn validate_provider_name(provider: &str) -> Result<()> {
-    let mut chars = provider.chars();
-    let Some(first) = chars.next() else {
-        bail!("provider name must not be empty");
-    };
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-        bail!("provider name must start with a lowercase ASCII letter or digit");
-    }
-    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
-        bail!("provider name may only contain lowercase ASCII letters, digits, '-' and '_'");
-    }
-    Ok(())
 }

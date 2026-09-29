@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use super::common::{parse_provider_name, parse_user_id_arg};
+use super::common::{parse_token_name, parse_user_id_arg};
 use super::default_state_dir_arg;
 
 /// Which state directory a token command reads and writes.
@@ -22,14 +22,15 @@ pub struct AuthStateArgs {
     pub state_dir: PathBuf,
 }
 
-/// Login and logout name a provider positionally, and optionally a namespace.
+/// Login and logout name a stored token positionally, and optionally a namespace.
 #[derive(Args, Debug)]
 #[command(about = "Store a token interactively, or remove one")]
-pub struct AuthProviderArgs {
+pub struct AuthTokenArgs {
     #[command(flatten)]
     pub state: AuthStateArgs,
-    #[arg(value_parser = parse_provider_name)]
-    pub provider: String,
+    /// The provider name, or the slot an environment token reads from.
+    #[arg(value_name = "NAME", value_parser = parse_token_name)]
+    pub name: String,
     /// Read and write this user's auth namespace instead of the shared one.
     #[arg(long, value_name = "USER_ID", value_parser = parse_user_id_arg)]
     pub user: Option<String>,
@@ -56,7 +57,7 @@ pub struct AuthStoreArgs {
     /// The auth namespace to store into.
     #[arg(long, value_name = "USER_ID")]
     pub user: String,
-    /// One of the supported providers.
+    /// The provider name, or the slot an environment token reads from.
     #[arg(long, value_name = "NAME")]
     pub provider: String,
     /// Replace a token that is already stored.

@@ -10,39 +10,33 @@ use std::io::Write;
 use anyhow::{bail, Context, Result};
 
 use crate::auth::AuthManager;
-use crate::cli::AuthProviderArgs;
+use crate::cli::AuthTokenArgs;
 
 use super::scope_from;
 use super::token_input;
 
-pub(super) fn run(manager: &AuthManager, args: AuthProviderArgs) -> Result<()> {
+pub(super) fn run(manager: &AuthManager, args: AuthTokenArgs) -> Result<()> {
     let scope = scope_from(args.user.as_deref());
-    if manager.token_exists(&scope, &args.provider)? && !confirm_overwrite(&args.provider)? {
+    if manager.token_exists(&scope, &args.name)? && !confirm_overwrite(&args.name)? {
         println!("aborted");
         return Ok(());
     }
 
-    token_input::prompt_for(&args.provider, args.user.as_deref());
+    token_input::prompt_for(&args.name, args.user.as_deref());
     let token = token_input::read_token_line()?;
     if token.trim().is_empty() {
         bail!("token must not be empty");
     }
-    manager.store_token(&scope, &args.provider, token.trim(), true)?;
+    manager.store_token(&scope, &args.name, token.trim(), true)?;
     match args.user.as_deref() {
-        Some(user) => println!(
-            "stored token for provider \"{}\" for user \"{}\"",
-            args.provider, user
-        ),
-        None => println!("stored token for provider \"{}\"", args.provider),
+        Some(user) => println!("stored token \"{}\" for user \"{}\"", args.name, user),
+        None => println!("stored token \"{}\"", args.name),
     }
     Ok(())
 }
 
-fn confirm_overwrite(provider: &str) -> Result<bool> {
-    eprint!(
-        "Token for provider \"{}\" already exists. Overwrite? [y/N]: ",
-        provider
-    );
+fn confirm_overwrite(name: &str) -> Result<bool> {
+    eprint!("Token \"{}\" already exists. Overwrite? [y/N]: ", name);
     std::io::stderr().flush()?;
     let mut input = String::new();
     let read = std::io::stdin()
