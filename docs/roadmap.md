@@ -26,6 +26,14 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
 
 ## Recently completed
 
+- **Credentials that are not providers**
+  - `env_tokens` accepts any well-formed variable name, so a workspace can hold a
+    credential Enclave has no provider for. The value comes from the store slot
+    the name derives (`NETFLIX_PASSWORD` reads `netflix-password`), which is what
+    `auth store --provider netflix-password` writes.
+  - A workspace's credentials are re-resolved and rewritten before every command
+    run through the daemon, so a revocation takes effect on the next command
+    rather than the next restart.
 - **Per-user provider credentials**
   - Tokens live in a namespace: the state directory's shared one, or
     `auth/users/<user_id>/`. A workspace selects one with `owner`, and a workspace

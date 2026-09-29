@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Added
+
+- A workspace can ask for a credential that is not one of the built-in
+  providers. `env_tokens` now accepts any well-formed variable name, and the
+  value comes from the store slot the name derives: `env_tokens =
+  ["NETFLIX_PASSWORD"]` reads `<state_dir>/auth/users/<owner>/netflix-password.token`,
+  which `enclave auth store --user <owner> --provider netflix-password` writes.
+  A name that is one of the providers' variables still reads that provider's
+  token, so a workspace that declares `env_tokens = ["GITHUB_TOKEN"]` resolves
+  exactly as it did. A name that could never be injected — a lowercase one, one
+  with a `-` in it, or one starting with a digit or `_` — is refused where it is
+  declared rather than stored and silently never used.
+- The store accepts any well-formed name, so a token can be held under a slot
+  rather than only under a provider. `auth list` reports those slots by name and
+  date in the shared namespace and alongside the providers in a user's, and
+  `auth login` and `auth logout` name them the same way.
+
+### Changed
+
+- A workspace's credentials are re-resolved and rewritten before every command
+  run through the daemon, so revoking a token takes effect on the next
+  `workspace exec` instead of the next restart. The credentials the command was
+  given are also what the scrubber and the audit use, so a command that resolved
+  nothing records nothing.
+- A token name may not contain `_`. A stored name is the lowercased form of the
+  environment token that reads it, and `_` is how a `-` is written there, so both
+  spellings would allow a name no environment token can ask for. Only `enclave`,
+  `github`, and `npm` were ever storable before this release, so nothing that
+  worked can stop working.
+
 ## 2.2.0 - 2026-09-29
 
 ### Fixed

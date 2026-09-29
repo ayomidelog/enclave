@@ -30,18 +30,26 @@ Enclave is intentionally scoped to local Linux development workflows. These are 
   network request. A workspace holds the token and can always print it; scrubbing
   keeps it out of the paths that travel further than the workspace does, not out of
   the workspace.
+- **A revoked credential is gone on the next daemon-run command, not everywhere**:
+  the credentials a workspace holds are rewritten from the store at the top of
+  every command the daemon runs, which is what makes `auth logout` immediate. A
+  command run with `--no-scrub` takes the direct path and is not refreshed, and an
+  interactive `workspace enter` session is not either, so both keep seeing the
+  files the workspace was last given. Restart the workspace, or run any scrubbed
+  command, to bring those up to date.
 - **`workspace exec` buffers, and does not forward standard input**: it runs the
   command through the daemon so the output can be scrubbed, which means output
   arrives when the command finishes rather than as it is written, and only the
   first 16 MiB of it is captured. Use `--no-scrub` for a command that reads
   standard input, streams, needs a terminal, or writes more than that; the
   trade-off is that the output is then printed exactly as the command wrote it.
-- **Provider scoping is per workspace, not per command**: a workspace's tokens are
-  resolved when it starts, so every command run in it sees the same set. There is
-  no way to run one command with a different provider set from the next.
+- **Provider scoping is per workspace, not per command**: a workspace's
+  credentials come from its own declaration and its owner's namespace, so every
+  command run in it sees the same set. There is no way to run one command with a
+  different set from the next.
 - **A token is replaced, not rotated**: storing a token again overwrites the file,
-  and the workspace picks it up on its next start. There is no expiry, no refresh,
-  and no overlap window where an old and a new value are both valid.
+  and a workspace picks it up on its next command. There is no expiry and no
+  overlap window where an old and a new value are both valid.
 
 ## Storage and lifecycle
 

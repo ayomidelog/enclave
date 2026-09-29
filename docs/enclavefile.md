@@ -97,7 +97,7 @@ Each `[workspace.*]` block defines a workspace. The key after `workspace.` is th
 | `clear_tmp_on_restart` | No | `false` | Clear the managed workspace `/tmp` after a successful workspace or sandbox stop, before the next start. This is opt-in and has no effect on host-mounted `workspace_dir` / `path` storage. |
 | `auth` | No | `[]` | List of auth providers to inject into this workspace. Supported values: `enclave`, `github`, `npm`. Only listed providers are exposed. |
 | `owner` | No | — | The auth namespace this workspace's tokens are read from, e.g. `owner = "alice"`. Omitted means the shared namespace at `<state_dir>/auth`, which is what every workspace used before namespaces existed. |
-| `env_tokens` | No | `[]` | List of plain environment tokens to inject into this workspace. Supported values currently match provider-backed tokens such as `ENCLAVE_TOKEN`, `GITHUB_TOKEN`, and `NPM_TOKEN`. |
+| `env_tokens` | No | `[]` | List of environment variables to inject into this workspace. Any well-formed variable name is accepted: uppercase letters, digits, and `_`, starting with a letter. `GITHUB_TOKEN` reads the `github` provider's token; any other name reads the store slot it derives (`NETFLIX_PASSWORD` reads `netflix-password`). |
 | `ports` | No | `[]` | Loopback-only published port mappings. Format: `127.0.0.1:HOST_PORT:WORKSPACE_PORT/tcp`. `tcp` is the only supported protocol in v1. |
 
 ### Workspace Auth Providers
@@ -112,6 +112,39 @@ env_tokens = ["ENCLAVE_TOKEN"]
 ```
 
 When `env_tokens` are declared and configured, Enclave injects matching read-only files under `/run/enclave/env/` and exports them as plain environment variables during `workspace enter`, `workspace exec`, and runtime command execution.
+
+### Credentials that are not providers
+
+`auth` names one of the three providers, because the wrapper inside a workspace is
+generated from that table. A credential Enclave has no provider for is declared as
+an environment token instead, and named by the variable the workspace asks for:
+
+```toml
+[workspace.vault]
+name = "vault"
+owner = "alice"
+env_tokens = ["NETFLIX_PASSWORD", "GTBANK_CARD_NUMBER"]
+```
+
+The value comes from the store slot the variable name derives: the name
+lowercased, with `_` written as `-`.
+
+| Variable | Store slot | Stored with |
+|----------|-----------|-------------|
+| `NETFLIX_PASSWORD` | `netflix-password` | `enclave auth store --user alice --provider netflix-password` |
+| `GTBANK_CARD_NUMBER` | `gtbank-card-number` | `enclave auth store --user alice --provider gtbank-card-number` |
+| `GITHUB_TOKEN` | `github` (the provider) | `enclave auth store --user alice --provider github` |
+
+The mapping is what lets a name the provider table has never heard of be stored
+and injected at all, and it is one to one: two environment tokens never read the
+same slot. The name is checked when the workspace is defined, so a name that could
+never be written into the workspace — `netflix_password`, `NETFLIX-PASSWORD`,
+`1TOKEN` — is refused rather than stored and silently never used.
+
+The variable is injected and scrubbed exactly like a provider token: it reaches
+the workspace only as a `0400` file under `/run/enclave/env/`, it is exported for
+the command being run, and its value is replaced with `[REDACTED]` in captured
+`workspace exec` output.
 
 ### Per-user token namespaces
 

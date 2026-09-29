@@ -193,6 +193,14 @@ A few rules the code follows that are easy to miss:
   ship. Output that a command produced goes through `src/auth/scrub.rs` before it
   leaves the daemon. When you add a field to a record or an event, ask whether it
   can hold a secret; if it can, do not add it.
+- **A credential is named, not hard-coded.** `src/auth/providers.rs` is the fixed
+  provider table the workspace wrapper is generated from; anything else a
+  workspace can ask for is an environment token, named by the variable it wants
+  and stored under the slot that name derives (`src/auth/names.rs`). Resolution,
+  scrubbing, and the audit all go through `src/auth/manager.rs`, so a credential
+  reaches all three or none: a new injection path that resolves a value without
+  adding it to `resolve_credentials` is a value that is neither scrubbed nor
+  recorded.
 
 Prefer the smallest change that makes the behaviour correct. Enclave has no async
 runtime, no OCI stack, and a small dependency list on purpose; a new dependency

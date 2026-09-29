@@ -204,6 +204,9 @@ setup = [
 # workspace_dir = "./project"
 # auth = ["github", "npm"]
 # owner = "alice"
+# env_tokens takes any variable name. A provider's variable reads that provider's
+# token; any other name reads the store slot it derives, so NETFLIX_PASSWORD is
+# stored with `enclave auth store --user alice --provider netflix-password`.
 # env_tokens = ["ENCLAVE_TOKEN"]
 # ports = ["127.0.0.1:3001:3000/tcp"]
 "#

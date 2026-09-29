@@ -168,6 +168,9 @@ Enclave unmounts only mounts it created, and it decides that from the mount itse
 - Provider tokens are stored on the host at `<state_dir>/auth/<provider>.token`,
   or, for a workspace with an `owner`, at
   `<state_dir>/auth/users/<owner>/<provider>.token`.
+- The file name is a provider name or the slot an environment token derives from
+  its variable name (`NETFLIX_PASSWORD` reads `netflix-password`), so a credential
+  Enclave has no provider for is stored and injected the same way one it does.
 - A token file is only read after its ownership and mode are checked: a regular
   file, not a symlink, owned by the effective uid, mode `0600`. A user's
   namespace directory is additionally required to be `0700` before it is read
@@ -178,4 +181,7 @@ Enclave unmounts only mounts it created, and it decides that from the mount itse
   and shipped without handling a secret.
 - When a workspace starts, Enclave copies only the declared providers into a namespace-private tmpfs mounted at `/run/enclave/auth` inside the workspace rootfs.
 - Declared `env_tokens` are copied into a separate namespace-private tmpfs mounted at `/run/enclave/env` inside the workspace rootfs.
+- Those files are rewritten from the store before every command the daemon runs,
+  not only when the workspace starts, so a revoked token stops being exported on
+  the next command.
 - This keeps the persisted host-side token store separate from the workspace runtime mount.

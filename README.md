@@ -467,11 +467,48 @@ When `env_tokens` are declared and configured, Enclave injects matching read-onl
 files under `/run/enclave/env/` and exports them as plain environment variables
 during `workspace enter`, `workspace exec`, and runtime command execution.
 
+### Ask for a credential that is not a provider
+
+An `env_token` is any well-formed variable name, not just the three providers', so
+a workspace can hold a credential Enclave has no provider for — a vault entry, a
+service login, a card field:
+
+```toml
+[workspace.vault]
+name = "vault"
+owner = "alice"
+env_tokens = ["NETFLIX_PASSWORD", "GTBANK_CARD_NUMBER"]
+```
+
+The value comes from the store slot the name derives, which is the name
+lowercased with `_` written as `-`:
+
+```bash
+printf '%s' "$NETFLIX_PASSWORD" | \
+  sudo enclave auth store --user alice --provider netflix-password
+```
+
+`NETFLIX_PASSWORD` is then exported for every command in that workspace, and the
+value is scrubbed out of captured output the same way a provider token is. A name
+that is one of the providers' variables — `GITHUB_TOKEN` — still reads that
+provider's token, so declaring one that way keeps working.
+
+The variable has to be one the wrapper inside the workspace will export: uppercase
+letters, digits, and `_`, starting with a letter. A name that could never be
+injected is refused when the workspace is defined rather than stored and silently
+never used.
+
+Revoking is immediate. Enclave re-resolves the store and rewrites the workspace's
+credential files before every command, so `enclave auth logout` takes effect on
+the next `workspace exec` rather than the next restart.
+
 ### Security model
 
 - Tokens are stored only in the Enclave state directory, either at
   `<state_dir>/auth/<provider>.token` for the shared namespace or at
-  `<state_dir>/auth/users/<user_id>/<provider>.token` for one user's.
+  `<state_dir>/auth/users/<user_id>/<provider>.token` for one user's. The file
+  name is a provider name or the slot an environment token derives, so the store
+  holds one credential per name either way.
 - Token files are validated for strict ownership and mode (`0600`, root-owned) before use.
 - A token value is only ever read from standard input; no command takes one as an
   argument, and `auth list` prints providers and dates without values.
@@ -482,7 +519,7 @@ during `workspace enter`, `workspace exec`, and runtime command execution.
   which names the action, the namespace, the provider, and the workspace and never
   the value.
 - Enclave does **not** read host credential sources like `~/.ssh`, `~/.gitconfig`, or other host secret files.
-- Tokens are only injected for providers explicitly declared in workspace configuration.
+- Tokens are only injected for credentials explicitly declared in workspace configuration, by provider (`auth`) or by variable name (`env_tokens`).
 
 Missing provider tokens log warnings and do not block workspace startup.
 

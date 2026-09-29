@@ -147,7 +147,7 @@ nothing on the host describes it any more.
 
 `workspace enter` uses a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that uses identity-checked cached descriptors when available, calls `setns()`, and executes directly inside the workspace namespaces. Descriptors are reopened when the PID start time or namespace identities change. This means output streams in real-time and the daemon does not proxy process stdio.
 
-`workspace exec` reaches the workspace the same way, but the command is run by the daemon rather than by the CLI, so that the output can be scrubbed of injected token values before it is returned. The daemon resolves the workspace's tokens from the namespace its `owner` selects, replaces every occurrence of each value with `[REDACTED]` in the captured stdout and stderr, and records one `inject` event per token the command ran with — whether or not the value appeared in its output, because the credential was available to it either way. `--no-scrub` asks the CLI to take the direct path instead, which streams in real-time and forwards standard input, at the cost of printing whatever the command wrote.
+`workspace exec` reaches the workspace the same way, but the command is run by the daemon rather than by the CLI, so that the output can be scrubbed of injected token values before it is returned. The daemon resolves the workspace's credentials from the namespace its `owner` selects and rewrites the workspace's auth and env files with them, so a token re-stored or revoked since the workspace started is what the command sees; it then replaces every occurrence of each value with `[REDACTED]` in the captured stdout and stderr, and records one `inject` event per credential the command ran with — whether or not the value appeared in its output, because the credential was available to it either way. `--no-scrub` asks the CLI to take the direct path instead, which streams in real-time and forwards standard input, at the cost of printing whatever the command wrote and of skipping the refresh and the audit.
 
 The sequence for `workspace enter`:
 
@@ -191,7 +191,7 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 |--------|---------|
 | `src/cli/` | Clap argument definitions |
 | `src/commands/` | CLI command handlers (sandbox, workspace, enclavefile, daemon, ps, rootfs, policy) |
-| `src/auth/` | Provider tokens: the provider table, the namespace a token belongs to, the files at rest, injection into a workspace, the audit log, and output scrubbing |
+| `src/auth/` | Credentials: the provider table, the rules a name has to satisfy, the namespace a token belongs to, the files at rest, injection into a workspace, the audit log, and output scrubbing |
 | `src/commands/auth/` | The `auth` command group, split by the command each part serves |
 | `src/commands/workspace/enter.rs` | `workspace enter` frontend, and the `workspace exec` direct path behind `--no-scrub` |
 | `src/commands/internal/` | Hidden internal commands for hardened session loops, runtime namespace entry, and persistent command helpers |
