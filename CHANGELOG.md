@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.1.0 - 2026-09-29
+
+This release adds an optional `owner` field to a workspace record and the token
+layout it names. The field is additive and a registry written by 2.1.0 loads in
+2.0.0, which ignores a field it does not know. What 2.0.0 cannot do is preserve
+it: any lifecycle operation rewrites the registry, so a workspace that rolled
+back to 2.0.0 loses its `owner` and resolves against the shared namespace again.
+If you might roll back, keep the token in the shared namespace as well, or plan
+to re-set the bindings.
+
 ### Added
 
 - Auth tokens can be scoped to a user. A token lives either in the state

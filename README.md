@@ -115,6 +115,15 @@ start that used to succeed. The failure names the variable that raises it; the w
 table is in [Runtime details](docs/runtime-details.md). [CHANGELOG.md](CHANGELOG.md)
 lists the rest of what changed.
 
+**Rolling back from 2.1.0 loses `owner` bindings.** 2.1.0 adds an optional
+`owner` field to a workspace record, and 2.0.0 ignores a field it does not know
+rather than refusing the record — so a 2.1.0 registry loads in 2.0.0, but the
+next lifecycle operation rewrites it without `owner`. A workspace that had one
+then resolves against the shared namespace, which is the behaviour every
+workspace had before 2.1.0. If you might roll back, keep the token in the shared
+namespace as well, or re-set the bindings afterwards with `enclave up` from an
+Enclavefile that declares them.
+
 ## Quickstart
 
 **Every command here needs root.** Enclave starts its daemon on first use, so there
