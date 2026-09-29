@@ -12,8 +12,10 @@
   A name that is one of the providers' variables still reads that provider's
   token, so a workspace that declares `env_tokens = ["GITHUB_TOKEN"]` resolves
   exactly as it did. A name that could never be injected — a lowercase one, one
-  with a `-` in it, or one starting with a digit or `_` — is refused where it is
-  declared rather than stored and silently never used.
+  with a `-` in it, or one starting with a digit — is refused where it is
+  declared rather than stored and silently never used. A leading `_` is kept in
+  the slot rather than written as `-`, so `_INTERNAL` reads `_internal` and a slot
+  never begins with `-`.
 - The store accepts any well-formed name, so a token can be held under a slot
   rather than only under a provider. `auth list` reports those slots by name and
   date in the shared namespace and alongside the providers in a user's, and
