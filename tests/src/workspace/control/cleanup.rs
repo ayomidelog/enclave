@@ -68,6 +68,7 @@ fn cleanup_workspace_artifacts_removes_stale_workspace_resources() {
             .to_string_lossy()
             .to_string(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: WorkspaceStatus::Stopped,
@@ -139,6 +140,7 @@ fn cleanup_workspace_artifacts_accepts_missing_workspace_root() {
         overlay_home_work_path: String::new(),
         overlay_home_merged_path: String::new(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: WorkspaceStatus::Stopped,

@@ -48,6 +48,10 @@ pub struct WorkspaceSection {
     pub clear_tmp_on_restart: bool,
     #[serde(default)]
     pub auth: Vec<String>,
+    /// The auth namespace this workspace's tokens are read from.
+    ///
+    /// Omitted means the state directory's shared namespace.
+    pub owner: Option<String>,
     #[serde(default)]
     pub env_tokens: Vec<String>,
     #[serde(default)]
@@ -122,6 +126,11 @@ fn validate_enclavefile(enclavefile: &Enclavefile) -> Result<()> {
                 key
             );
         }
+        if let Some(owner) = &ws.owner {
+            crate::auth::validate_user_id(owner).map_err(|err| {
+                anyhow::anyhow!("Enclavefile: workspace.{}.owner is invalid: {err}", key)
+            })?;
+        }
         for provider in &ws.auth {
             let normalized = provider.trim().to_ascii_lowercase();
             crate::auth::provider_env_var(&normalized).ok_or_else(|| {
@@ -193,6 +202,7 @@ setup = [
 # max_open_files = 65535
 # workspace_dir = "./project"
 # auth = ["github", "npm"]
+# owner = "alice"
 # env_tokens = ["ENCLAVE_TOKEN"]
 # ports = ["127.0.0.1:3001:3000/tcp"]
 "#

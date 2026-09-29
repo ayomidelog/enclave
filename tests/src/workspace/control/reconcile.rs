@@ -105,6 +105,7 @@ fn reconcile_clears_dead_runtime_and_namespace_references() {
         overlay_home_work_path: String::new(),
         overlay_home_merged_path: String::new(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: WorkspaceStatus::Running,

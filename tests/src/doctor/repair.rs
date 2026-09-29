@@ -87,6 +87,7 @@ fn doctor_reports_a_workspace_whose_metadata_copies_disagree() {
         overlay_home_work_path: String::new(),
         overlay_home_merged_path: String::new(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: crate::workspace::WorkspaceStatus::Stopped,

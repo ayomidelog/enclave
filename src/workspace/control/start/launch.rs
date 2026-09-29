@@ -58,6 +58,7 @@ pub fn launch_workspace_runtime(
     let auth_manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
     if let Err(err) = auth_manager.sync_workspace_auth(
         &workspace_rootfs_path,
+        workspace_snapshot.owner.as_deref(),
         &workspace_snapshot.auth_providers,
         &workspace_snapshot.env_tokens,
     ) {

@@ -9,7 +9,9 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use super::{inject, providers, storage};
+use super::scope::TokenScope;
+use super::storage::{self, StoreOutcome, StoredToken};
+use super::{inject, providers};
 
 /// One provider's token, resolved and ready to be written into a workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,40 +33,62 @@ impl AuthManager {
         }
     }
 
-    pub fn store_token(&self, provider: &str, token: &str) -> Result<PathBuf> {
-        storage::store_token(&self.state_dir, provider, token)
+    pub fn state_dir(&self) -> &std::path::Path {
+        &self.state_dir
     }
 
-    pub fn list_providers(&self) -> Result<Vec<String>> {
-        storage::list_configured_providers(&self.state_dir)
+    pub fn store_token(
+        &self,
+        scope: &TokenScope,
+        provider: &str,
+        token: &str,
+        force: bool,
+    ) -> Result<StoreOutcome> {
+        storage::store_token(&self.state_dir, scope, provider, token, force)
     }
 
-    pub fn token_exists(&self, provider: &str) -> Result<bool> {
-        storage::token_exists(&self.state_dir, provider)
+    pub fn list_tokens(&self, scope: &TokenScope) -> Result<Vec<StoredToken>> {
+        storage::list_tokens(&self.state_dir, scope)
     }
 
-    pub fn load_token(&self, provider: &str) -> Result<Option<String>> {
-        storage::load_token(&self.state_dir, provider)
+    pub fn token_exists(&self, scope: &TokenScope, provider: &str) -> Result<bool> {
+        storage::token_exists(&self.state_dir, scope, provider)
     }
 
-    pub fn delete_token(&self, provider: &str) -> Result<bool> {
-        storage::delete_token(&self.state_dir, provider)
+    pub fn load_token(&self, scope: &TokenScope, provider: &str) -> Result<Option<String>> {
+        storage::load_token(&self.state_dir, scope, provider)
+    }
+
+    pub fn delete_token(&self, scope: &TokenScope, provider: &str) -> Result<bool> {
+        storage::delete_token(&self.state_dir, scope, provider)
     }
 
     /// Resolve this workspace's tokens and write them into its namespace.
     pub fn sync_workspace_auth(
         &self,
         workspace_rootfs: &str,
+        owner: Option<&str>,
         auth_providers: &[String],
         env_tokens: &[String],
     ) -> Result<Vec<WorkspaceAuthToken>> {
-        let tokens = self.tokens_for_workspace(auth_providers);
-        let env = self.env_tokens_for_workspace(env_tokens);
+        let tokens = self.resolve_tokens(owner, auth_providers);
+        let env = self.resolve_env_tokens(owner, env_tokens);
         inject::write_workspace_auth(workspace_rootfs, &tokens, &env)?;
         Ok(tokens)
     }
 
-    fn tokens_for_workspace(&self, auth_providers: &[String]) -> Vec<WorkspaceAuthToken> {
+    /// The tokens a workspace would be given, without writing them anywhere.
+    ///
+    /// Used where the values are needed but not injected: the exec path scrubs
+    /// the tokens a workspace holds out of its captured output, and it has to
+    /// resolve them the same way the start did, or it would scrub the wrong
+    /// secret.
+    pub fn resolve_tokens(
+        &self,
+        owner: Option<&str>,
+        auth_providers: &[String],
+    ) -> Vec<WorkspaceAuthToken> {
+        let scope = TokenScope::for_owner(owner);
         let mut tokens = Vec::new();
         for provider in auth_providers {
             let Some(env_var) = providers::provider_env_var(provider) else {
@@ -75,7 +99,7 @@ impl AuthManager {
                 continue;
             };
 
-            match storage::load_token(&self.state_dir, provider) {
+            match storage::load_token(&self.state_dir, &scope, provider) {
                 Ok(Some(token)) => tokens.push(WorkspaceAuthToken {
                     provider: provider.clone(),
                     env_var: env_var.to_string(),
@@ -98,7 +122,12 @@ impl AuthManager {
         tokens
     }
 
-    fn env_tokens_for_workspace(&self, env_tokens: &[String]) -> Vec<(String, String)> {
+    fn resolve_env_tokens(
+        &self,
+        owner: Option<&str>,
+        env_tokens: &[String],
+    ) -> Vec<(String, String)> {
+        let scope = TokenScope::for_owner(owner);
         let mut tokens = Vec::new();
         for env_var in env_tokens {
             let Some(provider) = providers::provider_for_env_var(env_var) else {
@@ -109,7 +138,7 @@ impl AuthManager {
                 continue;
             };
 
-            match storage::load_token(&self.state_dir, provider) {
+            match storage::load_token(&self.state_dir, &scope, provider) {
                 Ok(Some(token)) => tokens.push((env_var.clone(), token)),
                 Ok(None) => {
                     tracing::warn!(

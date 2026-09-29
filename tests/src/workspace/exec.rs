@@ -18,6 +18,7 @@ fn runtime_exec_clears_environment_before_running_wrapper() {
         overlay_home_work_path: "/tmp/work".to_string(),
         overlay_home_merged_path: "/tmp/merged".to_string(),
         auth_providers: vec![],
+        owner: None,
         env_tokens: vec![],
         published_ports: vec![],
         status: WorkspaceStatus::Running,

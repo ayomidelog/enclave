@@ -21,6 +21,7 @@ fn workspace_fixture() -> super::super::types::WorkspaceMetadata {
         overlay_home_work_path: "/tmp/enclave-test/workspaces/ws-123/home-work".to_string(),
         overlay_home_merged_path: "/tmp/enclave-test/workspaces/ws-123/home-merged".to_string(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: Default::default(),

@@ -18,6 +18,7 @@ fn idle_workspace(dir: &std::path::Path) -> WorkspaceMetadata {
         overlay_home_work_path: String::new(),
         overlay_home_merged_path: String::new(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: Default::default(),

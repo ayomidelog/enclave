@@ -59,6 +59,7 @@ pub(super) fn start_workspace_definitions_bulk(
                 "disk_mb": workspace.disk_mb,
                 "clear_tmp_on_restart": workspace.clear_tmp_on_restart,
                 "auth": workspace.auth,
+                "owner": workspace.owner,
                 "env_tokens": workspace.env_tokens,
                 "ports": workspace.ports,
                 "run": workspace.run,

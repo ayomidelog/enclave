@@ -5,12 +5,18 @@ pub fn update_workspace_definition(
     sandbox_selector: &str,
     workspace_selector: &str,
     auth_providers: Option<Vec<String>>,
+    // None leaves the binding alone, Some(None) clears it, and Some(Some(id))
+    // binds the workspace to that auth namespace.
+    owner: Option<Option<String>>,
     env_tokens: Option<Vec<String>>,
     published_ports: Option<Vec<PublishedPortSpec>>,
     limits_update: WorkspaceLimitsUpdate,
 ) -> Result<WorkspaceMetadata> {
     let auth_providers = auth_providers
         .map(crate::workspace::create::normalize_auth_providers)
+        .transpose()?;
+    let owner = owner
+        .map(crate::workspace::create::normalize_owner)
         .transpose()?;
     let env_tokens = env_tokens
         .map(crate::workspace::create::normalize_env_tokens)
@@ -44,6 +50,12 @@ pub fn update_workspace_definition(
         if let Some(auth_providers) = auth_providers {
             if workspace.auth_providers != auth_providers {
                 workspace.auth_providers = auth_providers;
+                changed = true;
+            }
+        }
+        if let Some(owner) = owner {
+            if workspace.owner != owner {
+                workspace.owner = owner;
                 changed = true;
             }
         }

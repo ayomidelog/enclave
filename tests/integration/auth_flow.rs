@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use enclave::auth::AuthManager;
+use enclave::auth::{AuthManager, TokenScope};
 use enclave::sandbox::{
     create_sandbox, destroy_sandbox, start_sandbox, stop_sandbox, BootstrapMethod,
 };
@@ -38,16 +38,24 @@ fn auth_login_logout_persists_provider_token() {
     let state = state_dir("enclave-int-auth-login");
     let manager = AuthManager::new(&state);
     manager
-        .store_token("github", "ghp_test_token")
+        .store_token(&TokenScope::Shared, "github", "ghp_test_token", true)
         .expect("store token");
-    assert!(manager.token_exists("github").expect("token exists"));
+    assert!(manager
+        .token_exists(&TokenScope::Shared, "github")
+        .expect("token exists"));
     assert_eq!(
-        manager.load_token("github").expect("load token"),
+        manager
+            .load_token(&TokenScope::Shared, "github")
+            .expect("load token"),
         Some("ghp_test_token".to_string())
     );
 
-    assert!(manager.delete_token("github").expect("delete token"));
-    assert!(!manager.token_exists("github").expect("token removed"));
+    assert!(manager
+        .delete_token(&TokenScope::Shared, "github")
+        .expect("delete token"));
+    assert!(!manager
+        .token_exists(&TokenScope::Shared, "github")
+        .expect("token removed"));
     let _ = fs::remove_dir_all(state);
 }
 
@@ -62,10 +70,10 @@ fn workspace_start_writes_declared_auth_token_file() {
     prepare_cached_rootfs(&state, "bookworm");
     let manager = AuthManager::new(&state);
     manager
-        .store_token("github", "ghp_workspace_token")
+        .store_token(&TokenScope::Shared, "github", "ghp_workspace_token", true)
         .expect("store github token");
     manager
-        .store_token("enclave", "enc_workspace_token")
+        .store_token(&TokenScope::Shared, "enclave", "enc_workspace_token", true)
         .expect("store enclave token");
 
     let sandbox = create_sandbox(
@@ -161,10 +169,10 @@ fn a_dropped_provider_token_is_removed_on_restart() {
     prepare_cached_rootfs(&state, "bookworm");
     let manager = AuthManager::new(&state);
     manager
-        .store_token("github", "ghp_dropped_token")
+        .store_token(&TokenScope::Shared, "github", "ghp_dropped_token", true)
         .expect("store github token");
     manager
-        .store_token("enclave", "enc_kept_token")
+        .store_token(&TokenScope::Shared, "enclave", "enc_kept_token", true)
         .expect("store enclave token");
 
     let sandbox = create_sandbox(

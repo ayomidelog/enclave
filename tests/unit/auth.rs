@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use enclave::auth::{
-    provider_env_var, provider_for_env_var, workspace_env_wrapper_script, AuthManager,
+    provider_env_var, provider_for_env_var, workspace_env_wrapper_script, AuthManager, TokenScope,
 };
 
 fn temp_state_dir(name: &str) -> std::path::PathBuf {
@@ -21,7 +21,7 @@ fn temp_state_dir(name: &str) -> std::path::PathBuf {
 fn token_storage_rejects_invalid_provider_path_values() {
     let state_dir = temp_state_dir("invalid-provider");
     let manager = AuthManager::new(&state_dir);
-    let result = manager.store_token("../escape", "abc");
+    let result = manager.store_token(&TokenScope::Shared, "../escape", "abc", true);
     assert!(result.is_err());
     let _ = fs::remove_dir_all(state_dir);
 }
@@ -37,7 +37,7 @@ fn token_load_rejects_insecure_permissions() {
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o644)).expect("set bad perms");
 
     let manager = AuthManager::new(&state_dir);
-    let result = manager.load_token("github");
+    let result = manager.load_token(&TokenScope::Shared, "github");
     assert!(result.is_err());
 
     let _ = fs::remove_dir_all(state_dir);
@@ -48,14 +48,22 @@ fn token_load_accepts_current_user_owned_file_with_strict_mode() {
     let state_dir = temp_state_dir("good-owner");
     let manager = AuthManager::new(&state_dir);
     manager
-        .store_token("github", "secret")
+        .store_token(&TokenScope::Shared, "github", "secret", true)
         .expect("store token for current user");
 
-    let loaded = manager.load_token("github").expect("load token");
+    let loaded = manager
+        .load_token(&TokenScope::Shared, "github")
+        .expect("load token");
     assert_eq!(loaded.as_deref(), Some("secret"));
 
-    let configured = manager.list_providers().expect("list configured providers");
-    assert_eq!(configured, vec!["github".to_string()]);
+    let configured = manager
+        .list_tokens(&TokenScope::Shared)
+        .expect("list configured providers");
+    let providers: Vec<&str> = configured
+        .iter()
+        .map(|token| token.provider.as_str())
+        .collect();
+    assert_eq!(providers, vec!["github"]);
 
     let _ = fs::remove_dir_all(state_dir);
 }
@@ -71,7 +79,9 @@ fn list_providers_ignores_insecure_token_files() {
     fs::set_permissions(&token_path, fs::Permissions::from_mode(0o644)).expect("set bad perms");
 
     let manager = AuthManager::new(&state_dir);
-    let providers = manager.list_providers().expect("list providers");
+    let providers = manager
+        .list_tokens(&TokenScope::Shared)
+        .expect("list providers");
     assert!(providers.is_empty(), "insecure tokens must not be reported");
 
     let _ = fs::remove_dir_all(state_dir);
@@ -108,7 +118,7 @@ fn workspace_wrapper_configures_git_and_gh_auth_environment() {
 fn sync_workspace_auth_rejects_non_proc_namespace_root_path() {
     let state_dir = temp_state_dir("sync-auth-path");
     let manager = AuthManager::new(&state_dir);
-    let result = manager.sync_workspace_auth("/tmp/not-a-workspace-root", &[], &[]);
+    let result = manager.sync_workspace_auth("/tmp/not-a-workspace-root", None, &[], &[]);
     assert!(result.is_err());
     let _ = fs::remove_dir_all(state_dir);
 }

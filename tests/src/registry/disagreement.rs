@@ -34,6 +34,7 @@ fn disagreement_workspace(
             .to_string_lossy()
             .to_string(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: crate::workspace::WorkspaceStatus::Stopped,

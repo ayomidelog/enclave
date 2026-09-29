@@ -2,7 +2,7 @@ use std::io::Write;
 
 use anyhow::{bail, Context, Result};
 
-use crate::auth::AuthManager;
+use crate::auth::{AuthManager, TokenScope};
 use crate::cli::{AuthCommands, AuthProviderArgs};
 use crate::paths;
 
@@ -16,7 +16,8 @@ pub(crate) fn run_auth_command(command: AuthCommands) -> Result<()> {
 }
 
 fn run_auth_login(manager: &AuthManager, args: AuthProviderArgs) -> Result<()> {
-    if manager.token_exists(&args.provider)? && !confirm_overwrite(&args.provider)? {
+    let scope = TokenScope::Shared;
+    if manager.token_exists(&scope, &args.provider)? && !confirm_overwrite(&args.provider)? {
         println!("aborted");
         return Ok(());
     }
@@ -27,13 +28,17 @@ fn run_auth_login(manager: &AuthManager, args: AuthProviderArgs) -> Result<()> {
     if token.trim().is_empty() {
         bail!("token must not be empty");
     }
-    manager.store_token(&args.provider, token.trim())?;
+    manager.store_token(&scope, &args.provider, token.trim(), true)?;
     println!("stored token for provider \"{}\"", args.provider);
     Ok(())
 }
 
 fn run_auth_list(manager: &AuthManager) -> Result<()> {
-    let configured = manager.list_providers()?;
+    let configured: Vec<String> = manager
+        .list_tokens(&TokenScope::Shared)?
+        .into_iter()
+        .map(|token| token.provider)
+        .collect();
     print!("{}", format_auth_provider_list(&configured));
     Ok(())
 }
@@ -52,7 +57,7 @@ fn format_auth_provider_list(configured: &[String]) -> String {
 }
 
 fn run_auth_logout(manager: &AuthManager, args: AuthProviderArgs) -> Result<()> {
-    if manager.delete_token(&args.provider)? {
+    if manager.delete_token(&TokenScope::Shared, &args.provider)? {
         println!("removed token for provider \"{}\"", args.provider);
     } else {
         println!("no token configured for provider \"{}\"", args.provider);

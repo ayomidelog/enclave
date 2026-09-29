@@ -136,6 +136,7 @@ fn a_workspace_the_registry_knows_about_is_left_to_the_other_checks() {
         overlay_home_work_path: String::new(),
         overlay_home_merged_path: String::new(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: crate::workspace::WorkspaceStatus::Running,
