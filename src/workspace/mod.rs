@@ -39,14 +39,15 @@ pub(crate) use control::{
     freeze_workspaces_in_sandbox, reconcile_workspace_runtime_state,
     resize_workspace_with_security, stop_running_workspaces_in_sandbox,
     update_workspace_definition, workspace_metadata, workspace_runtime_is_active,
+    WorkspaceDefinitionUpdate,
 };
 pub use cp::copy_workspace_path;
 pub(crate) use cp::copy_workspace_path_with_connection;
 pub(crate) use cp::CopyOptions;
 pub(crate) use create::sandbox_workspace_disk_bytes;
 pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreateOptions};
-pub use exec::exec_workspace_command;
 pub(crate) use exec::spawn_workspace_command_detached;
+pub use exec::{exec_workspace_command, exec_workspace_command_with_options, WorkspaceExecOptions};
 pub use inventory::{ResourceIdentity, ResourceInventory, ResourceKind};
 pub use logs::workspace_logs;
 pub use orphans::{find_orphan_runtime, OrphanRuntime};

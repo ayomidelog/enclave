@@ -4,12 +4,6 @@ use crate::resource_limits::validate_cpu_percent;
 use crate::sandbox::{BootstrapMethod, DEFAULT_DEBIAN_MIRROR, DEFAULT_DEBIAN_SUITE};
 
 #[derive(Args, Debug)]
-pub struct AuthProviderArgs {
-    #[arg(value_parser = parse_entity_name)]
-    pub provider: String,
-}
-
-#[derive(Args, Debug)]
 pub struct DoctorArgs {
     #[arg(long)]
     pub repair: bool,
@@ -128,6 +122,18 @@ pub(super) fn parse_non_empty_arg(s: &str) -> Result<String, String> {
     if s.chars().any(char::is_control) {
         return Err("value must not contain control characters".to_string());
     }
+    Ok(s.to_string())
+}
+
+/// A provider name, checked as a file-name component before it is used as one.
+pub(super) fn parse_provider_name(s: &str) -> Result<String, String> {
+    crate::auth::validate_provider_name(s).map_err(|err| err.to_string())?;
+    Ok(s.to_string())
+}
+
+/// A user id, checked as a directory name before it is used as one.
+pub(super) fn parse_user_id_arg(s: &str) -> Result<String, String> {
+    crate::auth::validate_user_id(s).map_err(|err| err.to_string())?;
     Ok(s.to_string())
 }
 

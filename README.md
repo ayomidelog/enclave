@@ -418,8 +418,32 @@ sudo enclave auth login github
 # paste the token at the prompt
 ```
 
+To provision one from a script, where there is no terminal to prompt at, read the
+value from standard input so it stays out of the shell history and the process
+list:
+
+```bash
+printf '%s' "$TOKEN" | sudo enclave auth store --user alice --provider github
+```
+
 Tokens are stored under the Enclave state directory, not in the workspace and not in
 your shell history.
+
+### Scope a token to a user
+
+A workspace with an `owner` reads that user's tokens, so two workspaces on one
+sandbox can hold different credentials for the same provider:
+
+```toml
+[workspace.api]
+name = "api"
+owner = "alice"
+auth = ["github"]
+```
+
+A workspace with no `owner` reads the shared token it always did. An owner with
+nothing stored gets nothing rather than falling back to the shared token, so one
+user can never be handed another's credential.
 
 ### Declare workspace auth providers
 
@@ -436,8 +460,18 @@ during `workspace enter`, `workspace exec`, and runtime command execution.
 
 ### Security model
 
-- Tokens are stored only in the Enclave state directory under `<state_dir>/auth/<provider>.token`.
+- Tokens are stored only in the Enclave state directory, either at
+  `<state_dir>/auth/<provider>.token` for the shared namespace or at
+  `<state_dir>/auth/users/<user_id>/<provider>.token` for one user's.
 - Token files are validated for strict ownership and mode (`0600`, root-owned) before use.
+- A token value is only ever read from standard input; no command takes one as an
+  argument, and `auth list` prints providers and dates without values.
+- `workspace exec` replaces every injected token value in the captured output
+  with `[REDACTED]`, so a command that prints a credential does not put it in your
+  terminal or your logs. `--no-scrub` turns this off for debugging.
+- Every store, revoke, and inject is recorded in `<state_dir>/auth/audit.log`,
+  which names the action, the namespace, the provider, and the workspace and never
+  the value.
 - Enclave does **not** read host credential sources like `~/.ssh`, `~/.gitconfig`, or other host secret files.
 - Tokens are only injected for providers explicitly declared in workspace configuration.
 

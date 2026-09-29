@@ -79,6 +79,7 @@ fn reconcile_runtime_state_reports_every_repaired_record() {
         overlay_home_work_path: String::new(),
         overlay_home_merged_path: String::new(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: WorkspaceStatus::Stopping,
@@ -162,6 +163,7 @@ fn init_storage_does_not_roll_back_an_in_flight_start() {
             .to_string_lossy()
             .to_string(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         // The launch is about to write the runtime markers; this is exactly the

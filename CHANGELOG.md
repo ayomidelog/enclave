@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Added
+
+- Auth tokens can be scoped to a user. A token lives either in the state
+  directory's shared namespace at `<state_dir>/auth/<provider>.token`, which is
+  what every workspace used before this existed, or in one user's namespace at
+  `<state_dir>/auth/users/<user_id>/<provider>.token`. A workspace selects one
+  with the new optional `owner` field, in the Enclavefile or in the workspace
+  record. An owner with nothing stored gets nothing rather than falling back to
+  the shared token, because the fallback would hand one user another user's
+  credential; the start warns and continues, the way a missing provider token
+  always has. A user id is limited to the URL-safe set — ASCII letters, digits,
+  and `+`, `-`, `_`, `.` — because it becomes a single directory name.
+- `enclave auth store --user <user_id> --provider <name> [--force]` provisions a
+  token without an interactive prompt. The value is read from standard input and
+  never from an argument, so it does not appear in the shell history or in the
+  process list. An existing token is refused rather than replaced unless
+  `--force` is given, and the outcome is reported in the exit status: `0` stored,
+  `2` already stored, `3` an unusable provider or user id, `4` an I/O failure.
+- `enclave auth list --user <user_id>` prints each stored provider and the date
+  it was stored, never the value. `enclave auth logout --user <user_id>
+  <provider>` removes one. Without `--user` both act on the shared namespace,
+  which is what they did before.
+- An append-only audit log at `<state_dir>/auth/audit.log` (mode `0600`), one
+  JSON line per store, revoke, and inject, fsynced on write. Each event names the
+  action, the namespace, the provider, and the workspace; there is no field for
+  the token value, so a value cannot reach the log. An `inject` is recorded when
+  a token enters a workspace at start, and again when a command runs with it,
+  whether or not the value appeared in that command's output. The events of one
+  operation are one append and one fsync rather than one each, which keeps the
+  durable cost off the start path: a three-provider start pays for one write, not
+  three.
+- `workspace exec` replaces every injected token value in the captured output
+  with `[REDACTED]` before returning it, so a command that prints a credential
+  does not put it in a terminal, a log, a CI job, or a bug report. `--no-scrub`
+  prints the output exactly as written, warns that it may contain a credential,
+  and restores the direct streaming path for a command that reads standard input
+  or writes a lot of output. An interactive `workspace enter` session is not
+  captured and so is not scrubbed.
+
+### Changed
+
+- The `auth` commands take `--state-dir`. They act on a state directory rather
+  than on a running daemon, and the directory was fixed to the invoking user's,
+  which left no way to point them anywhere else.
+- `workspace exec` runs the command through the daemon so its output can be
+  scrubbed. It therefore buffers output and does not forward standard input;
+  `--no-scrub` keeps the previous streaming behaviour, and `workspace enter` is
+  unchanged.
+
 ## 2.0.0 - 2026-09-26
 
 ### Breaking

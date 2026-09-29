@@ -27,7 +27,9 @@ use definition::generate_workspace_id;
 use home::{ensure_home_base_skeleton, resolve_home_mount_source};
 
 // Reached by the workspace session and update paths, and by the create tests.
-pub(crate) use definition::{normalize_auth_providers, normalize_env_tokens, validate_name};
+pub(crate) use definition::{
+    normalize_auth_providers, normalize_env_tokens, normalize_owner, validate_name,
+};
 pub(crate) use home::ensure_traversable_directory_permissions;
 
 /// The disk the sandbox's workspaces have already been promised.
@@ -48,6 +50,7 @@ pub struct WorkspaceCreateOptions {
     pub limits: WorkspaceLimits,
     pub home_mount_source: Option<String>,
     pub auth_providers: Vec<String>,
+    pub owner: Option<String>,
     pub env_tokens: Vec<String>,
     pub published_ports: Vec<PublishedPortSpec>,
     pub clear_tmp_on_restart: bool,
@@ -81,12 +84,14 @@ pub fn create_workspace_with_options(
         limits,
         home_mount_source,
         auth_providers,
+        owner,
         env_tokens,
         published_ports,
         clear_tmp_on_restart,
     } = options;
     limits.validate()?;
     let auth_providers = normalize_auth_providers(auth_providers)?;
+    let owner = normalize_owner(owner)?;
     let env_tokens = normalize_env_tokens(env_tokens)?;
     crate::workspace::validate_published_ports(&published_ports)?;
     crate::workspace::validate_workspace_storage_limits(
@@ -217,6 +222,7 @@ pub fn create_workspace_with_options(
             overlay_home_work_path: overlay_work.to_string_lossy().to_string(),
             overlay_home_merged_path: overlay_merged.to_string_lossy().to_string(),
             auth_providers: auth_providers.clone(),
+            owner: owner.clone(),
             env_tokens: env_tokens.clone(),
             published_ports: published_ports.clone(),
             status: WorkspaceStatus::Stopped,

@@ -141,6 +141,13 @@ pub struct WorkspaceExecArgs {
     pub workspace_id: String,
     #[arg(long, default_value = "/home")]
     pub cwd: String,
+    /// Print the output exactly as the command wrote it, without removing
+    /// injected token values.
+    ///
+    /// For debugging only. The output may contain a credential, so using this is
+    /// recorded in the daemon log.
+    #[arg(long)]
+    pub no_scrub: bool,
     #[arg(required = true, trailing_var_arg = true, value_parser = parse_non_empty_arg)]
     pub command: Vec<String>,
 }

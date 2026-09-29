@@ -128,6 +128,7 @@ fn destroy_with_missing_sandbox_path_preserves_live_workspace_runtime_record() {
             .to_string_lossy()
             .to_string(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: WorkspaceStatus::Running,
@@ -227,6 +228,7 @@ fn destroy_with_live_workspace_retains_sandbox_and_registry() {
             .to_string_lossy()
             .to_string(),
         auth_providers: Vec::new(),
+        owner: None,
         env_tokens: Vec::new(),
         published_ports: Vec::new(),
         status: WorkspaceStatus::Running,

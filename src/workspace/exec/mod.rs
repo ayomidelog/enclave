@@ -29,12 +29,46 @@ pub(crate) use args::runtime_exec_command_args;
 pub(crate) use args::workspace_file_receive_args;
 pub(crate) use detached::spawn_workspace_command_detached;
 
+/// What a caller can ask of an exec.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkspaceExecOptions {
+    /// Replace injected token values in the captured output.
+    ///
+    /// On by default: the workspace is entitled to its token, and the output of
+    /// a command travels further than the workspace does.
+    pub scrub: bool,
+}
+
+impl Default for WorkspaceExecOptions {
+    fn default() -> Self {
+        Self { scrub: true }
+    }
+}
+
 pub fn exec_workspace_command(
     state_dir: &Path,
     sandbox_selector: &str,
     workspace_selector: &str,
     cwd: &str,
     command: &[String],
+) -> Result<WorkspaceExecResult> {
+    exec_workspace_command_with_options(
+        state_dir,
+        sandbox_selector,
+        workspace_selector,
+        cwd,
+        command,
+        WorkspaceExecOptions::default(),
+    )
+}
+
+pub fn exec_workspace_command_with_options(
+    state_dir: &Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+    cwd: &str,
+    command: &[String],
+    options: WorkspaceExecOptions,
 ) -> Result<WorkspaceExecResult> {
     if command.is_empty() {
         bail!("workspace exec requires a command");
@@ -75,8 +109,11 @@ pub fn exec_workspace_command(
     })?;
 
     let exit_code = output.exit_code;
-    let stdout = output.stdout;
-    let stderr = output.stderr;
+    let mut stdout = output.stdout;
+    let mut stderr = output.stderr;
+    if options.scrub {
+        scrub_injected_tokens(state_dir, &workspace, &mut stdout, &mut stderr)?;
+    }
     let runtime_pid = workspace.runtime_pid.ok_or_else(|| {
         anyhow!(
             "workspace '{}' has no runtime pid after command execution",
@@ -106,6 +143,45 @@ pub fn exec_workspace_command(
         mount_ns,
         pid_ns,
     })
+}
+
+/// Replace the workspace's own token values in captured output.
+///
+/// The values come from the same namespace the start injected from, so a
+/// workspace is scrubbed of the tokens it actually holds. Each token that was
+/// scrubbed is also recorded, which is the event an operator asking "when was
+/// this credential used" wants.
+fn scrub_injected_tokens(
+    state_dir: &Path,
+    workspace: &WorkspaceMetadata,
+    stdout: &mut String,
+    stderr: &mut String,
+) -> Result<()> {
+    let manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
+    let tokens = manager.resolved_credentials(
+        workspace.owner.as_deref(),
+        &workspace.auth_providers,
+        &workspace.env_tokens,
+    );
+    if tokens.is_empty() {
+        return Ok(());
+    }
+    let secrets: Vec<String> = tokens.iter().map(|token| token.token.clone()).collect();
+    *stdout = crate::auth::scrub_secrets(stdout, &secrets);
+    *stderr = crate::auth::scrub_secrets(stderr, &secrets);
+    let target = crate::auth::WorkspaceAuthTarget {
+        sandbox_id: &workspace.sandbox_id,
+        workspace_id: &workspace.id,
+        owner: workspace.owner.as_deref(),
+    };
+    let providers: Vec<String> = tokens.iter().map(|token| token.provider.clone()).collect();
+    if let Err(err) = manager.audit_inject(&target, &providers) {
+        tracing::warn!(
+            "failed to record the auth injection for workspace {}: {err:#}",
+            workspace.id
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn spawn_workspace_command(

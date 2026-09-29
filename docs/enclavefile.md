@@ -96,6 +96,7 @@ Each `[workspace.*]` block defines a workspace. The key after `workspace.` is th
 | `disk_mb` | No | — | Per-workspace disk quota for Enclave-managed writable storage. On quota-backed workspaces, `/home`, workspace-private `/tmp`, and the root OverlayFS copy-on-write layer share the same quota-backed filesystem, including writes under `/opt`, `/var`, `/etc`, and `/root`. Not supported when `workspace_dir` / `path` mounts a host directory into `/home`. |
 | `clear_tmp_on_restart` | No | `false` | Clear the managed workspace `/tmp` after a successful workspace or sandbox stop, before the next start. This is opt-in and has no effect on host-mounted `workspace_dir` / `path` storage. |
 | `auth` | No | `[]` | List of auth providers to inject into this workspace. Supported values: `enclave`, `github`, `npm`. Only listed providers are exposed. |
+| `owner` | No | — | The auth namespace this workspace's tokens are read from, e.g. `owner = "alice"`. Omitted means the shared namespace at `<state_dir>/auth`, which is what every workspace used before namespaces existed. |
 | `env_tokens` | No | `[]` | List of plain environment tokens to inject into this workspace. Supported values currently match provider-backed tokens such as `ENCLAVE_TOKEN`, `GITHUB_TOKEN`, and `NPM_TOKEN`. |
 | `ports` | No | `[]` | Loopback-only published port mappings. Format: `127.0.0.1:HOST_PORT:WORKSPACE_PORT/tcp`. `tcp` is the only supported protocol in v1. |
 
@@ -111,6 +112,39 @@ env_tokens = ["ENCLAVE_TOKEN"]
 ```
 
 When `env_tokens` are declared and configured, Enclave injects matching read-only files under `/run/enclave/env/` and exports them as plain environment variables during `workspace enter`, `workspace exec`, and runtime command execution.
+
+### Per-user token namespaces
+
+`owner` scopes a workspace's tokens to one namespace, so two workspaces on the
+same sandbox can hold different credentials for the same provider:
+
+```toml
+[workspace.api]
+name = "api"
+owner = "alice"
+auth = ["github"]
+
+[workspace.worker]
+name = "worker"
+owner = "bob"
+auth = ["github"]
+```
+
+Each workspace is given the token stored at
+`<state_dir>/auth/users/<owner>/github.token`. Store them with
+`enclave auth store --user alice --provider github`, which reads the value from
+standard input.
+
+An owner with nothing stored gets nothing. Enclave does not fall back to the
+shared token, because the fallback would hand one user another user's credential;
+the start warns and continues. A workspace with no `owner` reads
+`<state_dir>/auth/github.token` and behaves exactly as it did before namespaces
+existed.
+
+`owner` is part of the workspace's definition, so `enclave up` reconciles it the
+way it reconciles `auth`: a declared owner is applied, and removing the line
+unbinds the workspace, which moves it back to the shared namespace on its next
+start. Changing a binding on a running workspace takes effect when it restarts.
 
 When `enclave` is declared and a token exists, Enclave injects:
 

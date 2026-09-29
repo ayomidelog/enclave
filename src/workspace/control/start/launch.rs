@@ -56,8 +56,14 @@ pub fn launch_workspace_runtime(
     let auth = crate::perf::Timer::new("workspace.start.auth");
     let workspace_rootfs_path = format!("/proc/{}/root", session_info.pid);
     let auth_manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
+    let auth_target = crate::auth::WorkspaceAuthTarget {
+        sandbox_id: &sandbox_snapshot.id,
+        workspace_id: &workspace_snapshot.id,
+        owner: workspace_snapshot.owner.as_deref(),
+    };
     if let Err(err) = auth_manager.sync_workspace_auth(
         &workspace_rootfs_path,
+        &auth_target,
         &workspace_snapshot.auth_providers,
         &workspace_snapshot.env_tokens,
     ) {

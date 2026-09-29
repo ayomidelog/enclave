@@ -1,4 +1,5 @@
 mod auth;
+mod auth_namespace;
 mod config_parsing;
 mod enclavefile;
 mod network_dns;

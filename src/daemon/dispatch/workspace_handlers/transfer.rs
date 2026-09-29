@@ -10,13 +10,17 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_exec(
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
     let cwd = params.get("cwd").and_then(Value::as_str).unwrap_or("/home");
     let command = parse_string_array(params, "command")?;
+    // Scrubbing is on unless the caller turns it off, so a caller that says
+    // nothing gets the safe behaviour.
+    let scrub = params.get("scrub").and_then(Value::as_bool).unwrap_or(true);
 
-    let result = workspace::exec_workspace_command(
+    let result = workspace::exec_workspace_command_with_options(
         &config.state_dir,
         sandbox,
         workspace_selector,
         cwd,
         &command,
+        workspace::WorkspaceExecOptions { scrub },
     )?;
     Ok(serde_json::to_value(result)?)
 }

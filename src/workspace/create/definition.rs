@@ -41,6 +41,24 @@ pub(crate) fn normalize_auth_providers(auth_providers: Vec<String>) -> Result<Ve
     Ok(normalized.into_iter().collect())
 }
 
+/// Validate the auth namespace a workspace's tokens are read from.
+///
+/// The id becomes a directory name under `<state_dir>/auth/users`, so it is
+/// checked here rather than only where a token is stored: a workspace bound to
+/// a namespace that could never hold a token would silently inject nothing.
+pub(crate) fn normalize_owner(owner: Option<String>) -> Result<Option<String>> {
+    let Some(owner) = owner else {
+        return Ok(None);
+    };
+    let owner = owner.trim().to_string();
+    if owner.is_empty() {
+        return Ok(None);
+    }
+    crate::auth::validate_user_id(&owner)
+        .map_err(|err| anyhow!("invalid workspace owner: {err}"))?;
+    Ok(Some(owner))
+}
+
 pub(crate) fn normalize_env_tokens(env_tokens: Vec<String>) -> Result<Vec<String>> {
     let mut normalized = std::collections::BTreeSet::new();
     for env_token in env_tokens {

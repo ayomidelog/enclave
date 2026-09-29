@@ -19,7 +19,7 @@ graph LR
 - Every failure carries a stable machine-readable `code` beside the human `error` message, so a client can tell a missing sandbox from a conflict, an unsupported host, a timeout, or a cleanup that could not release every resource without matching on wording. The code is attached where the failure is raised and carried through the error chain; a failure nobody categorized is `internal`. Successful responses omit it.
 - The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
 - Worker counts are bounded and benchmark-configurable with `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`; default production values remain 6 and 2.
-- For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly. Daemon-managed `workspace exec` uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. Stdout/stderr remain outside the daemon JSON control response.
+- For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly, and its stdout/stderr remain outside the daemon JSON control response. `workspace exec` runs through the daemon instead, which uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. The captured output is returned in the response so the daemon can scrub injected token values from it first; `--no-scrub` takes the direct path and streams instead.
 - Repeated daemon-managed namespace operations reuse an identity-checked descriptor cache keyed by runtime PID and start time. Cached descriptors are duplicated only for the helper process and invalidated when namespace identities change.
 - Workspace creation and Enclavefile startup use bounded fan-out for independent work, while registry commits and run-command ordering remain deterministic.
 - Enclavefile workspace startup uses one bounded `workspace.start_many` daemon request and returns structured per-workspace results; partial success is explicit so callers can report failed items without losing successful starts.
@@ -145,7 +145,9 @@ nothing on the host describes it any more.
 ## Namespace Handoff (workspace enter / exec)
 
 
-Both `workspace enter` and `workspace exec` use a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that uses identity-checked cached descriptors when available, calls `setns()`, and executes directly inside the workspace namespaces. Descriptors are reopened when the PID start time or namespace identities change. This means output streams in real-time and the daemon does not proxy process stdio.
+`workspace enter` uses a direct namespace handoff through an internal CLI helper. The daemon returns runtime metadata, then the CLI launches a hidden internal command that uses identity-checked cached descriptors when available, calls `setns()`, and executes directly inside the workspace namespaces. Descriptors are reopened when the PID start time or namespace identities change. This means output streams in real-time and the daemon does not proxy process stdio.
+
+`workspace exec` reaches the workspace the same way, but the command is run by the daemon rather than by the CLI, so that the output can be scrubbed of injected token values before it is returned. The daemon resolves the workspace's tokens from the namespace its `owner` selects, replaces every occurrence of each value with `[REDACTED]` in the captured stdout and stderr, and records one `inject` event per token the command ran with — whether or not the value appeared in its output, because the credential was available to it either way. `--no-scrub` asks the CLI to take the direct path instead, which streams in real-time and forwards standard input, at the cost of printing whatever the command wrote.
 
 The sequence for `workspace enter`:
 
@@ -165,7 +167,7 @@ sequenceDiagram
     Workspace-->>CLI: interactive shell session
 ```
 
-`workspace exec` follows the same internal-helper + `setns()` path, except it runs a one-shot command and streams its stdout/stderr directly to the terminal instead of opening an interactive shell.
+`workspace enter` runs an interactive shell, so its output is not captured and cannot be scrubbed. `workspace exec` with `--no-scrub` runs a one-shot command on the same path and streams its stdout/stderr directly to the terminal.
 
 ## Platform Services
 
@@ -189,7 +191,9 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 |--------|---------|
 | `src/cli/` | Clap argument definitions |
 | `src/commands/` | CLI command handlers (sandbox, workspace, enclavefile, daemon, ps, rootfs, policy) |
-| `src/commands/workspace/enter.rs` | `workspace enter` and `workspace exec` frontend that launches the internal runtime helper |
+| `src/auth/` | Provider tokens: the provider table, the namespace a token belongs to, the files at rest, injection into a workspace, the audit log, and output scrubbing |
+| `src/commands/auth/` | The `auth` command group, split by the command each part serves |
+| `src/commands/workspace/enter.rs` | `workspace enter` frontend, and the `workspace exec` direct path behind `--no-scrub` |
 | `src/commands/internal/` | Hidden internal commands for hardened session loops, runtime namespace entry, and persistent command helpers |
 | `src/client.rs` | Unix socket JSON client |
 | `src/daemon/mod.rs` | Daemon main loop, shutdown, and connection handling |

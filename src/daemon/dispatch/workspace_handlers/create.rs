@@ -16,6 +16,10 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_create(
         .map(|_| parse_string_array(params, "auth"))
         .transpose()?
         .unwrap_or_default();
+    let owner = params
+        .get("owner")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let env_tokens = params
         .get("env_tokens")
         .map(|_| parse_string_array(params, "env_tokens"))
@@ -36,6 +40,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_create(
             limits,
             home_mount_source: path.map(str::to_string),
             auth_providers,
+            owner,
             env_tokens,
             published_ports,
             clear_tmp_on_restart,

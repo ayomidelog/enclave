@@ -30,6 +30,13 @@ pub struct WorkspaceMetadata {
     pub overlay_home_merged_path: String,
     #[serde(default)]
     pub auth_providers: Vec<String>,
+    /// The auth namespace this workspace's tokens are read from.
+    ///
+    /// Absent means the state directory's shared namespace, which is what every
+    /// workspace used before user namespaces existed, so an owner-less
+    /// workspace resolves exactly as it always did.
+    #[serde(default)]
+    pub owner: Option<String>,
     #[serde(default)]
     pub env_tokens: Vec<String>,
     #[serde(default)]

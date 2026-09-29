@@ -7,7 +7,11 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 ```text
 <state_dir>/
 ├── auth/
-│   └── <provider>.token         # Stored provider tokens (0600)
+│   ├── <provider>.token         # Shared-namespace provider tokens (0600)
+│   ├── audit.log                # Store, revoke, and inject events (0600)
+│   └── users/
+│       └── <user_id>/
+│           └── <provider>.token # One user's tokens (0600, in a 0700 directory)
 ├── registry.json                # Compact sandbox & workspace metadata index
 ├── registry.lock                # Advisory file lock
 ├── daemon.lock                  # Exclusive daemon owner record while the daemon runs
@@ -161,7 +165,17 @@ Enclave unmounts only mounts it created, and it decides that from the mount itse
 
 ## Auth data
 
-- Provider tokens are stored on the host at `<state_dir>/auth/<provider>.token`.
+- Provider tokens are stored on the host at `<state_dir>/auth/<provider>.token`,
+  or, for a workspace with an `owner`, at
+  `<state_dir>/auth/users/<owner>/<provider>.token`.
+- A token file is only read after its ownership and mode are checked: a regular
+  file, not a symlink, owned by the effective uid, mode `0600`. A user's
+  namespace directory is additionally required to be `0700` before it is read
+  from, so a directory anyone could have replaced is refused rather than trusted.
+- Every store, revoke, and inject appends one JSON line to
+  `<state_dir>/auth/audit.log`. The event names the action, the namespace, the
+  provider, and the workspace, and never the token value, so the log can be read
+  and shipped without handling a secret.
 - When a workspace starts, Enclave copies only the declared providers into a namespace-private tmpfs mounted at `/run/enclave/auth` inside the workspace rootfs.
 - Declared `env_tokens` are copied into a separate namespace-private tmpfs mounted at `/run/enclave/env` inside the workspace rootfs.
 - This keeps the persisted host-side token store separate from the workspace runtime mount.

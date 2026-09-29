@@ -218,7 +218,7 @@ enclave workspace status  <sandbox> <workspace>
 enclave workspace remove  <sandbox> <workspace>
 enclave workspace wipe
 enclave workspace enter   <sandbox> <workspace> [--cwd /home] [--shell /bin/bash]
-enclave workspace exec    <sandbox> <workspace> [--cwd /home] -- <command...>
+enclave workspace exec    <sandbox> <workspace> [--cwd /home] [--no-scrub] -- <command...>
 enclave workspace run     <sandbox> <workspace> [--cwd /home] -- <command...>
 enclave workspace port publish   <sandbox> <workspace> <127.0.0.1:HOST_PORT:WORKSPACE_PORT[/tcp]>
 enclave workspace port unpublish <sandbox> <workspace> <127.0.0.1:HOST_PORT[/tcp]>
@@ -241,8 +241,8 @@ enclave workspace stats   <workspace>
 | `status` | Show detailed status for a workspace: process count, resource usage, and the storage tier it is on with the lifecycle cost that tier implies (a directory-backed workspace, or a quota-backed one whose `/home`, private `/tmp`, and root overlay live on a loop-mounted ext4 image). |
 | `remove` | Remove a workspace entry from the registry. |
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
-| `enter` | Enter a running workspace interactively (namespace handoff). |
-| `exec` | Execute a one-shot command inside a workspace. |
+| `enter` | Enter a running workspace interactively (namespace handoff). The session's output is not captured, so it is not scrubbed of injected token values. |
+| `exec` | Execute a one-shot command inside a workspace. The daemon captures the output and replaces every injected token value with `[REDACTED]`, so a command that prints a credential does not put it in your terminal, your log, or your shell history. `--no-scrub` prints the output exactly as written and warns that it may contain a credential; it also restores the direct streaming path, which is what you want for a command that reads stdin or writes a lot of output. |
 | `run` | Run a command inside a workspace (alias for exec). |
 | `port publish` | Persist and activate a loopback-only TCP port mapping for a workspace. |
 | `port unpublish` | Remove a previously declared loopback-only TCP port mapping. |
@@ -326,16 +326,79 @@ output, glob expansion, resumable transfers, or parallel directory transfer.
 ## Auth
 
 ```bash
-enclave auth login  <provider>
-enclave auth list
-enclave auth logout <provider>
+enclave auth login  [--state-dir PATH] [--user <user_id>] <provider>
+enclave auth store  [--state-dir PATH] --user <user_id> --provider <name> [--force]
+enclave auth list   [--state-dir PATH] [--user <user_id>]
+enclave auth logout [--state-dir PATH] [--user <user_id>] <provider>
 ```
 
 | Command | Description |
 |---------|-------------|
-| `auth login` | Read token from hidden stdin prompt and store at `<state_dir>/auth/<provider>.token` with mode `0600`. |
-| `auth list` | List all supported providers and mark which ones currently have stored tokens. |
-| `auth logout` | Delete stored provider token. |
+| `auth login` | Read a token from a hidden stdin prompt and store it. |
+| `auth store` | Read a token from stdin without prompting. For scripts. |
+| `auth list` | List stored providers and when each was stored. Never the values. |
+| `auth logout` | Delete a stored token. |
+
+These commands act on a state directory rather than on a running daemon, so
+`--state-dir` names the one to use and defaults to the invoking user's. They
+require root, like every command that touches host state.
+
+### Token namespaces
+
+A token belongs to a namespace. A workspace selects one with `owner`, and a
+workspace with no `owner` uses the shared namespace it always did.
+
+```text
+<state_dir>/auth/<provider>.token                   the shared namespace
+<state_dir>/auth/users/<user_id>/<provider>.token   one user's namespace
+```
+
+`--user` selects a namespace on `login`, `store`, `list`, and `logout`. Without
+it they act on the shared one. A user id may contain ASCII letters, digits, and
+`+`, `-`, `_`, `.`, because it becomes a single directory name; anything else is
+rejected.
+
+### Storing a token from a script
+
+The token is read from standard input, never from an argument, so it does not
+appear in the shell history or in the process list:
+
+```bash
+printf '%s' "$TOKEN" | enclave auth store --user alice --provider github
+```
+
+An existing token is refused rather than replaced, so a re-run cannot silently
+change a credential out from under a running workspace. Pass `--force` to replace
+it. The outcome is reported in the exit status:
+
+| Status | Meaning |
+|--------|---------|
+| `0` | Stored. |
+| `2` | A token is already stored; pass `--force` to replace it. |
+| `3` | The provider or the user id cannot be used. |
+| `4` | The token could not be read or written. |
+
+### Moving a token into a namespace
+
+An existing `<state_dir>/auth/<provider>.token` is untouched and keeps working
+for workspaces with no `owner`. To move it into a user's namespace, store it there
+and then remove the shared copy:
+
+```bash
+printf '%s' "$TOKEN" | enclave auth store --user alice --provider github
+enclave auth logout <provider>          # removes the shared copy
+```
+
+### The audit log
+
+Every store, revoke, and inject appends one JSON line to
+`<state_dir>/auth/audit.log` (mode `0600`). The event names the action, the
+namespace, the provider, and the workspace; it never contains the token value, so
+the log is safe to read and safe to ship somewhere else.
+
+```json
+{"ts":"2026-09-29T13:10:00Z","action":"inject","user":"alice","provider":"github","sandbox":"devbox-1a2b","workspace":"api-9c8d"}
+```
 
 ### Supported providers
 

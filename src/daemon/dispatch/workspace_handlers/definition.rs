@@ -26,6 +26,13 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_update(
         .get("auth")
         .map(|_| parse_string_array(params, "auth"))
         .transpose()?;
+    // A present-but-null owner clears the binding; an absent one leaves it.
+    let owner = match params.get("owner") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(Value::String(value)) => Some(Some(value.clone())),
+        Some(_) => bail!("owner must be a string or null"),
+    };
     let env_tokens = params
         .get("env_tokens")
         .map(|_| parse_string_array(params, "env_tokens"))
@@ -38,6 +45,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_update(
             sandbox,
             workspace_selector,
             auth_providers,
+            owner,
             env_tokens,
             published_ports,
             limits_update: limits,
