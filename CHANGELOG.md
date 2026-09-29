@@ -26,11 +26,12 @@
   `workspace exec` instead of the next restart. The credentials the command was
   given are also what the scrubber and the audit use, so a command that resolved
   nothing records nothing.
-- A token name may not contain `_`. A stored name is the lowercased form of the
-  environment token that reads it, and `_` is how a `-` is written there, so both
-  spellings would allow a name no environment token can ask for. Only `enclave`,
-  `github`, and `npm` were ever storable before this release, so nothing that
-  worked can stop working.
+- A stored name is either a provider or the slot an environment token derives,
+  and `_` is a valid first character only: the derivation writes every other `_`
+  of the variable name as `-`. A stored name with `_` anywhere else would be one
+  no environment token can ask for, which is a token that is stored and never
+  injected. Only `enclave`, `github`, and `npm` were ever storable before this
+  release, so nothing that worked can stop working.
 
 ## 2.2.0 - 2026-09-29
 

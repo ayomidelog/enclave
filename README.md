@@ -494,9 +494,8 @@ that is one of the providers' variables — `GITHUB_TOKEN` — still reads that
 provider's token, so declaring one that way keeps working.
 
 The variable has to be one the wrapper inside the workspace will export: uppercase
-letters, digits, and `_`, starting with a letter. A name that could never be
-injected is refused when the workspace is defined rather than stored and silently
-never used.
+letters, digits, and `_`. A name that could never be injected is refused when the
+workspace is defined rather than stored and silently never used.
 
 Revoking is immediate. Enclave re-resolves the store and rewrites the workspace's
 credential files before every command, so `enclave auth logout` takes effect on

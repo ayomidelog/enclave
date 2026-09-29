@@ -133,10 +133,12 @@ token, because the fallback would hand one user another user's credential.
 **A token name is a file name.** It is a provider name or the slot an environment
 token derives, so the store holds one credential per name and no name can escape
 the namespace it is written into. The rule is the set of names that can be built
-into a path safely: lowercase ASCII letters, digits, and `-`. `_` is excluded
-because the slot for an environment token is its name lowercased with `_` written
-as `-`, and a second spelling would allow a token that is stored and never
-injected.
+into a path safely: lowercase ASCII letters, digits, `-`, and `_` as the first
+character only. `_` is a valid first character because the slot for an
+environment token is its name lowercased with `_` written as `-`, and a leading
+`_` is kept rather than written as `-` so that a slot never begins with `-`. A `_`
+anywhere else would be a second spelling of the same slot, which is a token that
+is stored and never injected.
 
 **A token is checked before it is read.** The file must be a regular file, not a
 symlink, owned by the effective uid, mode `0600`, and a user's namespace

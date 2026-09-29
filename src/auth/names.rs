@@ -30,18 +30,18 @@ const MAX_ENV_TOKEN_LEN: usize = 64;
 /// storing is a different question, and the caller that knows whether it is
 /// naming a provider or an environment token's slot is the one that answers it.
 ///
-/// `_` is not in the set even though it is a safe character, because a stored
-/// name is the lowercased form of the environment token that reads it and `_` is
-/// how a `-` is written there. Allowing both spellings would allow a name that no
-/// environment token can ever ask for, which is a token that is stored and never
-/// injected.
+/// `_` is allowed only as the first character. A stored name is either a provider
+/// or the slot an environment token derives, and the derivation writes every `_`
+/// of the variable name as `-` except a leading one, which it keeps. `_` anywhere
+/// else would therefore be a name no environment token can ask for, which is a
+/// token that is stored and never injected.
 pub fn validate_token_name(name: &str) -> Result<()> {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         bail!("token name must not be empty");
     };
-    if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
-        bail!("token name must start with a lowercase ASCII letter or digit");
+    if !(first.is_ascii_lowercase() || first.is_ascii_digit() || first == '_') {
+        bail!("token name must start with a lowercase ASCII letter, a digit, or '_'");
     }
     if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
         bail!("token name may only contain lowercase ASCII letters, digits, and '-'");
@@ -55,12 +55,6 @@ pub fn validate_token_name(name: &str) -> Result<()> {
 /// has to be uppercase because the wrapper inside the workspace exports whatever
 /// it finds in `/run/enclave/env`, and it only exports a name that matches
 /// `[A-Z0-9_]+`; anything else would be written and never read.
-///
-/// The first character has to be a letter rather than `_` for the same reason one
-/// step removed: the store slot is derived from the name, a leading `_` derives a
-/// slot beginning with `-`, and a token file may not be named that. A name that
-/// could never resolve is rejected when it is declared rather than left to inject
-/// nothing.
 pub fn validate_env_token_name(env_token: &str) -> Result<()> {
     if env_token.is_empty() {
         bail!("environment token name must not be empty");
@@ -70,8 +64,8 @@ pub fn validate_env_token_name(env_token: &str) -> Result<()> {
     }
     let mut chars = env_token.chars();
     let first = chars.next().expect("the name was checked to be non-empty");
-    if !first.is_ascii_uppercase() {
-        bail!("environment token name must start with an ASCII uppercase letter");
+    if !(first.is_ascii_uppercase() || first == '_') {
+        bail!("environment token name must start with an ASCII uppercase letter or '_'");
     }
     if !chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_') {
         bail!("environment token name may only contain ASCII uppercase letters, digits, and '_'");
@@ -82,12 +76,19 @@ pub fn validate_env_token_name(env_token: &str) -> Result<()> {
 /// The store slot an environment token reads its value from.
 ///
 /// The mapping is the one a person can hold in their head: the name lowercased,
-/// with `_` written as `-`. It is total for every name
-/// [`validate_env_token_name`] accepts and injective over them, so two
-/// environment tokens never read the same slot.
+/// with `_` written as `-`. A leading `_` is kept rather than written as `-`,
+/// because a token file may not begin with `-` and because keeping it is what
+/// makes the mapping injective: the two names that differ only in a leading `_`
+/// derive slots that differ in the same way, so two environment tokens never read
+/// the same slot. It is total for every name [`validate_env_token_name`] accepts,
+/// which is the other half of that: every derived slot is a name the store takes.
 pub fn slot_for_env_token(env_token: &str) -> Result<String> {
     validate_env_token_name(env_token)?;
-    Ok(env_token.to_ascii_lowercase().replace('_', "-"))
+    let lowered = env_token.to_ascii_lowercase();
+    match lowered.strip_prefix('_') {
+        Some(rest) => Ok(format!("_{}", rest.replace('_', "-"))),
+        None => Ok(lowered.replace('_', "-")),
+    }
 }
 
 #[cfg(test)]

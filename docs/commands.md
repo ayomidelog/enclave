@@ -378,9 +378,11 @@ env_tokens = ["NETFLIX_PASSWORD"]
 ```
 
 A name is one file name component, so it may only contain lowercase ASCII
-letters, digits, and `-`, and may not start with `-`. `_` is not allowed: the slot
-for an environment token is its name lowercased with `_` written as `-`, so a name
-with `_` is one no environment token could ever ask for. `enclave auth list`
+letters, digits, and `-`, plus `_` as the first character. `_` is allowed there
+because the slot for an environment token is its name lowercased with `_` written
+as `-`, and a leading `_` is kept rather than written as `-` so that a slot never
+begins with `-`; a name with `_` anywhere else is one no environment token could
+ever ask for. `enclave auth list`
 prints stored slots under `Stored environment token slots:` in the shared
 namespace, and alongside the providers in a user's.
 

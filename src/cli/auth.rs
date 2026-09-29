@@ -58,7 +58,13 @@ pub struct AuthStoreArgs {
     #[arg(long, value_name = "USER_ID")]
     pub user: String,
     /// The provider name, or the slot an environment token reads from.
-    #[arg(long, value_name = "NAME")]
+    ///
+    /// A value starting with `-` is taken as the name rather than refused by the
+    /// parser, so that the name's own check is what reports it. The documented
+    /// outcome for an unusable name is the command's status, and a usage error
+    /// from the parser would replace it with a status that says nothing about
+    /// the rule the name broke.
+    #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
     pub provider: String,
     /// Replace a token that is already stored.
     #[arg(long)]

@@ -70,13 +70,15 @@ fn normalize_env_tokens_accepts_a_name_that_is_not_a_provider() {
     let tokens = normalize_env_tokens(vec![
         "netflix_password".to_string(),
         "GTBANK_CARD_NUMBER".to_string(),
+        "_internal".to_string(),
     ])
     .expect("normalize env tokens");
     assert_eq!(
         tokens,
         vec![
             "GTBANK_CARD_NUMBER".to_string(),
-            "NETFLIX_PASSWORD".to_string()
+            "NETFLIX_PASSWORD".to_string(),
+            "_INTERNAL".to_string()
         ]
     );
 }
@@ -88,9 +90,9 @@ fn normalize_env_tokens_rejects_a_name_it_could_never_inject() {
     for invalid in [
         "NETFLIX-PASSWORD",
         "1TOKEN",
-        "_TOKEN",
         "TOKEN NAME",
         "TOKEN=X",
+        "TOKEN_$X",
     ] {
         assert!(
             normalize_env_tokens(vec![invalid.to_string()]).is_err(),

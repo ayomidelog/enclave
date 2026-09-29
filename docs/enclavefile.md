@@ -97,7 +97,7 @@ Each `[workspace.*]` block defines a workspace. The key after `workspace.` is th
 | `clear_tmp_on_restart` | No | `false` | Clear the managed workspace `/tmp` after a successful workspace or sandbox stop, before the next start. This is opt-in and has no effect on host-mounted `workspace_dir` / `path` storage. |
 | `auth` | No | `[]` | List of auth providers to inject into this workspace. Supported values: `enclave`, `github`, `npm`. Only listed providers are exposed. |
 | `owner` | No | — | The auth namespace this workspace's tokens are read from, e.g. `owner = "alice"`. Omitted means the shared namespace at `<state_dir>/auth`, which is what every workspace used before namespaces existed. |
-| `env_tokens` | No | `[]` | List of environment variables to inject into this workspace. Any well-formed variable name is accepted: uppercase letters, digits, and `_`, starting with a letter. `GITHUB_TOKEN` reads the `github` provider's token; any other name reads the store slot it derives (`NETFLIX_PASSWORD` reads `netflix-password`). |
+| `env_tokens` | No | `[]` | List of environment variables to inject into this workspace. Any well-formed variable name is accepted: uppercase letters, digits, and `_`. `GITHUB_TOKEN` reads the `github` provider's token; any other name reads the store slot it derives (`NETFLIX_PASSWORD` reads `netflix-password`). |
 | `ports` | No | `[]` | Loopback-only published port mappings. Format: `127.0.0.1:HOST_PORT:WORKSPACE_PORT/tcp`. `tcp` is the only supported protocol in v1. |
 
 ### Workspace Auth Providers
@@ -133,13 +133,16 @@ lowercased, with `_` written as `-`.
 |----------|-----------|-------------|
 | `NETFLIX_PASSWORD` | `netflix-password` | `enclave auth store --user alice --provider netflix-password` |
 | `GTBANK_CARD_NUMBER` | `gtbank-card-number` | `enclave auth store --user alice --provider gtbank-card-number` |
+| `_INTERNAL` | `_internal` (a leading `_` is kept) | `enclave auth store --user alice --provider _internal` |
 | `GITHUB_TOKEN` | `github` (the provider) | `enclave auth store --user alice --provider github` |
 
 The mapping is what lets a name the provider table has never heard of be stored
 and injected at all, and it is one to one: two environment tokens never read the
 same slot. The name is checked when the workspace is defined, so a name that could
 never be written into the workspace — `netflix_password`, `NETFLIX-PASSWORD`,
-`1TOKEN` — is refused rather than stored and silently never used.
+`1TOKEN` — is refused rather than stored and silently never used. A leading `_` is
+kept in the slot rather than written as `-`, because a token file may not begin
+with `-`.
 
 The variable is injected and scrubbed exactly like a provider token: it reaches
 the workspace only as a `0400` file under `/run/enclave/env/`, it is exported for

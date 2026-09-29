@@ -170,7 +170,9 @@ Enclave unmounts only mounts it created, and it decides that from the mount itse
   `<state_dir>/auth/users/<owner>/<provider>.token`.
 - The file name is a provider name or the slot an environment token derives from
   its variable name (`NETFLIX_PASSWORD` reads `netflix-password`), so a credential
-  Enclave has no provider for is stored and injected the same way one it does.
+  Enclave has no provider for is stored and injected the same way one it does. A
+  leading `_` in the variable name is kept in the slot, so a slot never begins
+  with `-`.
 - A token file is only read after its ownership and mode are checked: a regular
   file, not a symlink, owned by the effective uid, mode `0600`. A user's
   namespace directory is additionally required to be `0700` before it is read

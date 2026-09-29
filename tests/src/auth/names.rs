@@ -2,7 +2,15 @@ use super::*;
 
 #[test]
 fn a_token_name_is_a_lowercase_file_name() {
-    for valid in ["github", "netflix-password", "a", "9", "a1-b2"] {
+    for valid in [
+        "github",
+        "netflix-password",
+        "a",
+        "9",
+        "a1-b2",
+        "_token",
+        "_a-b",
+    ] {
         assert!(
             validate_token_name(valid).is_ok(),
             "{valid} must be accepted"
@@ -12,7 +20,9 @@ fn a_token_name_is_a_lowercase_file_name() {
         "",
         "Github",
         "-github",
-        "_github",
+        // `_` is a valid first character only: the derivation never writes one
+        // anywhere else, so such a name could never be asked for.
+        "a_b",
         "netflix_password",
         "netflix password",
         "../escape",
@@ -35,6 +45,11 @@ fn an_environment_token_name_is_an_uppercase_variable_name() {
         "ENCLAVE_TOKEN",
         "A",
         "A1_B",
+        // A leading `_` is a well-formed variable name; the derivation is what
+        // makes the slot it produces usable.
+        "_TOKEN",
+        "_A_B",
+        "_",
     ] {
         assert!(
             validate_env_token_name(valid).is_ok(),
@@ -47,9 +62,6 @@ fn an_environment_token_name_is_an_uppercase_variable_name() {
         "Netflix_Password",
         "NETFLIX-PASSWORD",
         "1TOKEN",
-        // A leading underscore derives a slot beginning with '-', which no token
-        // file may be called, so the name could never resolve.
-        "_TOKEN",
         "TOKEN ",
         "TOKEN=X",
     ] {
@@ -80,16 +92,38 @@ fn an_environment_token_reads_the_slot_its_name_derives() {
         slot_for_env_token("ENCLAVE_TOKEN").expect("derive a slot"),
         "enclave-token"
     );
+    // A leading `_` is kept: a token file may not begin with `-`, and keeping it
+    // is what keeps the two names that differ only there distinct.
+    assert_eq!(
+        slot_for_env_token("_TOKEN").expect("derive a slot"),
+        "_token"
+    );
+    assert_eq!(slot_for_env_token("_A_B").expect("derive a slot"), "_a-b");
 
     // Every derived slot is a name the store accepts, which is what makes the
     // mapping total.
-    for env_token in ["NETFLIX_PASSWORD", "A", "A_B_C", "X9"] {
+    for env_token in ["NETFLIX_PASSWORD", "A", "A_B_C", "X9", "_TOKEN", "_"] {
         let slot = slot_for_env_token(env_token).expect("derive a slot");
         assert!(
             validate_token_name(&slot).is_ok(),
             "{env_token} derived the unusable slot {slot}"
         );
     }
+
+    // Distinct names never share a slot, including the pair that differs only in
+    // a leading underscore.
+    let mut slots: Vec<String> = ["TOKEN", "_TOKEN", "A_B", "_A_B", "A_B_C"]
+        .iter()
+        .map(|name| slot_for_env_token(name).expect("derive a slot"))
+        .collect();
+    slots.sort();
+    let derived = slots.len();
+    slots.dedup();
+    assert_eq!(
+        slots.len(),
+        derived,
+        "two environment token names derived the same slot: {slots:?}"
+    );
 
     assert!(slot_for_env_token("netflix_password").is_err());
 }
