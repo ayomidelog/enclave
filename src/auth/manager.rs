@@ -1,10 +1,17 @@
-use std::fs;
-use std::path::{Component, Path, PathBuf};
+//! Resolving the tokens a workspace is entitled to.
+//!
+//! This is the facade the rest of the tree uses. It answers one question —
+//! which tokens does this workspace get — and the answer depends on the
+//! workspace's owner, so the resolution lives here rather than at the call site
+//! that happens to be starting a workspace.
 
-use anyhow::{Context, Result};
+use std::path::PathBuf;
 
-use super::storage;
+use anyhow::Result;
 
+use super::{inject, providers, storage};
+
+/// One provider's token, resolved and ready to be written into a workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceAuthToken {
     pub provider: String,
@@ -44,94 +51,23 @@ impl AuthManager {
         storage::delete_token(&self.state_dir, provider)
     }
 
+    /// Resolve this workspace's tokens and write them into its namespace.
     pub fn sync_workspace_auth(
         &self,
         workspace_rootfs: &str,
         auth_providers: &[String],
         env_tokens: &[String],
     ) -> Result<Vec<WorkspaceAuthToken>> {
-        let rootfs = PathBuf::from(workspace_rootfs);
-        if !rootfs.is_absolute() {
-            anyhow::bail!(
-                "workspace rootfs path must be absolute: {}",
-                rootfs.display()
-            );
-        }
-        if !is_workspace_namespace_root(&rootfs) {
-            anyhow::bail!(
-                "workspace rootfs path must be /proc/<pid>/root: {}",
-                rootfs.display()
-            );
-        }
-
-        // The destination is inside the workspace's own mount namespace, where `/run`
-        // is a tmpfs the session mounted for this start, so the files are always
-        // absent when this runs and there is never an unchanged copy to compare
-        // against. Rewriting them unconditionally is therefore not the waste it
-        // looks like: measured on this host the whole phase is about 210 us with
-        // every provider and env token configured, which is under 0.2% of a start.
-        // Skipping an unchanged write was tried and removed again, because it saves
-        // nothing here and the reconcile it needs is more code than the
-        // remove-then-write it replaced.
-        //
-        // The writes are best-effort rather than durable. A durable write fsyncs,
-        // and there is nothing here for an fsync to protect: the tmpfs is inside a
-        // mount namespace that dies with the runtime, so the files cannot outlive
-        // the process that reads them, and a power loss takes the runtime and the
-        // namespace with it. A write without fsync is already visible to every
-        // process in the namespace, which is the only reader there is.
-        let auth_dir = rootfs.join("run/enclave/auth");
-        fs::create_dir_all(&auth_dir)
-            .with_context(|| format!("failed to create {}", auth_dir.display()))?;
-        let env_dir = rootfs.join("run/enclave/env");
-        fs::create_dir_all(&env_dir)
-            .with_context(|| format!("failed to create {}", env_dir.display()))?;
-
-        for provider in storage::supported_providers() {
-            let token_path = storage::token_path_for_provider(&auth_dir, provider)?;
-            if token_path.exists() {
-                fs::remove_file(&token_path)
-                    .with_context(|| format!("failed to remove {}", token_path.display()))?;
-            }
-        }
-        for entry in fs::read_dir(&env_dir)
-            .with_context(|| format!("failed to read {}", env_dir.display()))?
-        {
-            let path = entry?.path();
-            if path.is_file() {
-                fs::remove_file(&path)
-                    .with_context(|| format!("failed to remove {}", path.display()))?;
-            }
-        }
-
         let tokens = self.tokens_for_workspace(auth_providers);
-        for token in &tokens {
-            let token_path = storage::token_path_for_provider(&auth_dir, &token.provider)?;
-            crate::fsutil::write_file_atomic_with(
-                &token_path,
-                token.token.as_bytes(),
-                0o400,
-                crate::fsutil::Durability::BestEffort,
-            )
-            .with_context(|| format!("failed to write {}", token_path.display()))?;
-        }
-        for (env_var, token) in self.env_tokens_for_workspace(env_tokens) {
-            let token_path = env_dir.join(&env_var);
-            crate::fsutil::write_file_atomic_with(
-                &token_path,
-                token.as_bytes(),
-                0o400,
-                crate::fsutil::Durability::BestEffort,
-            )
-            .with_context(|| format!("failed to write {}", token_path.display()))?;
-        }
+        let env = self.env_tokens_for_workspace(env_tokens);
+        inject::write_workspace_auth(workspace_rootfs, &tokens, &env)?;
         Ok(tokens)
     }
 
     fn tokens_for_workspace(&self, auth_providers: &[String]) -> Vec<WorkspaceAuthToken> {
         let mut tokens = Vec::new();
         for provider in auth_providers {
-            let Some(env_var) = storage::provider_env_var(provider) else {
+            let Some(env_var) = providers::provider_env_var(provider) else {
                 tracing::warn!(
                     "workspace requested unsupported auth provider '{}'; skipping",
                     provider
@@ -165,7 +101,7 @@ impl AuthManager {
     fn env_tokens_for_workspace(&self, env_tokens: &[String]) -> Vec<(String, String)> {
         let mut tokens = Vec::new();
         for env_var in env_tokens {
-            let Some(provider) = storage::provider_for_env_var(env_var) else {
+            let Some(provider) = providers::provider_for_env_var(env_var) else {
                 tracing::warn!(
                     "workspace requested unsupported environment token '{}'; skipping",
                     env_var
@@ -191,27 +127,4 @@ impl AuthManager {
         }
         tokens
     }
-}
-
-fn is_workspace_namespace_root(path: &Path) -> bool {
-    let mut components = path.components();
-    matches!(components.next(), Some(Component::RootDir))
-        && matches!(
-            components.next(),
-            Some(Component::Normal(part)) if part == "proc"
-        )
-        && matches!(
-            components.next(),
-            Some(Component::Normal(part)) if is_valid_pid_component(part)
-        )
-        && matches!(
-            components.next(),
-            Some(Component::Normal(part)) if part == "root"
-        )
-        && components.next().is_none()
-}
-
-fn is_valid_pid_component(part: &std::ffi::OsStr) -> bool {
-    part.to_str()
-        .is_some_and(|value| !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
 }

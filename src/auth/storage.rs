@@ -1,44 +1,19 @@
+//! The token files on disk, and the checks that make reading one safe.
+//!
+//! A token file is a secret at rest, so it is only ever read after its
+//! ownership and mode have been checked. The checks live here rather than at
+//! each call site because every path that reads a token has to pass them, and a
+//! caller that forgot would read a file another user could have replaced.
+
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-const AUTH_DIR_NAME: &str = "auth";
+use super::providers::{provider_env_var, validate_provider};
 
-const PROVIDERS: [(&str, &str); 3] = [
-    ("enclave", "ENCLAVE_TOKEN"),
-    ("github", "GITHUB_TOKEN"),
-    ("npm", "NPM_TOKEN"),
-];
-
-pub fn supported_providers() -> Vec<&'static str> {
-    PROVIDERS.iter().map(|(provider, _)| *provider).collect()
-}
-
-pub fn provider_env_var(provider: &str) -> Option<&'static str> {
-    PROVIDERS
-        .iter()
-        .find_map(|(name, env)| (*name == provider).then_some(*env))
-}
-
-pub fn provider_for_env_var(env_var: &str) -> Option<&'static str> {
-    let normalized = env_var.trim().to_ascii_uppercase();
-    PROVIDERS
-        .iter()
-        .find_map(|(name, env)| (*env == normalized).then_some(*name))
-}
-
-pub fn validate_provider(provider: &str) -> Result<()> {
-    if provider_env_var(provider).is_none() {
-        bail!(
-            "unsupported auth provider '{}'; supported providers: {}",
-            provider,
-            supported_providers().join(", ")
-        );
-    }
-    Ok(())
-}
+pub(super) const AUTH_DIR_NAME: &str = "auth";
 
 pub fn store_token(state_dir: &Path, provider: &str, token: &str) -> Result<PathBuf> {
     validate_provider(provider)?;
@@ -154,7 +129,7 @@ pub fn auth_dir_if_exists(state_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(auth_dir))
 }
 
-fn ensure_auth_dir(state_dir: &Path) -> Result<PathBuf> {
+pub(super) fn ensure_auth_dir(state_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(state_dir)
         .with_context(|| format!("failed to create state dir {}", state_dir.display()))?;
     crate::fsutil::ensure_secure_dir(state_dir)?;
@@ -172,54 +147,4 @@ pub fn token_path_for_provider(auth_dir: &Path, provider: &str) -> Result<PathBu
     validate_provider(provider)?;
     let file = format!("{provider}.token");
     Ok(auth_dir.join(file))
-}
-
-pub fn workspace_env_wrapper_script() -> String {
-    let mut script = String::from("for provider in");
-    for (provider, _) in PROVIDERS {
-        script.push(' ');
-        script.push_str(provider);
-    }
-    script.push_str(
-        "; do\n  token_file=\"/run/enclave/auth/${provider}.token\"\n  if [ -r \"$token_file\" ]; then\n    token=\"$(cat \"$token_file\")\"\n    case \"$provider\" in\n",
-    );
-    for (provider, env_var) in PROVIDERS {
-        if provider == "github" {
-            script.push_str(&format!(
-                "      {provider}) export {env_var}=\"$token\"; export GH_TOKEN=\"$token\" ;;\n"
-            ));
-        } else {
-            script.push_str(&format!(
-                "      {provider}) export {env_var}=\"$token\" ;;\n"
-            ));
-        }
-    }
-    script.push_str(
-        r#"    esac
-  fi
-done
-if [ -n "$GITHUB_TOKEN" ]; then
-  _cfg_n="${GIT_CONFIG_COUNT:-0}"
-  export "GIT_CONFIG_KEY_${_cfg_n}=credential.helper"
-  export "GIT_CONFIG_VALUE_${_cfg_n}=!f(){ echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
-  _cfg_n=$((_cfg_n + 1))
-  export GIT_CONFIG_COUNT="$_cfg_n"
-  export GIT_TERMINAL_PROMPT=0
-fi
-for token_file in /run/enclave/env/*; do
-  if [ ! -r "$token_file" ]; then
-    continue
-  fi
-  env_name="${token_file##*/}"
-  case "$env_name" in
-    ""|[0-9]*|*[!A-Z0-9_]*)
-      continue
-      ;;
-  esac
-  token="$(cat "$token_file")"
-  export "${env_name}=${token}"
-done
-cd "$1" && shift && exec "$@""#,
-    );
-    script
 }
