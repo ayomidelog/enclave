@@ -5,6 +5,7 @@ use super::*;
 /// Every field is optional and means "leave this alone", which is what lets one
 /// request change the limits without disturbing the declared ports. `owner` has
 /// a third state because a binding can be removed as well as set.
+#[derive(Default)]
 pub struct WorkspaceDefinitionUpdate {
     pub auth_providers: Option<Vec<String>>,
     /// `None` leaves the binding alone, `Some(None)` clears it, and

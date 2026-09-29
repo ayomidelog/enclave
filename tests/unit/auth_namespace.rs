@@ -183,3 +183,80 @@ fn a_user_namespace_directory_that_is_not_private_is_refused() {
 
     let _ = fs::remove_dir_all(state_dir);
 }
+
+/// The audit log names what happened and never the credential it happened to.
+///
+/// The log is the one place a token operation leaves a durable trace, so it is
+/// also the place a secret could most easily end up somewhere it should not. The
+/// check is on the file's bytes rather than on a parsed field, because a value
+/// reaching the log through a field nobody thought about is exactly the failure
+/// this is meant to catch.
+#[test]
+fn the_audit_log_records_the_event_without_the_token_value() {
+    let state_dir = temp_state_dir("audit");
+    let manager = AuthManager::new(&state_dir);
+    let alice = TokenScope::User("alice".to_string());
+    let secret = "ghp_AuditProbeValue_9f3a1c";
+
+    manager
+        .store_token(&alice, "github", secret, false)
+        .expect("store the token");
+    manager
+        .delete_token(&alice, "github")
+        .expect("remove the token");
+
+    let log_path = state_dir.join("auth/audit.log");
+    let log = fs::read_to_string(&log_path).expect("read the audit log");
+    assert!(
+        !log.contains(secret),
+        "the audit log must never contain the token value"
+    );
+
+    let events: Vec<serde_json::Value> = log
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("every audit line is json"))
+        .collect();
+    assert_eq!(events.len(), 2, "one line per event: {log}");
+    assert_eq!(events[0]["action"], "store");
+    assert_eq!(events[0]["user"], "alice");
+    assert_eq!(events[0]["provider"], "github");
+    assert_eq!(events[1]["action"], "revoke");
+
+    let mode = fs::metadata(&log_path)
+        .expect("audit log metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "the audit log must not be readable by others");
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+/// A store that is refused is not an event, so it is not recorded.
+///
+/// The log is a record of what happened to a credential. A refused overwrite did
+/// not change one, and recording it would make the log claim a store that never
+/// occurred.
+#[test]
+fn a_refused_store_writes_no_audit_line() {
+    let state_dir = temp_state_dir("audit-refused");
+    let manager = AuthManager::new(&state_dir);
+    let alice = TokenScope::User("alice".to_string());
+
+    manager
+        .store_token(&alice, "github", "first", false)
+        .expect("store the first token");
+    let refused = manager
+        .store_token(&alice, "github", "second", false)
+        .expect("a refused overwrite is not an error");
+    assert!(!refused.stored());
+
+    let log = fs::read_to_string(state_dir.join("auth/audit.log")).expect("read the audit log");
+    assert_eq!(
+        log.lines().count(),
+        1,
+        "only the store that happened: {log}"
+    );
+
+    let _ = fs::remove_dir_all(state_dir);
+}

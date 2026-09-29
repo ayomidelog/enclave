@@ -141,6 +141,11 @@ the start warns and continues. A workspace with no `owner` reads
 `<state_dir>/auth/github.token` and behaves exactly as it did before namespaces
 existed.
 
+`owner` is part of the workspace's definition, so `enclave up` reconciles it the
+way it reconciles `auth`: a declared owner is applied, and removing the line
+unbinds the workspace, which moves it back to the shared namespace on its next
+start. Changing a binding on a running workspace takes effect when it restarts.
+
 When `enclave` is declared and a token exists, Enclave injects:
 
 - `ENCLAVE_TOKEN`
