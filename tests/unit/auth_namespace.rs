@@ -260,3 +260,64 @@ fn a_refused_store_writes_no_audit_line() {
 
     let _ = fs::remove_dir_all(state_dir);
 }
+
+/// A provider declared both as `auth` and as an `env_token` is one credential.
+///
+/// Both declarations export the same value from the same token file, so resolving
+/// them separately would scrub and record the same secret twice. The dedup is what
+/// keeps the audit honest: one credential, one event.
+#[test]
+fn a_provider_declared_both_ways_is_one_credential() {
+    let state_dir = temp_state_dir("dedup");
+    let manager = AuthManager::new(&state_dir);
+    manager
+        .store_token(
+            &TokenScope::User("alice".to_string()),
+            "github",
+            "shared-value",
+            false,
+        )
+        .expect("store the token");
+
+    let credentials = manager.resolved_credentials(
+        Some("alice"),
+        &["github".to_string()],
+        &["GITHUB_TOKEN".to_string()],
+    );
+    assert_eq!(
+        credentials.len(),
+        1,
+        "the same provider declared twice is one credential: {credentials:?}"
+    );
+    assert_eq!(credentials[0].provider, "github");
+    assert_eq!(credentials[0].token, "shared-value");
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+/// An environment token is resolved even when no `auth` provider is declared.
+///
+/// It puts the same credential in the workspace, so it is scrubbed and recorded
+/// the same way. Missing it would leave the one declaration a workspace can make
+/// that holds a secret out of both the scrubber and the audit.
+#[test]
+fn an_environment_token_alone_is_resolved() {
+    let state_dir = temp_state_dir("env-only");
+    let manager = AuthManager::new(&state_dir);
+    manager
+        .store_token(
+            &TokenScope::User("alice".to_string()),
+            "enclave",
+            "env-only-value",
+            false,
+        )
+        .expect("store the token");
+
+    let credentials =
+        manager.resolved_credentials(Some("alice"), &[], &["ENCLAVE_TOKEN".to_string()]);
+    assert_eq!(credentials.len(), 1);
+    assert_eq!(credentials[0].provider, "enclave");
+    assert_eq!(credentials[0].token, "env-only-value");
+
+    let _ = fs::remove_dir_all(state_dir);
+}

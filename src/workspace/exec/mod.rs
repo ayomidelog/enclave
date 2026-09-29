@@ -158,7 +158,11 @@ fn scrub_injected_tokens(
     stderr: &mut String,
 ) -> Result<()> {
     let manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
-    let tokens = manager.tokens_for_command(workspace.owner.as_deref(), &workspace.auth_providers);
+    let tokens = manager.resolved_credentials(
+        workspace.owner.as_deref(),
+        &workspace.auth_providers,
+        &workspace.env_tokens,
+    );
     if tokens.is_empty() {
         return Ok(());
     }
@@ -170,13 +174,12 @@ fn scrub_injected_tokens(
         workspace_id: &workspace.id,
         owner: workspace.owner.as_deref(),
     };
-    for token in &tokens {
-        if let Err(err) = manager.audit_inject(&target, &token.provider) {
-            tracing::warn!(
-                "failed to record the auth injection for workspace {}: {err:#}",
-                workspace.id
-            );
-        }
+    let providers: Vec<String> = tokens.iter().map(|token| token.provider.clone()).collect();
+    if let Err(err) = manager.audit_inject(&target, &providers) {
+        tracing::warn!(
+            "failed to record the auth injection for workspace {}: {err:#}",
+            workspace.id
+        );
     }
     Ok(())
 }

@@ -94,6 +94,23 @@ fn timestamp() -> String {
 /// whether a credential may be used, and "the audit trail is broken" is not a
 /// state to carry on from silently.
 pub(super) fn record(state_dir: &Path, event: &AuditEvent<'_>) -> Result<()> {
+    record_many(state_dir, std::slice::from_ref(event))
+}
+
+/// Append several events as one durable write.
+///
+/// The events of a single operation are one statement about it, so they are one
+/// append and one fsync rather than one each. That is the same trade the journal
+/// makes for a record and its starting phase, and here it is worth about 4 ms per
+/// event: a start that injects three providers waits on three fsyncs if they are
+/// written separately, against one if they are written together.
+///
+/// An empty slice writes nothing at all, so a caller that resolved no tokens does
+/// not create an empty log file.
+pub(super) fn record_many(state_dir: &Path, events: &[AuditEvent<'_>]) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
     let path = audit_log_path(state_dir)?;
     // The log sits beside the tokens, so it is checked the same way they are. An
     // existing file that anyone could have replaced would make every line in it
@@ -101,8 +118,11 @@ pub(super) fn record(state_dir: &Path, event: &AuditEvent<'_>) -> Result<()> {
     if path.exists() {
         validate_audit_log(&path)?;
     }
-    let mut line = serde_json::to_vec(event).context("failed to encode an audit event")?;
-    line.push(b'\n');
+    let mut payload = Vec::new();
+    for event in events {
+        serde_json::to_writer(&mut payload, event).context("failed to encode an audit event")?;
+        payload.push(b'\n');
+    }
 
     let mut file = OpenOptions::new()
         .create(true)
@@ -110,7 +130,7 @@ pub(super) fn record(state_dir: &Path, event: &AuditEvent<'_>) -> Result<()> {
         .mode(0o600)
         .open(&path)
         .with_context(|| format!("failed to open audit log {}", path.display()))?;
-    file.write_all(&line)
+    file.write_all(&payload)
         .with_context(|| format!("failed to append to audit log {}", path.display()))?;
     // An event that was reported has to be an event that was recorded, so the
     // append is flushed to disk before the caller is told it succeeded.

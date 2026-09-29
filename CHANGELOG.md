@@ -29,7 +29,10 @@
   action, the namespace, the provider, and the workspace; there is no field for
   the token value, so a value cannot reach the log. An `inject` is recorded when
   a token enters a workspace at start, and again when a command runs with it,
-  whether or not the value appeared in that command's output.
+  whether or not the value appeared in that command's output. The events of one
+  operation are one append and one fsync rather than one each, which keeps the
+  durable cost off the start path: a three-provider start pays for one write, not
+  three.
 - `workspace exec` replaces every injected token value in the captured output
   with `[REDACTED]` before returning it, so a command that prints a credential
   does not put it in a terminal, a log, a CI job, or a bug report. `--no-scrub`

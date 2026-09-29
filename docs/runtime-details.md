@@ -134,6 +134,18 @@ for the anti-spoofing rules the kernel and `iptables` do. That is why
 `src/network/veth.rs` documents the decision not to replace `ip` with rtnetlink:
 it would remove about 10 ms of a 130 ms start and none of the kernel work.
 
+`workspace.start.auth` is the smallest phase because the published fixture declares
+no `auth` providers, so there is nothing to resolve, write, or record. It is not a
+fixed cost. The phase is the resolve, the write into the workspace's own namespace,
+and the audit append for the operation, and the append is the durable part: it is
+fsynced, because an injection that was reported has to be an injection that was
+recorded. Measured on the same host with three providers and one environment token
+configured and owned by the workspace, a warm start spent 7.5 ms here against
+0.2 ms with nothing declared, and most of that is the fsync. It is one append for
+the whole operation rather than one per provider, which is worth about 5.5 ms on a
+three-provider start: the events of one start are one statement about it, so they
+are written and flushed together.
+
 ### Why the session is several processes
 
 The session phase is the second largest, and the plan proposes evaluating a

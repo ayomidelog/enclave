@@ -102,29 +102,37 @@ impl AuthManager {
         let env = self.resolve_env_tokens(target.owner, env_tokens);
         inject::write_workspace_auth(workspace_rootfs, &tokens, &env)?;
         // Audited after the write, so the log describes injections that
-        // happened rather than ones that were attempted.
-        for token in &tokens {
-            self.audit_inject(target, &token.provider)?;
-        }
+        // happened rather than ones that were attempted. A provider declared as
+        // both an `auth` provider and an `env_token` is one credential, so it is
+        // one event.
+        let injected = injected_providers(&tokens, &env);
+        self.audit_inject(target, &injected)?;
         Ok(tokens)
     }
 
-    /// Record that a token reached a workspace.
+    /// Record that tokens reached a workspace.
     ///
     /// The daemon's exec path calls this too: there the token is already in the
     /// workspace and is being handed to a specific command, which is the event
     /// an operator asking "when was this credential used" wants.
-    pub fn audit_inject(&self, target: &WorkspaceAuthTarget<'_>, provider: &str) -> Result<()> {
-        audit::record(
-            &self.state_dir,
-            &AuditEvent::for_workspace(
-                AuditAction::Inject,
-                target.owner,
-                provider,
-                target.sandbox_id,
-                target.workspace_id,
-            ),
-        )
+    pub fn audit_inject(
+        &self,
+        target: &WorkspaceAuthTarget<'_>,
+        providers: &[String],
+    ) -> Result<()> {
+        let events: Vec<AuditEvent<'_>> = providers
+            .iter()
+            .map(|provider| {
+                AuditEvent::for_workspace(
+                    AuditAction::Inject,
+                    target.owner,
+                    provider,
+                    target.sandbox_id,
+                    target.workspace_id,
+                )
+            })
+            .collect();
+        audit::record_many(&self.state_dir, &events)
     }
 
     /// The tokens a workspace would be given, without writing them anywhere.
@@ -178,13 +186,19 @@ impl AuthManager {
     /// nothing stored would otherwise warn on every exec. A token that cannot be
     /// read is skipped for the same reason: it is not in the workspace either, so
     /// there is nothing to scrub.
-    pub fn tokens_for_command(
+    ///
+    /// Both the `auth` providers and the `env_tokens` are covered, because both
+    /// put a credential in the workspace and both are therefore worth scrubbing
+    /// out of a command's output. They are the same set the start injected from.
+    pub fn resolved_credentials(
         &self,
         owner: Option<&str>,
         auth_providers: &[String],
+        env_tokens: &[String],
     ) -> Vec<WorkspaceAuthToken> {
         let scope = TokenScope::for_owner(owner);
-        auth_providers
+        let providers = provider_names(auth_providers, env_tokens);
+        providers
             .iter()
             .filter_map(|provider| {
                 let env_var = providers::provider_env_var(provider)?;
@@ -192,7 +206,7 @@ impl AuthManager {
                     .ok()
                     .flatten()?;
                 Some(WorkspaceAuthToken {
-                    provider: provider.clone(),
+                    provider: provider.to_string(),
                     env_var: env_var.to_string(),
                     token,
                 })
@@ -234,4 +248,44 @@ impl AuthManager {
         }
         tokens
     }
+}
+
+/// The providers a workspace's two declarations name, deduplicated.
+///
+/// `auth` names a provider directly; an `env_token` names the environment
+/// variable it is exported as, which maps back to the same provider. A provider
+/// declared both ways is one credential, so it is returned once.
+fn provider_names(auth_providers: &[String], env_tokens: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut push = |provider: &str| {
+        if !names.iter().any(|name| name == provider) {
+            names.push(provider.to_string());
+        }
+    };
+    for provider in auth_providers {
+        push(provider);
+    }
+    for env_token in env_tokens {
+        if let Some(provider) = providers::provider_for_env_var(env_token) {
+            push(provider);
+        }
+    }
+    names
+}
+
+/// The providers whose values were actually written into a workspace.
+///
+/// This is what the audit records, so it is derived from what was injected rather
+/// than from what was declared: a provider with nothing stored is skipped by the
+/// resolver and must not appear as an injection that happened.
+fn injected_providers(tokens: &[WorkspaceAuthToken], env: &[(String, String)]) -> Vec<String> {
+    let mut providers: Vec<String> = tokens.iter().map(|token| token.provider.clone()).collect();
+    for (env_var, _) in env {
+        if let Some(provider) = providers::provider_for_env_var(env_var) {
+            if !providers.iter().any(|name| name == provider) {
+                providers.push(provider.to_string());
+            }
+        }
+    }
+    providers
 }

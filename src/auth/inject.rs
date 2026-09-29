@@ -42,11 +42,12 @@ pub(super) fn write_workspace_auth(
     // is a tmpfs the session mounted for this start, so the files are always
     // absent when this runs and there is never an unchanged copy to compare
     // against. Rewriting them unconditionally is therefore not the waste it
-    // looks like: measured on this host the whole phase is about 210 us with
-    // every provider and env token configured, which is under 0.2% of a start.
-    // Skipping an unchanged write was tried and removed again, because it saves
-    // nothing here and the reconcile it needs is more code than the
-    // remove-then-write it replaced.
+    // looks like: measured on this host these writes are about 210 us with every
+    // provider and env token configured, which is under 0.2% of a start. Skipping
+    // an unchanged write was tried and removed again, because it saves nothing
+    // here and the reconcile it needs is more code than the remove-then-write it
+    // replaced. The audit append the caller does afterwards is a separate cost,
+    // and it is the only part of the phase that grows with the token count.
     //
     // The writes are best-effort rather than durable. A durable write fsyncs,
     // and there is nothing here for an fsync to protect: the tmpfs is inside a
