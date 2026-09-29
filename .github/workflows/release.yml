@@ -34,6 +34,25 @@ jobs:
       - name: Formatting, lint, docs, scripts, and tests
         run: bash tools/ci/verify.sh
 
+  # The performance gate and the published report, in their own job so they run on
+  # a fresh runner. This is not a detail: the archive benchmark writes about
+  # 160 MiB and is timed against the external `tar` binary, so it measures how much
+  # of that write the page cache absorbs. Running it after the full test suite on
+  # the same runner makes the Rust phase, which runs second, inherit the suite's
+  # dirty pages and time an order of magnitude slower than it does on an idle
+  # machine -- which is how a release came to fail a gate its own branch had
+  # passed on the same commit. The pull-request workflow runs these on a fresh
+  # runner, so the release does too.
+  perf:
+    name: perf
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+
       - name: Performance regression gate
         run: tools/perf/check-thresholds.sh
 
@@ -47,7 +66,7 @@ jobs:
 
   build-and-release:
     name: build-and-release
-    needs: verify
+    needs: [verify, perf]
     # Build against glibc 2.35 so release binaries also run on Ubuntu 22.04
     # and Debian 12, instead of inheriting the newer ubuntu-latest libc.
     runs-on: ubuntu-22.04
