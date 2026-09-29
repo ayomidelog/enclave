@@ -155,17 +155,7 @@ impl AuthManager {
         let (providers, env) =
             self.resolve_credentials(target.owner, auth_providers, env_tokens, Report::Warn);
         inject::write_workspace_auth(workspace_rootfs, &providers, &env)?;
-        let mut injected = providers;
-        for token in env {
-            // A provider declared both as an `auth` provider and as an
-            // `env_token` is one credential: the same value from the same slot.
-            // It is written twice, because the two declarations are two injection
-            // channels, but it is one credential and must be one event.
-            if !injected.iter().any(|existing| existing.name == token.name) {
-                injected.push(token);
-            }
-        }
-        Ok(injected)
+        Ok(merge_channels(providers, env))
     }
 
     /// Record that tokens reached a workspace.
@@ -193,12 +183,7 @@ impl AuthManager {
         audit::record_many(&self.state_dir, &events)
     }
 
-    /// The tokens a workspace would be given, without writing them anywhere.
-    ///
-    /// Used where the values are needed but not injected: the exec path scrubs
-    /// the tokens a workspace holds out of its captured output, and it has to
-    /// resolve them the same way the start did, or it would scrub the wrong
-    /// secret.
+    /// The provider tokens a workspace's `auth` declaration resolves to.
     pub fn resolve_tokens(
         &self,
         owner: Option<&str>,
@@ -220,16 +205,7 @@ impl AuthManager {
     ) -> Vec<WorkspaceAuthToken> {
         let (providers, env) =
             self.resolve_credentials(owner, auth_providers, env_tokens, Report::Quiet);
-        let mut credentials = providers;
-        for token in env {
-            if !credentials
-                .iter()
-                .any(|existing| existing.name == token.name)
-            {
-                credentials.push(token);
-            }
-        }
-        credentials
+        merge_channels(providers, env)
     }
 
     /// The credentials a workspace's declarations resolve to, split by how they
@@ -359,4 +335,26 @@ fn env_token_slot(env_var: &str) -> Result<String> {
 /// The names to record for credentials that reached a workspace.
 fn names(tokens: &[WorkspaceAuthToken]) -> Vec<String> {
     tokens.iter().map(|token| token.name.clone()).collect()
+}
+
+/// One list from the two injection channels.
+///
+/// A provider declared both as an `auth` provider and as an `env_token` is one
+/// credential: the same value from the same slot, written twice because the two
+/// declarations are two channels, but one credential to scrub and one event to
+/// record.
+fn merge_channels(
+    providers: Vec<WorkspaceAuthToken>,
+    env: Vec<WorkspaceAuthToken>,
+) -> Vec<WorkspaceAuthToken> {
+    let mut credentials = providers;
+    for token in env {
+        if !credentials
+            .iter()
+            .any(|existing| existing.name == token.name)
+        {
+            credentials.push(token);
+        }
+    }
+    credentials
 }
