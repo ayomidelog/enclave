@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- `workspace exec` no longer fails with "daemon response exceeded maximum size"
+  when a command returns more than 512 KiB. The client's read ceiling was 512 KiB
+  while the daemon may capture up to 16 MiB from each of stdout and stderr and
+  returns both in one JSON line, so a large but legitimate reply was refused
+  after the command had already run. The ceiling is now derived from the capture
+  limit instead of being chosen independently, so the two cannot drift apart
+  again.
+
 ## 2.3.0 - 2026-09-29
 
 ### Added

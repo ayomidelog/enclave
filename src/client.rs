@@ -7,7 +7,28 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const MAX_RESPONSE_BYTES: usize = 512 * 1024;
+use crate::workspace::session::MAX_HELPER_OUTPUT_BYTES;
+
+/// How many bytes of JSON one captured byte can become.
+///
+/// `serde_json` writes a control character below `0x20` as `\u00XX` — six bytes
+/// for one — and passes every other byte through, so six is the worst case and
+/// the one the response ceiling is sized against.
+const JSON_ESCAPE_WORST_CASE: usize = 6;
+
+/// The largest daemon response the client reads.
+///
+/// A `workspace exec` result carries the command's captured stdout and stderr,
+/// each capped at [`MAX_HELPER_OUTPUT_BYTES`], and both are JSON-escaped onto the
+/// single line the daemon writes, so the largest reply is twelve bytes of JSON
+/// per captured byte — the two streams times the worst-case escape of six —
+/// plus the envelope. The ceiling is derived from that capture cap rather than
+/// chosen independently, so the two cannot drift: a ceiling below the daemon's
+/// maximum rejects a reply the daemon was entitled to send, and it rejects it
+/// after the command has already run. It was 512 KiB, thirty-two times below
+/// what the daemon may send, so a `workspace exec` that printed more failed with
+/// "daemon response exceeded maximum size".
+const MAX_RESPONSE_BYTES: usize = 2 * MAX_HELPER_OUTPUT_BYTES * JSON_ESCAPE_WORST_CASE + 64 * 1024;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Deserialize)]
