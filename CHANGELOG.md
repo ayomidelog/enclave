@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.3.1 - 2026-10-04
+
 ### Fixed
 
 - `workspace exec` no longer fails with "daemon response exceeded maximum size"
