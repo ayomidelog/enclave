@@ -513,7 +513,9 @@ the next `workspace exec` rather than the next restart.
   argument, and `auth list` prints providers and dates without values.
 - `workspace exec` replaces every injected token value in the captured output
   with `[REDACTED]`, so a command that prints a credential does not put it in your
-  terminal or your logs. `--no-scrub` turns this off for debugging.
+  terminal. `--no-scrub` turns that off for debugging; the workspace's own command
+  log is redacted either way, because a token written there would outlive the
+  command.
 - Every store, revoke, and inject is recorded in `<state_dir>/auth/audit.log`,
   which names the action, the namespace, the provider, and the workspace and never
   the value.

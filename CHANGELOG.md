@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 2.3.2 - 2026-10-15
+
+### Added
+
+- An Enclavefile's `[sandbox]` section takes an optional `mirror`, so a project
+  that needs a Debian mirror other than the default can say so. `enclave up` used
+  the built-in default regardless of configuration, and the config file's `mirror`
+  is a default for `enclave create`'s flag rather than something the Enclavefile
+  lifecycle read, so there was no way to name one through `up` at all. The value
+  is validated when the Enclavefile is parsed, so a bad one is a parse error
+  rather than a debootstrap that fails minutes later.
+
 ### Fixed
 
 - A memory-only `workspace resize` is no longer refused on a workspace whose
@@ -42,9 +54,6 @@
   had no errno to report, rather than leaving an unrelated failure's errno in place.
 - The `poll` behind a host command's deadline resumes with the time it has left on
   an interrupted call, instead of restarting the whole budget.
-- An Enclavefile may name its own Debian `mirror`. `enclave up` used the built-in
-  default regardless, so a project that needed a different mirror could not say so
-  through the Enclavefile lifecycle at all.
 
 ### Changed
 
