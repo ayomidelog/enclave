@@ -133,6 +133,7 @@ fn release_workflow_runs_verification_before_release() {
         "--skip integration:: --skip stress::",
         "RUSTDOCFLAGS",
         "shellcheck",
+        "tools/ci/check-markdown-fences.sh",
     ] {
         assert!(
             verify.contains(check),
@@ -191,6 +192,7 @@ fn the_ci_helper_scripts_are_committed_and_executable() {
         "verify.sh",
         "check-lifecycle-report.sh",
         "collect-host-state.sh",
+        "check-markdown-fences.sh",
     ] {
         let path = repo_root().join("tools/ci").join(name);
         let metadata = fs::metadata(&path)
@@ -199,6 +201,61 @@ fn the_ci_helper_scripts_are_committed_and_executable() {
             metadata.permissions().mode() & 0o111 != 0,
             "tools/ci/{name} must be executable"
         );
+    }
+}
+
+/// Every test module lives in the `tests/` tree, mounted by a `#[path]` attribute.
+///
+/// One layout for the whole repository is what makes a module's tests findable: a
+/// reader looks in one place whether the module has a `#[cfg(test)]` block or not. An
+/// inline `mod tests` is the other convention, and having two is how a reader ends up
+/// checking each file to learn which it chose. The check is on the attribute rather
+/// than on the file contents, so it is exact.
+#[test]
+fn test_modules_live_in_the_tests_tree() {
+    for path in collect_files(&repo_root().join("src"), "rs") {
+        let text = fs::read_to_string(&path).expect("read source file");
+        for (line_number, line) in text.lines().enumerate() {
+            assert!(
+                !line.trim_start().starts_with("mod tests {"),
+                "{}:{} declares an inline test module; move it to tests/src/ and mount \
+                 it with #[path]",
+                path.display(),
+                line_number + 1
+            );
+        }
+    }
+}
+
+/// Every `#[path]` mount in `src/` points at a file that exists.
+///
+/// A missing mount target is a build error, so this cannot fail on a tree that
+/// compiles; what it catches is a mount that was renamed or removed in `src/` while the
+/// file in `tests/` was left behind, which would otherwise be dead weight nothing
+/// compiles.
+#[test]
+fn every_test_mount_points_at_a_committed_file() {
+    for path in collect_files(&repo_root().join("src"), "rs") {
+        let text = fs::read_to_string(&path).expect("read source file");
+        for line in text.lines() {
+            let Some(rest) = line.trim().strip_prefix("#[path = ") else {
+                continue;
+            };
+            let Some(target) = rest
+                .trim_end_matches(']')
+                .trim_matches('"')
+                .strip_suffix('"')
+            else {
+                continue;
+            };
+            let resolved = path.parent().expect("a file has a parent").join(target);
+            assert!(
+                resolved.is_file(),
+                "{} mounts {} which does not exist",
+                path.display(),
+                resolved.display()
+            );
+        }
     }
 }
 

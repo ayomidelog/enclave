@@ -83,6 +83,13 @@ jobs:
           fi
           shellcheck -x -S warning scripts/*.sh tools/ci/*.sh tools/perf/*.sh
 
+      # A document is not code, but an unbalanced fence makes it render wrong and
+      # nothing else notices: the file still exists and every line between the two
+      # fences is shown as code. This is what caught a README that had swallowed fifty
+      # lines of prose.
+      - name: Markdown fences
+        run: bash tools/ci/check-markdown-fences.sh
+
       # `--no-fail-fast` so one failing test does not hide the rest. The two
       # skipped prefixes are the suites that need root; they run below.
       - name: Tests

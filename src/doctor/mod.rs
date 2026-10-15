@@ -48,11 +48,27 @@ pub struct DoctorCheck {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DoctorRepairReport {
     pub registry: crate::registry::RepairReport,
+    /// Mounts under the state directory that Enclave created and removed.
+    ///
+    /// This is the total a repair released, and it counts two things that are found
+    /// in two passes: the storage mounts of workspaces the registry describes as
+    /// stopped, and anything else left mounted under the sandboxes tree. The two are
+    /// reported as one number because they describe the same host state — what was
+    /// mounted under the state directory before the run and is not after it — and two
+    /// counters would make a reader add them and get a number that counts a mount
+    /// twice.
     pub unmounted_stale_mounts: usize,
     /// Mounts under the state directory that Enclave did not create and refused
     /// to unmount, described as `<mountpoint> (source <source>)`.
     #[serde(default)]
     pub foreign_stale_mounts: Vec<String>,
+    /// Workspace records whose storage was unmounted because the registry described
+    /// them as stopped.
+    ///
+    /// A workspace in this count is one whose record said `stopped` while its image was
+    /// still mounted. It is not a separate repair from [`Self::unmounted_stale_mounts`]:
+    /// it says which of those mounts were a stopped workspace's, which is the case that
+    /// names a workspace rather than a path.
     pub reconciled_workspace_mounts: usize,
     /// Workspace records whose persisted lifecycle state disagreed with what was
     /// actually running and which were brought back in line, such as a start that

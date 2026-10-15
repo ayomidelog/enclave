@@ -199,6 +199,9 @@ fn peer_uid(stream: &UnixStream) -> Result<u32> {
 }
 
 fn read_request_line(stream: &UnixStream) -> Result<Option<String>> {
+    // The clone gives the reader a handle it owns. The request is one line and the
+    // reader is dropped immediately after, so nothing is buffered past it and the
+    // second descriptor exists only for the lifetime of this call.
     let mut request_raw = String::new();
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut limited_reader = reader.by_ref().take((MAX_REQUEST_BYTES + 1) as u64);
