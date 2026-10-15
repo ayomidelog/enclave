@@ -25,8 +25,11 @@ pub(crate) use loopback::{
     LoopDevice,
 };
 pub use mounts::{bind_mount, is_mountpoint, make_mount_private};
-pub(crate) use mounts::{enclave_state_root, MountInfoEntry, MountInfoSnapshot};
-pub use paths::{canonicalize_within, ensure_path_within, slugify};
+pub(crate) use mounts::{
+    enclave_state_root, format_unmount_errno, unescape_mountinfo_path, MountInfoEntry,
+    MountInfoSnapshot,
+};
+pub use paths::{ensure_path_within, slugify};
 pub(crate) use permissions::temporary_path_for;
 pub use permissions::{ensure_secure_dir, verify_secure_socket};
 

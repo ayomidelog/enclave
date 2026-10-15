@@ -17,10 +17,7 @@
 mod readers;
 mod report;
 
-use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::thread;
 
 use anyhow::{anyhow, Result};
 
@@ -93,62 +90,30 @@ fn collect_workspace_stats(
     let pid_list: Vec<u32> = candidates.iter().filter_map(|(_, _, pid)| *pid).collect();
     let cpu_samples = readers::sample_cpu_percent(&pid_list)?;
 
-    let job_count = candidates.len();
-    let queue = Arc::new(Mutex::new(VecDeque::from_iter(
-        candidates
-            .into_iter()
-            .enumerate()
-            .map(|(index, (workspace, sandbox_limits, pid))| {
-                (
-                    index,
-                    workspace,
-                    sandbox_limits,
-                    pid,
-                    cpu_samples.get(&pid.unwrap_or_default()).copied(),
-                )
-            }),
-    )));
-    let worker_count = configured_stats_workers(job_count);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let mut reports = thread::scope(|scope| -> Result<Vec<WorkspaceStatsReport>> {
-        for _ in 0..worker_count {
-            let queue = Arc::clone(&queue);
-            let sender = sender.clone();
-            scope.spawn(move || loop {
-                let job = match queue.lock() {
-                    Ok(mut queue) => queue.pop_front(),
-                    // A poisoned queue means another worker panicked. The jobs in it
-                    // are plain data, so the queue is taken back from the poison
-                    // rather than abandoned: abandoning it would leave the collector
-                    // below with a hole it can only describe, not fill.
-                    Err(poisoned) => poisoned.into_inner().pop_front(),
-                };
-                let Some((index, workspace, sandbox_limits, pid, cpu_percent)) = job else {
-                    return;
-                };
-                let result = build_workspace_stats(workspace, sandbox_limits, pid, cpu_percent);
-                let _ = sender.send((index, result));
-            });
-        }
-        drop(sender);
-
-        // Results arrive in completion order, so they are put back by index.
-        let mut ordered = (0..job_count)
-            .map(|_| None)
-            .collect::<Vec<Option<Result<WorkspaceStatsReport>>>>();
-        for (index, report) in receiver {
-            ordered[index] = Some(report);
-        }
-        ordered
-            .into_iter()
-            .enumerate()
-            .map(|(index, report)| {
-                report
-                    .ok_or_else(|| anyhow::anyhow!("stats worker {index} dropped its job"))
-                    .and_then(|report| report)
-            })
-            .collect::<Result<Vec<_>>>()
-    })?;
+    let jobs = candidates
+        .into_iter()
+        .map(|(workspace, sandbox_limits, pid)| {
+            (
+                workspace,
+                sandbox_limits,
+                pid,
+                cpu_samples.get(&pid.unwrap_or_default()).copied(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let workers = crate::parallel::worker_count("ENCLAVE_STATS_WORKERS", jobs.len(), 4);
+    let mut reports = crate::parallel::map_bounded(jobs, workers, |job| {
+        let (workspace, sandbox_limits, pid, cpu_percent) = job;
+        build_workspace_stats(workspace, sandbox_limits, pid, cpu_percent)
+    })
+    .into_iter()
+    .enumerate()
+    .map(|(index, report)| {
+        report
+            .ok_or_else(|| anyhow::anyhow!("stats worker {index} dropped its job"))
+            .and_then(|report| report)
+    })
+    .collect::<Result<Vec<_>>>()?;
     reports.sort_by(|a, b| {
         a.sandbox_id
             .cmp(&b.sandbox_id)
@@ -156,21 +121,4 @@ fn collect_workspace_stats(
             .then_with(|| a.id.cmp(&b.id))
     });
     Ok(reports)
-}
-
-/// How many workers to read the stats with.
-///
-/// Four by default, because the CPU sample sleeps and the work per workspace is
-/// small: past a handful of workers the readers contend on /proc more than they
-/// gain. Never more workers than jobs.
-fn configured_stats_workers(job_count: usize) -> usize {
-    if job_count == 0 {
-        return 0;
-    }
-    std::env::var("ENCLAVE_STATS_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
-        .min(job_count)
 }

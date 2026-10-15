@@ -262,7 +262,7 @@ pub(crate) fn wait_for_targets_to_exit(targets: &[(u32, Option<u64>)], timeout: 
             if !process_matches(*pid, *expected) {
                 return None;
             }
-            open_pidfd(*pid).map(|fd| (fd, *pid, *expected))
+            crate::pidfd::open_pidfd(*pid).map(|fd| (fd, *pid, *expected))
         })
         .collect::<Vec<_>>();
     if !pidfds.is_empty() && pidfds.len() == targets.len() {
@@ -287,11 +287,6 @@ pub(crate) fn wait_for_targets_to_exit(targets: &[(u32, Option<u64>)], timeout: 
         }
         thread::sleep(Duration::from_millis(50));
     }
-}
-
-pub(crate) fn open_pidfd(pid: u32) -> Option<i32> {
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
-    (fd >= 0).then_some(fd)
 }
 
 pub(crate) fn wait_for_pidfds(pidfds: &[(i32, u32, Option<u64>)], timeout: Duration) {

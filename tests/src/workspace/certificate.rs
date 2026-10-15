@@ -91,7 +91,6 @@ use std::path::PathBuf;
 use crate::workspace::session;
 
 use crate::network::NetworkCleanupReport;
-use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
 use crate::workspace::types::{NamespaceRefs, WorkspaceLimits, WorkspaceMetadata};
 use crate::workspace::WorkspaceStatus;
 
@@ -275,24 +274,4 @@ fn destroy_verification_fails_when_the_network_was_not_released() {
     assert_eq!(certificate.network_complete, Some(false));
 
     let _ = fs::remove_dir_all(root);
-}
-
-#[allow(dead_code)]
-fn unused_sandbox_fixture(sandbox_dir: &std::path::Path) -> SandboxMetadata {
-    SandboxMetadata {
-        id: "sandbox-id".to_string(),
-        name: "sandbox".to_string(),
-        suite: "bookworm".to_string(),
-        mirror: "https://deb.debian.org/debian".to_string(),
-        bootstrap_method: BootstrapMethod::CachedRootfs,
-        created_at: "2026-08-06T00:00:00Z".to_string(),
-        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
-        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
-        rootfs_lower_path: None,
-        mounted_rootfs_path: sandbox_dir.join("rootfs.mnt").to_string_lossy().to_string(),
-        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
-        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
-        limits: SandboxLimits::default(),
-        status: SandboxStatus::Stopped,
-    }
 }

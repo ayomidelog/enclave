@@ -22,11 +22,7 @@ pub struct SandboxDestroyReport {
 impl SandboxDestroyReport {
     /// One line naming everything that was left behind, for command output.
     pub fn retained_summary(&self) -> String {
-        self.retained
-            .iter()
-            .map(|item| format!("{}: {}", item.resource, item.detail))
-            .collect::<Vec<_>>()
-            .join("; ")
+        crate::workspace::retained_summary(&self.retained)
     }
 }
 

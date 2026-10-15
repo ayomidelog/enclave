@@ -28,6 +28,7 @@ mod rootfs;
 mod sandbox;
 mod send;
 mod stats;
+mod table;
 mod transition;
 mod workspace;
 

@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-pub fn canonicalize_within(base_dir: &Path, candidate: &Path, label: &str) -> Result<PathBuf> {
-    ensure_path_within(base_dir, candidate, label)
-}
-
+/// Resolve `candidate` and refuse it if it escapes `base_dir`.
+///
+/// The name says what a caller is asking for: a path that has been resolved and
+/// checked to be inside the base. The aliasing this used to have (a
+/// `canonicalize_within` that forwarded here) made a reader check whether the two
+/// differed.
 pub fn ensure_path_within(base_dir: &Path, candidate: &Path, label: &str) -> Result<PathBuf> {
     let base = fs::canonicalize(base_dir)
         .with_context(|| format!("failed to canonicalize base {}", base_dir.display()))?;

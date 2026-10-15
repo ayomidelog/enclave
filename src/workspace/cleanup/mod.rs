@@ -86,10 +86,19 @@ impl CleanupOutcome {
 
     /// One line naming everything that was left behind.
     pub fn retained_summary(&self) -> String {
-        self.retained
-            .iter()
-            .map(|item| format!("{}: {}", item.resource, item.detail))
-            .collect::<Vec<_>>()
-            .join("; ")
+        retained_summary(&self.retained)
     }
+}
+
+/// One line naming every retained resource, in the order they were recorded.
+///
+/// Three report types carry a `retained` list — this one, a workspace destroy, and a
+/// sandbox destroy — and all three render it the same way. Keeping the rendering here
+/// means a change to the format is one edit rather than three that can drift.
+pub(crate) fn retained_summary(retained: &[RetainedResource]) -> String {
+    retained
+        .iter()
+        .map(|item| format!("{}: {}", item.resource, item.detail))
+        .collect::<Vec<_>>()
+        .join("; ")
 }

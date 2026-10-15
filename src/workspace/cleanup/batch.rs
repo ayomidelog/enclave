@@ -1,8 +1,6 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::thread;
-
 use anyhow::{anyhow, Context, Result};
+
+use std::sync::Arc;
 
 use crate::network;
 use crate::network::NetworkCleanupReport;
@@ -84,57 +82,31 @@ pub(crate) fn run_workspace_stop_cleanups(
             }
         };
 
-    let worker_count = cleanup_worker_count(cleanups.len());
-    let queue = Arc::new(Mutex::new(VecDeque::from(cleanups)));
-    let (result_sender, result_receiver) = std::sync::mpsc::channel();
-    let handles = (0..worker_count)
-        .map(|worker_id| {
-            let queue = Arc::clone(&queue);
-            let network_failures = Arc::clone(&network_failures);
-            let tmp_reset_failures = Arc::clone(&tmp_reset_failures);
-            let result_sender = result_sender.clone();
-            thread::Builder::new()
-                .name(format!("enclave-workspace-cleanup-{worker_id}"))
-                .spawn(move || loop {
-                    let cleanup = match queue.lock() {
-                        Ok(mut queue) => queue.pop_front(),
-                        Err(_) => return,
-                    };
-                    let Some(cleanup) = cleanup else {
-                        return;
-                    };
-                    let workspace_id = cleanup.workspace.id.clone();
-                    let mut pre_failures = Vec::new();
-                    if let Some(network_error) = network_failures.get(&workspace_id) {
-                        pre_failures.push(network_error.clone());
-                    }
-                    if let Some(tmp_error) = tmp_reset_failures.get(&workspace_id) {
-                        pre_failures.push(tmp_error.clone());
-                    }
-                    if !pre_failures.is_empty() {
-                        let _ = result_sender
-                            .send((workspace_id, Err(anyhow!("{}", pre_failures.join("; ")))));
-                        continue;
-                    }
-                    let result = run_workspace_stop_cleanup(
-                        cleanup,
-                        network_already_cleaned,
-                        storage_batch_succeeded,
-                    );
-                    let _ = result_sender.send((workspace_id, result));
-                })
-                .expect("failed to spawn workspace cleanup worker")
-        })
-        .collect::<Vec<_>>();
-
-    for handle in handles {
-        if let Err(err) = handle.join() {
-            tracing::warn!("workspace cleanup thread panicked: {:?}", err);
+    let workers = crate::parallel::worker_count(
+        "ENCLAVE_CLEANUP_WORKERS",
+        cleanups.len(),
+        crate::parallel::parallelism().clamp(1, 4),
+    );
+    let outcomes = crate::parallel::map_bounded(cleanups, workers, |cleanup| {
+        let workspace_id = cleanup.workspace.id.clone();
+        let mut pre_failures = Vec::new();
+        if let Some(network_error) = network_failures.get(&workspace_id) {
+            pre_failures.push(network_error.clone());
         }
-    }
-    drop(result_sender);
-    result_receiver
+        if let Some(tmp_error) = tmp_reset_failures.get(&workspace_id) {
+            pre_failures.push(tmp_error.clone());
+        }
+        if !pre_failures.is_empty() {
+            return (workspace_id, Err(anyhow!("{}", pre_failures.join("; "))));
+        }
+        let result =
+            run_workspace_stop_cleanup(cleanup, network_already_cleaned, storage_batch_succeeded);
+        (workspace_id, result)
+    });
+
+    outcomes
         .into_iter()
+        .flatten()
         .filter_map(|(workspace_id, result)| {
             result
                 .err()
@@ -154,19 +126,6 @@ pub(crate) fn format_network_cleanup_error(report: &network::NetworkCleanupRepor
             .collect::<Vec<_>>()
             .join("; ")
     )
-}
-
-fn cleanup_worker_count(job_count: usize) -> usize {
-    std::env::var("ENCLAVE_CLEANUP_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get().clamp(1, 4))
-                .unwrap_or(4)
-        })
-        .min(job_count)
 }
 
 /// Release the runtime, cgroups, network, storage, and `/tmp` for one workspace.

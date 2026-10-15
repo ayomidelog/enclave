@@ -25,17 +25,6 @@ pub(crate) fn is_already_unmounted_errno(errno: Option<i32>) -> bool {
     matches!(errno, Some(libc::ENOENT | libc::EINVAL))
 }
 
-pub(super) fn format_errno(errno: Option<i32>) -> String {
-    match errno {
-        Some(libc::EBUSY) => "EBUSY(16)".to_string(),
-        Some(libc::ENOENT) => "ENOENT(2)".to_string(),
-        Some(libc::EINVAL) => "EINVAL(22)".to_string(),
-        Some(libc::EPERM) => "EPERM(1)".to_string(),
-        Some(value) => format!("errno({value})"),
-        None => "unknown".to_string(),
-    }
-}
-
 /// Which processes still mount `path`, so a busy unmount names a holder rather
 /// than only an errno.
 pub(super) fn mount_holders(path: &str) -> String {
@@ -90,7 +79,7 @@ pub fn ensure_rootfs_unmounted(metadata: &SandboxMetadata) -> Result<()> {
         return Err(anyhow!(
             "failed to unmount sandbox rootfs mount_target={} errno={} namespace_holders={} detail={}",
             mounted_rootfs_path,
-            format_errno(error.raw_os_error()),
+            crate::fsutil::format_unmount_errno(error.raw_os_error()),
             mount_holders(&mounted_rootfs_path),
             error
         ));

@@ -48,10 +48,7 @@ fn an_idle_workspace_owns_nothing() {
     let workspace = idle_workspace(&dir);
     let inventory = ResourceInventory::collect("sb-inventory", &workspace);
     assert!(inventory.is_empty(), "{:?}", inventory.resources);
-    assert_eq!(
-        inventory.surviving_summary(),
-        "all 0 recorded resource(s) released"
-    );
+    assert!(inventory.surviving().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -74,7 +71,14 @@ fn a_live_runtime_is_recorded_with_its_start_time() {
     let inventory = ResourceInventory::collect("sb-inventory", &workspace);
     assert_eq!(inventory.count(ResourceKind::Process), 1);
     assert_eq!(inventory.surviving().len(), 1);
-    let described = inventory.surviving_summary();
+    // The certificate names each survivor by its `describe()`, so that is what has
+    // to carry the identity a later reader needs to find the process.
+    let described = inventory
+        .surviving()
+        .iter()
+        .map(|resource| resource.describe())
+        .collect::<Vec<_>>()
+        .join("; ");
     assert!(described.contains(&pid.to_string()), "{described}");
     assert!(described.contains(&starttime.to_string()), "{described}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -120,14 +124,15 @@ fn runtime_markers_are_recorded_and_their_removal_is_proven() {
     std::fs::remove_file(&pid_file).expect("remove pid file");
     std::fs::remove_file(&ready_file).expect("remove ready file");
     assert!(inventory.surviving().is_empty());
-    assert!(inventory
-        .surviving_summary()
-        .contains("all 2 recorded resource(s) released"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A surviving resource is named by kind and by the path or pid that identifies it.
+///
+/// This is the shape the destroy certificate's `failures` entries take, so it is what
+/// a reader of a failed teardown has to work from.
 #[test]
-fn the_surviving_summary_names_each_resource_by_kind() {
+fn a_surviving_resource_is_described_by_kind_and_identity() {
     let dir = fixture("summary");
     let workspace = idle_workspace(&dir);
     std::fs::write(
@@ -137,13 +142,11 @@ fn the_surviving_summary_names_each_resource_by_kind() {
     .expect("write pid file");
 
     let inventory = ResourceInventory::collect("sb-inventory", &workspace);
-    let summary = inventory.surviving_summary();
-    assert!(
-        summary.starts_with("1 of 1 recorded resource(s) survived"),
-        "{summary}"
-    );
-    assert!(summary.contains("file "), "{summary}");
-    assert!(summary.contains("session.pid"), "{summary}");
+    let surviving = inventory.surviving();
+    assert_eq!(surviving.len(), 1, "{:?}", inventory.resources);
+    let described = surviving[0].describe();
+    assert!(described.contains("file "), "{described}");
+    assert!(described.contains("session.pid"), "{described}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

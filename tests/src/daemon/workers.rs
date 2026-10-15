@@ -1,5 +1,5 @@
 use super::request::{run_request, RequestOutcome};
-use super::{configured_worker_count, stream_is_transfer};
+use super::stream_is_transfer;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -31,17 +31,6 @@ fn classifies_control_request_separately() {
         .write_all(br#"{"action":"workspace.list","params":{}}\n"#)
         .unwrap();
     assert!(!stream_is_transfer(&reader));
-}
-
-#[test]
-fn worker_count_rejects_unbounded_and_invalid_values() {
-    unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "0") };
-    assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 6);
-    unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "65") };
-    assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 6);
-    unsafe { std::env::set_var("ENCLAVE_TEST_WORKER_COUNT", "3") };
-    assert_eq!(configured_worker_count("ENCLAVE_TEST_WORKER_COUNT", 6), 3);
-    unsafe { std::env::remove_var("ENCLAVE_TEST_WORKER_COUNT") };
 }
 
 #[test]

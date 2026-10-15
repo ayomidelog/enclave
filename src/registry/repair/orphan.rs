@@ -83,30 +83,5 @@ fn path_contains_mount(path: &Path) -> Result<bool> {
 
 fn mountinfo_path(line: &str) -> Option<PathBuf> {
     let raw = line.split_whitespace().nth(4)?;
-    Some(PathBuf::from(unescape_mountinfo_path(raw)))
-}
-
-/// Decode the octal escapes the kernel uses for space, tab, and newline in a
-/// mountinfo path, so a mountpoint under a directory with a space in its name is
-/// still matched.
-fn unescape_mountinfo_path(path: &str) -> String {
-    let mut result = String::with_capacity(path.len());
-    let bytes = path.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\'
-            && index + 3 < bytes.len()
-            && bytes[index + 1..=index + 3].iter().all(u8::is_ascii_digit)
-        {
-            let value = (bytes[index + 1] - b'0') * 64
-                + (bytes[index + 2] - b'0') * 8
-                + (bytes[index + 3] - b'0');
-            result.push(value as char);
-            index += 4;
-        } else {
-            result.push(bytes[index] as char);
-            index += 1;
-        }
-    }
-    result
+    Some(PathBuf::from(crate::fsutil::unescape_mountinfo_path(raw)))
 }

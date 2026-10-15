@@ -67,11 +67,7 @@ impl PublishedPortSpec {
     }
 
     pub fn binding(&self) -> PublishedPortBinding {
-        PublishedPortBinding {
-            host_ip: self.host_ip.clone(),
-            host_port: self.host_port,
-            protocol: self.protocol.clone(),
-        }
+        PublishedPortBinding::of(&self.host_ip, self.host_port, &self.protocol)
     }
 }
 
@@ -93,6 +89,20 @@ pub struct PublishedPortBinding {
 }
 
 impl PublishedPortBinding {
+    /// The binding a declared or status port describes.
+    ///
+    /// Both carry the host ip, the host port, and the protocol, and a binding is the
+    /// identity they share: it is what `validate_published_ports` deduplicates on and
+    /// what the publisher keys a listener by. Keeping the conversion here means the
+    /// two callers cannot disagree about what a binding is.
+    pub fn of(host_ip: &str, host_port: u16, protocol: &str) -> Self {
+        Self {
+            host_ip: host_ip.to_string(),
+            host_port,
+            protocol: protocol.to_string(),
+        }
+    }
+
     pub fn parse(raw: &str) -> Result<Self> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -186,11 +196,7 @@ impl PublishedPortStatus {
     }
 
     pub fn binding(&self) -> PublishedPortBinding {
-        PublishedPortBinding {
-            host_ip: self.host_ip.clone(),
-            host_port: self.host_port,
-            protocol: self.protocol.clone(),
-        }
+        PublishedPortBinding::of(&self.host_ip, self.host_port, &self.protocol)
     }
 }
 

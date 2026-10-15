@@ -71,13 +71,6 @@ fn remove_nonexistent_cgroup_is_ok() {
 }
 
 #[test]
-fn create_workspace_cgroup_returns_none_when_no_limits() {
-    let config = CgroupConfig::default();
-    let result = create_workspace_cgroup("test-ws", &config).unwrap();
-    assert!(result.is_none());
-}
-
-#[test]
 fn validate_cgroup_name_rejects_traversal() {
     assert!(validate_cgroup_name("..").is_err());
     assert!(validate_cgroup_name("/sys/fs/cgroup").is_err());
@@ -167,8 +160,21 @@ fn remove_cgroup_validates_name() {
 }
 
 #[test]
-fn create_cgroup_validates_name() {
+fn ensure_workspace_cgroup_validates_name() {
+    let parent = std::path::Path::new("/sys/fs/cgroup");
     let config = CgroupConfig::from_limits(Some(1024), None, None).unwrap();
-    let result = create_workspace_cgroup("../escape", &config);
+    let result = ensure_workspace_cgroup(parent, "../escape", &config, true);
     assert!(result.is_err());
+}
+
+/// A workspace cgroup with no limits is not created, and neither is a sandbox one.
+///
+/// The production path creates a workspace cgroup under its sandbox's, so the empty
+/// case is the sandbox parent here rather than a top-level name.
+#[test]
+fn a_cgroup_with_no_limits_is_not_created() {
+    let parent = std::path::Path::new("/sys/fs/cgroup");
+    let config = CgroupConfig::default();
+    let result = ensure_workspace_cgroup(parent, "test-ws", &config, false).unwrap();
+    assert!(result.is_none());
 }

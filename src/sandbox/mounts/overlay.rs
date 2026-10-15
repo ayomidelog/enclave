@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 
 use super::super::types::SandboxMetadata;
-use super::unmount::{format_errno, is_already_unmounted_errno, mount_holders, unmount_path};
+use super::unmount::{is_already_unmounted_errno, mount_holders, unmount_path};
 
 /// Directory names for the writable layers of a shared-base sandbox rootfs.
 const ROOTFS_UPPER_DIR: &str = "rootfs-upper";
@@ -95,7 +95,7 @@ pub fn unmount_rootfs_overlay(metadata: &SandboxMetadata) -> Result<()> {
         return Err(anyhow!(
             "failed to unmount sandbox rootfs overlay mount_target={} errno={} namespace_holders={} detail={}",
             rootfs_path.display(),
-            format_errno(error.raw_os_error()),
+            crate::fsutil::format_unmount_errno(error.raw_os_error()),
             mount_holders(&metadata.rootfs_path),
             error
         ));

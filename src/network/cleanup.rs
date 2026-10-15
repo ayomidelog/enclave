@@ -95,79 +95,28 @@ pub fn teardown_workspace_networks(workspaces: &[(String, String)]) -> Vec<Netwo
     if workspaces.is_empty() {
         return Vec::new();
     }
-    let worker_count = std::env::var("ENCLAVE_CLEANUP_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get().clamp(1, 4))
-                .unwrap_or(4)
+    let workers = crate::parallel::worker_count(
+        "ENCLAVE_CLEANUP_WORKERS",
+        workspaces.len(),
+        crate::parallel::parallelism().clamp(1, 4),
+    );
+    // A report is always produced for every workspace: the worker always returns one,
+    // and the `None` case below can only be a worker that did not run at all, which is
+    // reported as a failure rather than dropped.
+    crate::parallel::map_bounded(workspaces.to_vec(), workers, |(ip, id)| {
+        teardown_workspace_network(&ip, &id)
+    })
+    .into_iter()
+    .enumerate()
+    .map(|(index, report)| {
+        report.unwrap_or_else(|| {
+            NetworkCleanupReport::failed(
+                workspaces[index].1.clone(),
+                workspaces[index].0.clone(),
+                "cleanup-worker",
+                "network cleanup worker did not return a result",
+            )
         })
-        .min(workspaces.len());
-    let queue = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::VecDeque::from_iter(workspaces.iter().cloned().enumerate()),
-    ));
-    let reports = std::sync::Arc::new(std::sync::Mutex::new(
-        (0..workspaces.len())
-            .map(|_| None::<NetworkCleanupReport>)
-            .collect::<Vec<_>>(),
-    ));
-    std::thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let queue = std::sync::Arc::clone(&queue);
-            let reports = std::sync::Arc::clone(&reports);
-            scope.spawn(move || loop {
-                let Some((index, (ip, id))) =
-                    queue.lock().ok().and_then(|mut queue| queue.pop_front())
-                else {
-                    return;
-                };
-                let report = teardown_workspace_network(&ip, &id);
-                if let Ok(mut reports) = reports.lock() {
-                    reports[index] = Some(report);
-                }
-            });
-        }
-    });
-    let Ok(reports) = std::sync::Arc::try_unwrap(reports) else {
-        return workspaces
-            .iter()
-            .map(|(ip, id)| {
-                NetworkCleanupReport::failed(
-                    id.clone(),
-                    ip.clone(),
-                    "cleanup-worker",
-                    "network cleanup worker ownership remained active",
-                )
-            })
-            .collect();
-    };
-    match reports.into_inner() {
-        Ok(reports) => reports
-            .into_iter()
-            .enumerate()
-            .map(|(index, report)| {
-                report.unwrap_or_else(|| {
-                    NetworkCleanupReport::failed(
-                        workspaces[index].1.clone(),
-                        workspaces[index].0.clone(),
-                        "cleanup-worker",
-                        "network cleanup worker did not return a result",
-                    )
-                })
-            })
-            .collect(),
-        Err(_) => workspaces
-            .iter()
-            .map(|(ip, id)| {
-                NetworkCleanupReport::failed(
-                    id.clone(),
-                    ip.clone(),
-                    "cleanup-worker",
-                    "network cleanup result lock was poisoned",
-                )
-            })
-            .collect(),
-    }
+    })
+    .collect()
 }

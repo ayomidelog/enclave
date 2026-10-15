@@ -28,49 +28,15 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many(
     // So the count stays proportional to the host rather than becoming a constant,
     // because on a host with sixteen cores sixteen starts are not oversubscribed.
     // The environment override exists for a caller who has measured their own host.
-    let worker_count = std::env::var("ENCLAVE_UP_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism()
-                .map(|parallelism| parallelism.get().max(1))
-                .unwrap_or(4)
-        })
-        .min(specs.len());
-    let queue = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::VecDeque::from_iter(specs.into_iter().enumerate()),
-    ));
-    let result_count = queue.lock().map(|queue| queue.len()).unwrap_or(0);
-    let results = std::sync::Arc::new(std::sync::Mutex::new(
-        (0..result_count)
-            .map(|_| None::<Result<Value>>)
-            .collect::<Vec<_>>(),
-    ));
-
-    std::thread::scope(|scope| {
-        for _ in 0..worker_count {
-            let queue = std::sync::Arc::clone(&queue);
-            let results = std::sync::Arc::clone(&results);
-            let config = config.clone();
-            let port_publisher = Arc::clone(port_publisher);
-            scope.spawn(move || loop {
-                let Some((index, spec)) = queue.lock().ok().and_then(|mut queue| queue.pop_front())
-                else {
-                    return;
-                };
-                let result = dispatch_workspace_start_many_item(&spec, &config, &port_publisher);
-                if let Ok(mut results) = results.lock() {
-                    results[index] = Some(result);
-                }
-            });
-        }
+    let workers = crate::parallel::worker_count(
+        "ENCLAVE_UP_WORKERS",
+        specs.len(),
+        crate::parallel::parallelism(),
+    );
+    let results = crate::parallel::map_bounded(specs, workers, |spec| {
+        dispatch_workspace_start_many_item(&spec, config, port_publisher)
     });
 
-    let results = Arc::try_unwrap(results)
-        .map_err(|_| anyhow::anyhow!("workspace batch result ownership remained active"))?
-        .into_inner()
-        .map_err(|_| anyhow::anyhow!("workspace batch result lock poisoned"))?;
     let mut output = Vec::with_capacity(results.len());
     for (index, result) in results.into_iter().enumerate() {
         let result =

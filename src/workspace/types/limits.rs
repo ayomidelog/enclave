@@ -35,10 +35,6 @@ impl WorkspaceLimits {
         Ok(())
     }
 
-    pub fn cgroup_limits_present(&self) -> bool {
-        self.cpu_percent.is_some() || self.memory_bytes.is_some() || self.max_processes.is_some()
-    }
-
     pub fn cpu_percent_requires_cgroup(&self) -> bool {
         self.cpu_percent.is_some()
     }

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use enclave::fsutil::{canonicalize_within, ensure_path_within};
+use enclave::fsutil::ensure_path_within;
 
 fn temp_dir(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("{}-{}", prefix, std::process::id()));
@@ -15,7 +15,7 @@ fn canonicalization_resolves_valid_child_path() {
     let base = temp_dir("enclave-unit-canon");
     fs::create_dir_all(base.join("snapshots")).expect("create snapshots");
 
-    let path = canonicalize_within(
+    let path = ensure_path_within(
         &base,
         &PathBuf::from("snapshots/../snapshots"),
         "snapshot path",

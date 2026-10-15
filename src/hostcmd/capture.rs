@@ -44,7 +44,7 @@ pub(super) fn read_capped<R: Read>(mut reader: R, cap: usize) -> Vec<u8> {
 /// kernel reports the exit instead of on the next poll tick. Kernels without
 /// pidfd support fall back to polling `try_wait` inside the same budget.
 pub(super) fn wait_until_deadline(child: &mut Child, timeout: Duration) -> std::io::Result<bool> {
-    if let Some(pidfd) = open_pidfd(child.id()) {
+    if let Some(pidfd) = crate::pidfd::open_pidfd(child.id()) {
         let ready = poll_pidfd(pidfd, timeout);
         unsafe { libc::close(pidfd) };
         if ready {
@@ -67,11 +67,6 @@ pub(super) fn wait_until_deadline(child: &mut Child, timeout: Duration) -> std::
         let remaining = deadline.saturating_duration_since(Instant::now());
         thread::sleep(remaining.min(FALLBACK_POLL_INTERVAL));
     }
-}
-
-fn open_pidfd(pid: u32) -> Option<i32> {
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
-    (fd >= 0).then_some(fd)
 }
 
 /// Poll a pidfd for exit, returning true when it became readable.

@@ -37,7 +37,7 @@ pub(crate) fn wait_for_child_or_disconnect(
             .context("failed to wait for child process");
     }
 
-    if let Some(pidfd) = open_pidfd(child.child.id()) {
+    if let Some(pidfd) = crate::pidfd::open_pidfd(child.child.id()) {
         let client_fd = client_stream
             .expect("client stream checked above")
             .as_raw_fd();
@@ -99,11 +99,6 @@ pub(crate) fn wait_for_child_or_disconnect(
             }
         }
     }
-}
-
-pub(crate) fn open_pidfd(pid: u32) -> Option<i32> {
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_uint, 0) as i32 };
-    (fd >= 0).then_some(fd)
 }
 
 pub(crate) fn set_pipe_capacity(fd: std::os::fd::RawFd) {
