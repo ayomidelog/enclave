@@ -37,29 +37,38 @@ pub(super) fn refresh(
     )
 }
 
-/// Replace the credentials the command was given in its captured output.
+/// Replace every injected value in `text` with `[REDACTED]`.
 ///
 /// The values are the ones the command was actually run with, so a workspace is
 /// scrubbed of the credentials it held rather than of the ones it was configured
-/// with. Each credential is also recorded, which is the event an operator asking
-/// "when was this credential used" wants.
-pub(super) fn scrub(
-    state_dir: &Path,
-    workspace: &WorkspaceMetadata,
-    credentials: &[crate::auth::WorkspaceAuthToken],
-    stdout: &mut String,
-    stderr: &mut String,
-) -> Result<()> {
+/// with. This is separate from the audit below because the two answer different
+/// questions: a caller can ask to see the unscrubbed output, but nothing in the tree
+/// may write a token into a file, so the log is always given the scrubbed copy.
+pub(super) fn redact(credentials: &[crate::auth::WorkspaceAuthToken], text: &str) -> String {
     if credentials.is_empty() {
-        return Ok(());
+        return text.to_string();
     }
     let secrets: Vec<String> = credentials
         .iter()
         .map(|credential| credential.token.clone())
         .collect();
-    *stdout = crate::auth::scrub_secrets(stdout, &secrets);
-    *stderr = crate::auth::scrub_secrets(stderr, &secrets);
+    crate::auth::scrub_secrets(text, &secrets)
+}
 
+/// Record that each credential reached the command.
+///
+/// This is the event an operator asking "when was this credential used" wants. It is
+/// recorded whether or not the value appeared in the output, because the credential
+/// was available to the command either way, and it is recorded for an unscrubbed
+/// command too, because the credential was still used.
+pub(super) fn record_injection(
+    state_dir: &Path,
+    workspace: &WorkspaceMetadata,
+    credentials: &[crate::auth::WorkspaceAuthToken],
+) {
+    if credentials.is_empty() {
+        return;
+    }
     let manager = crate::auth::AuthManager::new(state_dir.to_path_buf());
     let target = crate::auth::WorkspaceAuthTarget {
         sandbox_id: &workspace.sandbox_id,
@@ -71,15 +80,13 @@ pub(super) fn scrub(
         .map(|credential| credential.name.clone())
         .collect();
     if let Err(err) = manager.audit_inject(&target, &names) {
-        // The output has already been scrubbed by this point, so a broken audit
-        // trail is reported rather than turned into a failed command: the caller
-        // has the value-safe output either way, and the credential was used.
+        // A broken audit trail is reported rather than turned into a failed command:
+        // the command ran, and the credential was used either way.
         tracing::warn!(
             "failed to record the auth injection for workspace {}: {err:#}",
             workspace.id
         );
     }
-    Ok(())
 }
 
 /// The runtime pid a command has to run against, or why it cannot.

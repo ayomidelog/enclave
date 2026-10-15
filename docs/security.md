@@ -161,6 +161,13 @@ debugging and is recorded in the daemon log. An interactive `workspace enter`
 session is not captured by anything that could scrub it, so it is not covered;
 neither is a command run with `--no-scrub`.
 
+**The workspace's own command log is scrubbed whatever the caller asked for.**
+`workspace exec` appends the command, its exit status, and its output to the
+workspace's runtime log file. That copy is always redacted, including for a
+command run with `--no-scrub`, because a token written there would outlive the
+command and sit on disk in a file nothing scrubs later. `--no-scrub` therefore
+decides only what the caller is shown, not what is written down.
+
 **A workspace's credentials are re-resolved before every command.** The files a
 workspace holds are rewritten from the store at the top of each daemon-run
 command, so revoking a token takes effect on the next command instead of the next

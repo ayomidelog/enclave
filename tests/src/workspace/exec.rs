@@ -1,5 +1,52 @@
+use super::credentials::redact;
 use super::{runtime_exec_command_args, workspace_file_receive_args};
 use crate::workspace::{WorkspaceLimits, WorkspaceMetadata, WorkspaceStatus};
+
+fn credential(name: &str, value: &str) -> crate::auth::WorkspaceAuthToken {
+    crate::auth::WorkspaceAuthToken {
+        name: name.to_string(),
+        env_var: name.to_ascii_uppercase(),
+        token: value.to_string(),
+    }
+}
+
+/// Every injected value is replaced, and the longest match wins.
+///
+/// This is the copy that goes into the workspace's runtime log, so it has to remove a
+/// value whatever the caller asked for: a token in that file outlives the command and
+/// nothing scrubs it later.
+#[test]
+fn the_logged_copy_has_every_credential_removed() {
+    let credentials = vec![
+        credential("github", "ghp_secret_value"),
+        credential("npm", "npm_secret"),
+    ];
+    let output = "token=ghp_secret_value and npm_secret, plus unrelated text";
+
+    let redacted = redact(&credentials, output);
+
+    assert!(!redacted.contains("ghp_secret_value"), "{redacted}");
+    assert!(!redacted.contains("npm_secret"), "{redacted}");
+    assert_eq!(redacted.matches("[REDACTED]").count(), 2, "{redacted}");
+    assert!(redacted.contains("unrelated text"), "{redacted}");
+}
+
+/// With nothing injected there is nothing to remove, so the text is unchanged.
+#[test]
+fn redaction_with_no_credentials_returns_the_text_unchanged() {
+    assert_eq!(redact(&[], "unchanged output"), "unchanged output");
+}
+
+/// A one-character secret does not redact the whole output.
+///
+/// An empty secret would match at every position and turn the output into nothing but
+/// redaction markers, so the scrubber ignores one; this pins that the same is true of
+/// the copy the log gets.
+#[test]
+fn an_empty_credential_does_not_redact_everything() {
+    let credentials = vec![credential("blank", "")];
+    assert_eq!(redact(&credentials, "a normal line"), "a normal line");
+}
 
 #[test]
 fn runtime_exec_clears_environment_before_running_wrapper() {

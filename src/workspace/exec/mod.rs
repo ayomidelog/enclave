@@ -124,9 +124,21 @@ pub fn exec_workspace_command_with_options(
     let exit_code = output.exit_code;
     let mut stdout = output.stdout;
     let mut stderr = output.stderr;
+
+    // The log always gets the scrubbed copy, whatever the caller asked for. A caller
+    // may ask to see the output exactly as the command wrote it, and `--no-scrub`
+    // exists for that, but a token written into the workspace's runtime log would
+    // outlive the command and sit on disk in a file nothing scrubs later. The two are
+    // therefore decided separately: the caller's copy follows the flag, the log's copy
+    // never does.
+    let logged_stdout = credentials::redact(&injected, &stdout);
+    let logged_stderr = credentials::redact(&injected, &stderr);
     if options.scrub {
-        credentials::scrub(state_dir, &workspace, &injected, &mut stdout, &mut stderr)?;
+        stdout = logged_stdout.clone();
+        stderr = logged_stderr.clone();
     }
+    credentials::record_injection(state_dir, &workspace, &injected);
+
     let (mount_ns, pid_ns) = session::read_namespace_refs(runtime_pid)
         .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
     if let Err(err) = logs::append_workspace_command_log(
@@ -134,8 +146,8 @@ pub fn exec_workspace_command_with_options(
         &effective_cwd,
         command,
         exit_code,
-        &stdout,
-        &stderr,
+        &logged_stdout,
+        &logged_stderr,
     ) {
         tracing::warn!(
             "failed to append command log for workspace {}: {err:#}",
