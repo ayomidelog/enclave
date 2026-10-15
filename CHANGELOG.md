@@ -6,63 +6,25 @@
 
 ### Added
 
-- An Enclavefile's `[sandbox]` section takes an optional `mirror`, so a project
-  that needs a Debian mirror other than the default can say so. `enclave up` used
-  the built-in default regardless of configuration, and the config file's `mirror`
-  is a default for `enclave create`'s flag rather than something the Enclavefile
-  lifecycle read, so there was no way to name one through `up` at all. The value
-  is validated when the Enclavefile is parsed, so a bad one is a parse error
-  rather than a debootstrap that fails minutes later.
+- An Enclavefile's `[sandbox]` section takes an optional `mirror`, so a project that needs a Debian mirror other than the default can say so. `enclave up` used the built-in default regardless of configuration, and the config file's `mirror` is a default for `enclave create`'s flag rather than something the Enclavefile lifecycle read, so there was no way to name one through `up` at all. The value is validated when the Enclavefile is parsed, so a bad one is a parse error rather than a debootstrap that fails minutes later.
 
 ### Fixed
 
-- A memory-only `workspace resize` is no longer refused on a workspace whose
-  `/home` is a host directory. The guard that refuses a disk resize on such a
-  workspace ran when the request was read rather than when the disk was about to
-  be changed, so `--memory-mb` and `--no-memory-limit` failed on every workspace
-  created with `workspace_dir`/`path` — the common case for a project directory —
-  with a message about disk resize.
-- The sandbox disk budget is now enforced under the registry lock, where an
-  allocation is granted. The check ran in a read-only pass and the write happened
-  later, so two workspaces created at once could both pass it and both commit,
-  leaving the sandbox over its budget. That is reachable without racing anything,
-  because `enclave up` brings its workspaces up on a thread pool. The resize path
-  had the same shape and is fixed the same way; a resize refused at the commit now
-  puts the disk image back rather than leaving a size no record describes.
-- The workspace-definition rollback now runs. It restored the previous definition
-  with a request that named the disk field, and a request that mentions the disk is
-  refused by design, so the restore always failed and the caller only logged it. A
-  failed `enclave up` therefore kept the new definition instead of restoring the
-  old one.
-- A token can no longer be written into a workspace's runtime log. `workspace exec`
-  appends the command and its output to `runtime/session.log`, and it did so before
-  scrubbing, so a command run with `--no-scrub` wrote the unredacted output to disk.
-  The log now always gets the redacted copy. `--no-scrub` decides what the caller is
-  shown, not what is written down.
-- `policy allow`, `deny`, `clear`, and `set_default` are restricted to root. They
-  were exempt from the policy they edit, which is circular: a rule allowing
-  `policy.allow` would let its holder grant itself every other action. The socket's
-  ownership and mode remain the outer boundary, and root is already allowed every
-  other action, so nothing an operator would notice changed.
-- `policy allow/clear --uid` refuses a uid larger than 32 bits instead of
-  truncating it, which turned `--uid 4294967296` into a rule for uid 0.
-- Sandbox `memory_mb` is checked for overflow like every other size, instead of
-  saturating to 16 EiB.
-- A socket file with nothing listening behind it reports the condition once, with
-  the command that fixes it, instead of repeating the errno twice.
-- `cleanup_last_errno` reports the most recent exhaustion even when that exhaustion
-  had no errno to report, rather than leaving an unrelated failure's errno in place.
-- The `poll` behind a host command's deadline resumes with the time it has left on
-  an interrupted call, instead of restarting the whole budget.
+- A memory-only `workspace resize` is no longer refused on a workspace whose `/home` is a host directory. The guard that refuses a disk resize on such a workspace ran when the request was read rather than when the disk was about to be changed, so `--memory-mb` and `--no-memory-limit` failed on every workspace created with `workspace_dir`/`path` — the common case for a project directory — with a message about disk resize.
+- The sandbox disk budget is now enforced under the registry lock, where an allocation is granted. The check ran in a read-only pass and the write happened later, so two workspaces created at once could both pass it and both commit, leaving the sandbox over its budget. That is reachable without racing anything, because `enclave up` brings its workspaces up on a thread pool. The resize path had the same shape and is fixed the same way; a resize refused at the commit now puts the disk image back rather than leaving a size no record describes.
+- The workspace-definition rollback now runs. It restored the previous definition with a request that named the disk field, and a request that mentions the disk is refused by design, so the restore always failed and the caller only logged it. A failed `enclave up` therefore kept the new definition instead of restoring the old one.
+- A token can no longer be written into a workspace's runtime log. `workspace exec` appends the command and its output to `runtime/session.log`, and it did so before scrubbing, so a command run with `--no-scrub` wrote the unredacted output to disk. The log now always gets the redacted copy. `--no-scrub` decides what the caller is shown, not what is written down.
+- `policy allow`, `deny`, `clear`, and `set_default` are restricted to root. They were exempt from the policy they edit, which is circular: a rule allowing `policy.allow` would let its holder grant itself every other action. The socket's ownership and mode remain the outer boundary, and root is already allowed every other action, so nothing an operator would notice changed.
+- `policy allow/clear --uid` refuses a uid larger than 32 bits instead of truncating it, which turned `--uid 4294967296` into a rule for uid 0.
+- Sandbox `memory_mb` is checked for overflow like every other size, instead of saturating to 16 EiB.
+- A socket file with nothing listening behind it reports the condition once, with the command that fixes it, instead of repeating the errno twice.
+- `cleanup_last_errno` reports the most recent exhaustion even when that exhaustion had no errno to report, rather than leaving an unrelated failure's errno in place.
+- The `poll` behind a host command's deadline resumes with the time it has left on an interrupted call, instead of restarting the whole budget.
 
 ### Changed
 
-- Request latency is recorded by the timer that wraps a request rather than by a
-  timer whose name happens to be `daemon.request`, so a rename can no longer stop
-  the metric quietly.
-- The bounded thread pool behind `enclave up`, workspace teardown, `ps`, and
-  `stats` is one implementation rather than four, and the environment override that
-  sets its worker count is parsed in one place rather than five.
+- Request latency is recorded by the timer that wraps a request rather than by a timer whose name happens to be `daemon.request`, so a rename can no longer stop the metric quietly.
+- The bounded thread pool behind `enclave up`, workspace teardown, `ps`, and `stats` is one implementation rather than four, and the environment override that sets its worker count is parsed in one place rather than five.
 
 ## 2.3.1 - 2026-10-04
 

@@ -45,14 +45,7 @@ The policy engine evaluates authorization rules before every daemon action.
 - **Deny always wins** within a rule group — if both an allow and deny rule match, the action is denied.
 - The default policy (allow or deny) applies when no rules match.
 
-**The policy is edited only by root.** `policy allow`, `policy deny`, `policy clear`,
-and `policy default` are restricted to uid 0 whatever the rules say, because
-authorizing them against the policy they edit is circular: a rule that allowed
-`policy.allow` would let its holder grant itself every other action. Reading the
-policy (`policy show`) is not restricted. The socket is the outer boundary — it is
-created `0600` and owned by root, so a non-root process cannot connect at all — and
-this is the check that keeps the policy file from being the way around itself if
-that ever changes.
+**The policy is edited only by root.** `policy allow`, `policy deny`, `policy clear`, and `policy default` are restricted to uid 0 whatever the rules say, because authorizing them against the policy they edit is circular: a rule that allowed `policy.allow` would let its holder grant itself every other action. Reading the policy (`policy show`) is not restricted. The socket is the outer boundary — it is created `0600` and owned by root, so a non-root process cannot connect at all — and this is the check that keeps the policy file from being the way around itself if that ever changes.
 
 ```bash
 # Set default policy

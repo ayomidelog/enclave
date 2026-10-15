@@ -507,9 +507,7 @@ enclave policy clear   [--uid UID]
 | `deny` | Add a deny rule for an action pattern (optionally per-UID). |
 | `clear` | Remove all rules (optionally per-UID). |
 
-`show` reads the policy; the other four change it. Those four are restricted to
-root whatever the rules say, because authorizing them against the policy they edit
-would let a rule that allowed `policy.allow` grant its holder every other action.
+`show` reads the policy; the other four change it. Those four are restricted to root whatever the rules say, because authorizing them against the policy they edit would let a rule that allowed `policy.allow` grant its holder every other action.
 
 ## Registry
 
