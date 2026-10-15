@@ -63,19 +63,6 @@ pub(super) fn format_bytes(value: u64) -> String {
     }
 }
 
-pub(super) fn column_width<T>(
-    items: &[T],
-    len_fn: impl Fn(&T) -> usize,
-    min_width: usize,
-) -> usize {
-    items
-        .iter()
-        .map(&len_fn)
-        .max()
-        .unwrap_or(min_width)
-        .max(min_width)
-}
-
 /// The lowercase label used in list and status output.
 pub(super) fn workspace_status_label(status: &WorkspaceStatus) -> &'static str {
     status.as_str()

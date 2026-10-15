@@ -115,11 +115,13 @@ static CLEANUP_LAST_ERRNO: AtomicU64 = AtomicU64::new(0);
 /// The argument is the errno of the final retryable failure when the caller has one,
 /// which is the value an operator needs to tell a busy cgroup apart from a missing
 /// one. The attempt count and the delays are recorded by the retry sites themselves.
+///
+/// The field is written on every exhaustion, including the ones that have no errno to
+/// report. Leaving it alone in that case would leave the previous exhaustion's errno in
+/// place, so a reader would see an errno that describes some other failure entirely.
 pub(crate) fn record_cleanup_retry_exhausted(last_errno: Option<i32>) {
     CLEANUP_RETRY_EXHAUSTED.fetch_add(1, Ordering::Relaxed);
-    if let Some(errno) = last_errno {
-        CLEANUP_LAST_ERRNO.store(errno as u64, Ordering::Relaxed);
-    }
+    CLEANUP_LAST_ERRNO.store(last_errno.unwrap_or(0) as u64, Ordering::Relaxed);
 }
 
 pub(crate) fn record_cleanup_retry() {
@@ -201,8 +203,14 @@ pub(crate) fn metrics() -> serde_json::Value {
         "request_latency_us": histogram_values(&REQUEST_LATENCY),
         "request_latency_percentiles_us":
             percentile_values(&REQUEST_LATENCY, &LATENCY_BUCKETS_US),
+        // Every timer lands in this one histogram, including the `cli.total` and
+        // `daemon.request` wrappers and the phases nested inside them, so it is a
+        // mixed population and its percentiles do not describe any one thing. It is
+        // still reported because a sample count is useful, but a reader who wants a
+        // phase number wants `phase_latency_by_name`, which is per phase.
         "phase_latency_us": histogram_values(&PHASE_LATENCY),
         "phase_latency_percentiles_us": percentile_values(&PHASE_LATENCY, &PHASE_BUCKETS_US),
+        "phase_latency_mixed_population": true,
         "phase_latency_by_name": named_phase_values(),
     })
 }

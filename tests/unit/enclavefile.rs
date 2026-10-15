@@ -158,3 +158,48 @@ cpu_percent = 200
     let err = parse_enclavefile(content).expect_err("invalid cpu percent should fail");
     assert!(err.to_string().contains("cpu_percent"));
 }
+
+/// A sandbox may name its own Debian mirror, and the default applies when it does not.
+///
+/// The config file's `mirror` is a default for `enclave create`'s flag and never
+/// reached `enclave up`, so before this field a project that needed a different mirror
+/// had no way to say so through the Enclavefile lifecycle at all.
+#[test]
+fn a_sandbox_may_declare_its_own_mirror() {
+    let content = r#"
+[sandbox]
+name = "devbox"
+mirror = "https://mirror.example.org/debian"
+"#;
+    let ef = parse_enclavefile(content).expect("a declared mirror is accepted");
+    assert_eq!(
+        ef.sandbox.mirror.as_deref(),
+        Some("https://mirror.example.org/debian")
+    );
+
+    let without = parse_enclavefile("[sandbox]\nname = \"devbox\"\n").expect("parse");
+    assert_eq!(without.sandbox.mirror, None);
+}
+
+/// A mirror that could not be bootstrapped from is refused where it is declared.
+///
+/// The validation is the same one the create path runs, so a bad mirror is a parse
+/// error rather than a multi-minute debootstrap that fails at the end.
+#[test]
+fn parse_enclavefile_rejects_an_unusable_mirror() {
+    for mirror in [
+        "ftp://mirror.example.org/debian",
+        "file:///srv/debian",
+        "",
+        "https://mirror.example.org/debian mirror",
+    ] {
+        let content = format!("[sandbox]\nname = \"devbox\"\nmirror = \"{mirror}\"\n");
+        let err = parse_enclavefile(&content)
+            .err()
+            .unwrap_or_else(|| panic!("mirror {mirror:?} must be refused"));
+        assert!(
+            err.to_string().contains("mirror"),
+            "the error must name the mirror for {mirror:?}: {err}"
+        );
+    }
+}

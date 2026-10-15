@@ -40,6 +40,12 @@ step 'documentation' env RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked
 # severity and are not all worth fixing.
 step 'shell scripts' shellcheck -x -S warning scripts/*.sh tools/ci/*.sh tools/perf/*.sh
 
+# A document is not code, but an unbalanced fence makes it render wrong, and nothing
+# else notices: the file still exists and every line between the two fences is shown as
+# code. The check is one walk over the tree and it is what caught a README that had
+# swallowed fifty lines of prose.
+step 'markdown fences' bash tools/ci/check-markdown-fences.sh
+
 # `--no-fail-fast` so one failing test does not hide the rest, and the two skipped
 # prefixes are the suites that need root; they run in the privileged job.
 step 'tests' cargo test --all-targets --locked --no-fail-fast \

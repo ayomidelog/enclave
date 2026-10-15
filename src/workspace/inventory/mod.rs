@@ -144,24 +144,6 @@ impl ResourceInventory {
             .filter(|resource| resource.still_present())
             .collect()
     }
-
-    /// One line naming every surviving resource, or a statement that none did.
-    pub fn surviving_summary(&self) -> String {
-        let surviving = self.surviving();
-        if surviving.is_empty() {
-            return format!("all {} recorded resource(s) released", self.resources.len());
-        }
-        format!(
-            "{} of {} recorded resource(s) survived: {}",
-            surviving.len(),
-            self.resources.len(),
-            surviving
-                .iter()
-                .map(|resource| resource.describe())
-                .collect::<Vec<_>>()
-                .join("; ")
-        )
-    }
 }
 
 /// The files the workspace's runtime wrote that describe its own state.

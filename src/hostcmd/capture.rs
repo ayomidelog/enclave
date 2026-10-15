@@ -44,7 +44,7 @@ pub(super) fn read_capped<R: Read>(mut reader: R, cap: usize) -> Vec<u8> {
 /// kernel reports the exit instead of on the next poll tick. Kernels without
 /// pidfd support fall back to polling `try_wait` inside the same budget.
 pub(super) fn wait_until_deadline(child: &mut Child, timeout: Duration) -> std::io::Result<bool> {
-    if let Some(pidfd) = open_pidfd(child.id()) {
+    if let Some(pidfd) = crate::pidfd::open_pidfd(child.id()) {
         let ready = poll_pidfd(pidfd, timeout);
         unsafe { libc::close(pidfd) };
         if ready {
@@ -69,20 +69,25 @@ pub(super) fn wait_until_deadline(child: &mut Child, timeout: Duration) -> std::
     }
 }
 
-fn open_pidfd(pid: u32) -> Option<i32> {
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32 };
-    (fd >= 0).then_some(fd)
-}
-
 /// Poll a pidfd for exit, returning true when it became readable.
+///
+/// The deadline is absolute, so an interrupted poll resumes with whatever time is
+/// left rather than a fresh copy of the whole budget. Restarting the timeout would
+/// let a signal that arrives repeatedly extend the wait without bound, which is the
+/// one thing this deadline exists to prevent.
 fn poll_pidfd(pidfd: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
     let mut descriptor = libc::pollfd {
         fd: pidfd,
         events: libc::POLLIN,
         revents: 0,
     };
-    let timeout_ms = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
         let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if result > 0 {
             return true;

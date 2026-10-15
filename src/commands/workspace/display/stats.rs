@@ -1,9 +1,11 @@
 //! The live workspace stats table.
 
 use super::format::{
-    column_width, format_cpu_limit, format_optional_bytes, format_percent, workspace_status_label,
+    format_cpu_limit, format_optional_bytes, format_percent, workspace_status_label,
 };
 use anyhow::Result;
+
+use crate::commands::table::column_width;
 
 use super::*;
 

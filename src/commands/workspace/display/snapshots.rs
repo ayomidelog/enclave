@@ -1,6 +1,6 @@
 //! The workspace snapshot list.
 
-use super::format::column_width;
+use crate::commands::table::column_width;
 use anyhow::Result;
 
 use super::*;

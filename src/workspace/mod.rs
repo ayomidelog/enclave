@@ -25,6 +25,7 @@ pub use crate::network::publish::PortPublisher;
 pub(crate) use certificate::{
     verify_workspace_cleanup, verify_workspace_destroyed, WorkspaceCleanupCertificate,
 };
+pub(crate) use cleanup::retained_summary;
 pub use cleanup::{CleanupMode, RetainedResource};
 pub use control::resize_workspace_disk;
 pub use control::resize_workspace_memory;
@@ -61,6 +62,7 @@ pub(crate) use runtime_limits::{
     existing_workspace_cgroup_path, sync_sandbox_runtime_limits, sync_workspace_runtime_limits,
     workspace_cgroup_path,
 };
+pub(crate) use snapshot::temporary_workspace;
 pub use snapshot::{
     create_workspace_snapshot, export_workspace_snapshot_archive, gc_workspace_snapshots,
     import_workspace_snapshot_archive, list_workspace_snapshots, restore_workspace_snapshot,

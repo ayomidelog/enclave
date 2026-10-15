@@ -37,7 +37,7 @@ pub(super) fn run_workspace_enter(
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/sh".to_string());
     let shell = choose_shell_in_rootfs(&runtime.sandbox_rootfs_path, &requested_shell)?;
-    run_internal_workspace_command(runtime, &args.cwd, &[shell, "-i".to_string()], false)
+    run_internal_workspace_command(runtime, &args.cwd, &[shell, "-i".to_string()])
 }
 
 pub(super) fn run_workspace_exec_direct(
@@ -66,7 +66,7 @@ pub(super) fn run_workspace_exec_direct(
             }),
         )?;
         let runtime: WorkspaceRuntimeInfo = serde_json::from_value(response)?;
-        return run_internal_workspace_command(runtime, &args.cwd, &args.command, true);
+        return run_internal_workspace_command(runtime, &args.cwd, &args.command);
     }
 
     let response = send_managed(
@@ -93,11 +93,16 @@ pub(super) fn run_workspace_exec_direct(
     Ok(())
 }
 
+/// Run a command in the workspace and exit with its status.
+///
+/// The status is always propagated: a one-shot command that fails has to fail the
+/// CLI, and an interactive shell that the operator exits non-zero is the shell's
+/// own answer about the session. There is no case where the caller wants this to
+/// swallow the code, which is what the parameter this replaced was for.
 fn run_internal_workspace_command(
     runtime: WorkspaceRuntimeInfo,
     cwd: &str,
     command: &[String],
-    forward_non_zero: bool,
 ) -> Result<()> {
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let effective_cwd = sanitize_workspace_cwd(cwd);
@@ -109,13 +114,10 @@ fn run_internal_workspace_command(
         ))
         .status()
         .context("failed to start internal workspace command helper")?;
-    let code = status
-        .code()
-        .unwrap_or(if status.success() { 0 } else { 1 });
-    if forward_non_zero && code != 0 {
-        std::process::exit(code);
-    }
-    if !forward_non_zero && code != 0 {
+    // A process killed by a signal has no code, and it did not succeed, so it is
+    // reported as a plain failure.
+    let code = status.code().unwrap_or(1);
+    if code != 0 {
         std::process::exit(code);
     }
     Ok(())

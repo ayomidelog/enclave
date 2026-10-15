@@ -1,10 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use super::{
-    file_name_from_url, locate_extracted_rootfs, output_uses_gzip, resolve_cache_target,
-    temporary_workspace,
-};
+use super::{file_name_from_url, locate_extracted_rootfs, output_uses_gzip, resolve_cache_target};
 
 #[test]
 fn resolve_cache_target_accepts_suite() {
@@ -49,7 +46,7 @@ fn resolve_cache_target_requires_exactly_one_selector() {
 
 #[test]
 fn locate_extracted_rootfs_accepts_archive_root_layout() {
-    let dir = temporary_workspace("rootfs-layout-root");
+    let dir = crate::workspace::temporary_workspace("rootfs-layout-root");
     fs::create_dir_all(dir.join("bin")).expect("create bin");
     fs::create_dir_all(dir.join("etc")).expect("create etc");
     fs::create_dir_all(dir.join("usr")).expect("create usr");
@@ -60,7 +57,7 @@ fn locate_extracted_rootfs_accepts_archive_root_layout() {
 
 #[test]
 fn locate_extracted_rootfs_accepts_single_nested_layout() {
-    let dir = temporary_workspace("rootfs-layout-nested");
+    let dir = crate::workspace::temporary_workspace("rootfs-layout-nested");
     let nested = dir.join("bookworm");
     fs::create_dir_all(nested.join("bin")).expect("create bin");
     fs::create_dir_all(nested.join("etc")).expect("create etc");

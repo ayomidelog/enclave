@@ -158,7 +158,11 @@ pub(super) fn rollback_workspace_definition_update(
                 memory_bytes: Some(previous.limits.memory_bytes),
                 max_processes: Some(previous.limits.max_processes),
                 max_open_files: Some(previous.limits.max_open_files),
-                disk_bytes: Some(previous.limits.disk_bytes),
+                // An update cannot change the disk allocation at all, and a request
+                // that even mentions the field is refused. There is therefore nothing
+                // to restore, and naming the field here would make every rollback fail
+                // with the refusal rather than restore the definition.
+                disk_bytes: None,
             },
         },
     ) {

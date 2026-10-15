@@ -146,3 +146,26 @@ fn config_flag_is_accepted() {
         output.status
     );
 }
+
+/// `--version` reports the version this binary was built as, not a hard-coded one.
+///
+/// This is the one place the release version reaches a user without a release build, so
+/// it is the check that a bump actually took effect.
+#[test]
+fn version_output_contains_the_release_version() {
+    let output = Command::new(common::enclave_bin())
+        .arg("--version")
+        .output()
+        .expect("failed to run enclave --version");
+    assert!(
+        output.status.success(),
+        "command failed: {:?}",
+        output.status
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        format!("enclave {}", env!("CARGO_PKG_VERSION"))
+    );
+}

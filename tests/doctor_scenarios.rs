@@ -1,136 +1,150 @@
-use std::process::Command;
+//! What `doctor` and `health` do against the host they are run on.
+//!
+//! Both commands need root, so on an unprivileged runner the root gate answers and
+//! there is no report to assert on. `common::run_cli` says which answered; as root the
+//! tests assert on the report's shape, which is what the commands are for.
 
 mod common;
 
-#[test]
-fn doctor_clean_system_no_panic() {
-    let output = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .output()
-        .expect("failed to run enclave doctor");
+use common::{combined_of, run_cli, CliRun};
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panicked"),
-        "doctor should not panic: {stderr}"
-    );
+/// Run a command and hand the output to `check` when it actually ran.
+fn when_run(args: &[&str], check: impl FnOnce(&std::process::Output)) {
+    match run_cli(args) {
+        CliRun::RefusedForRoot(output) => assert!(
+            combined_of(&output).contains("require root privileges"),
+            "the gate must say why it refused: {}",
+            combined_of(&output)
+        ),
+        CliRun::Ran(output) => check(&output),
+    }
 }
 
+/// A doctor report is JSON with a status and a list of named checks.
+///
+/// That shape is the command's contract: a caller reads `status` to decide whether to
+/// act and `checks` to find which one needs attention.
 #[test]
-fn doctor_produces_output() {
-    let output = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .output()
-        .expect("failed to run enclave doctor");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    let has_output = !stdout.is_empty() || !stderr.is_empty();
-    assert!(has_output, "doctor should produce output");
+fn doctor_reports_a_status_and_a_list_of_checks() {
+    when_run(&["doctor"], |output| {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let report: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|error| panic!("doctor must print JSON ({error}): {stdout}"));
+        assert!(
+            report
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "the report must carry a status: {report}"
+        );
+        let checks = report
+            .get("checks")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("the report must carry checks: {report}"));
+        assert!(!checks.is_empty(), "the report must run at least one check");
+        for check in checks {
+            for field in ["name", "status", "detail"] {
+                assert!(
+                    check
+                        .get(field)
+                        .and_then(serde_json::Value::as_str)
+                        .is_some(),
+                    "every check must carry {field}: {check}"
+                );
+            }
+        }
+    });
 }
 
+/// One of the checks is the cgroup one, named so an operator can find it.
+#[test]
+fn doctor_checks_cgroups() {
+    when_run(&["doctor"], |output| {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("cgroup"),
+            "the report must include a cgroup check: {stdout}"
+        );
+    });
+}
+
+/// The exit code is stable across two runs of an unchanged host.
 #[test]
 fn doctor_exit_code_is_deterministic() {
-    let output1 = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .output()
-        .expect("failed to run enclave doctor");
-
-    let output2 = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .output()
-        .expect("failed to run enclave doctor");
-
-    assert_eq!(
-        output1.status.code(),
-        output2.status.code(),
-        "doctor exit code should be deterministic"
-    );
+    match (run_cli(&["doctor"]), run_cli(&["doctor"])) {
+        (CliRun::Ran(first), CliRun::Ran(second)) => assert_eq!(
+            first.status.code(),
+            second.status.code(),
+            "doctor exit code should be deterministic"
+        ),
+        (CliRun::RefusedForRoot(_), _) | (_, CliRun::RefusedForRoot(_)) => {}
+    }
 }
 
+/// `health` is a read of the daemon's own state, so repeating it is stable.
 #[test]
 fn health_is_read_only() {
-    let output1 = Command::new(common::enclave_bin())
-        .args(["health"])
-        .output()
-        .expect("failed to run enclave health");
-
-    let output2 = Command::new(common::enclave_bin())
-        .args(["health"])
-        .output()
-        .expect("failed to run enclave health");
-
-    assert_eq!(
-        output1.status.code(),
-        output2.status.code(),
-        "health should return same exit code on repeated calls"
-    );
+    match (run_cli(&["health"]), run_cli(&["health"])) {
+        (CliRun::Ran(first), CliRun::Ran(second)) => assert_eq!(
+            first.status.code(),
+            second.status.code(),
+            "health should return the same exit code on repeated calls"
+        ),
+        (CliRun::RefusedForRoot(_), _) | (_, CliRun::RefusedForRoot(_)) => {}
+    }
 }
 
+/// A state directory that does not exist is not a panic.
+///
+/// The daemon is started with the given `XDG_STATE_HOME`, so it creates the directory
+/// rather than finding it missing; what is asserted is that neither command panicked
+/// and that neither reported an internal error.
 #[test]
-fn doctor_handles_missing_state() {
-    let unique_dir =
-        std::env::temp_dir().join(format!("enclave-test-doctor-state-{}", std::process::id()));
-    let output = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .env("XDG_STATE_HOME", &unique_dir)
-        .output()
-        .expect("failed to run enclave doctor");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panicked"),
-        "doctor should not panic with missing state: {stderr}"
-    );
+fn doctor_and_health_handle_a_fresh_state_directory() {
+    let unique_dir = std::env::temp_dir().join(format!(
+        "enclave-test-doctor-state-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    for args in [vec!["doctor"], vec!["health"]] {
+        let output = std::process::Command::new(common::enclave_bin())
+            .args(&args)
+            .env("XDG_STATE_HOME", &unique_dir)
+            .output()
+            .unwrap_or_else(|error| panic!("failed to run {args:?}: {error}"));
+        let message = combined_of(&output);
+        assert!(
+            !message.contains("panicked"),
+            "{args:?} must not panic against a fresh state directory: {message}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(unique_dir);
 }
 
+/// `doctor --help` is available without root, which is what makes it discoverable.
 #[test]
-fn health_handles_missing_state() {
-    let unique_dir =
-        std::env::temp_dir().join(format!("enclave-test-health-state-{}", std::process::id()));
-    let output = Command::new(common::enclave_bin())
-        .args(["health"])
-        .env("XDG_STATE_HOME", &unique_dir)
-        .output()
-        .expect("failed to run enclave health");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panicked"),
-        "health should not panic with missing state: {stderr}"
-    );
+fn doctor_help_is_available() {
+    match run_cli(&["doctor", "--help"]) {
+        CliRun::RefusedForRoot(output) => {
+            panic!("help must not need root: {}", common::combined_of(&output))
+        }
+        CliRun::Ran(output) => assert!(
+            output.status.success(),
+            "doctor --help should succeed: {:?}",
+            output.status
+        ),
+    }
 }
 
-#[test]
-fn doctor_is_idempotent() {
-    let output1 = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .output()
-        .expect("first doctor run");
-
-    let output2 = Command::new(common::enclave_bin())
-        .args(["doctor"])
-        .output()
-        .expect("second doctor run");
-
-    assert_eq!(
-        output1.status.code(),
-        output2.status.code(),
-        "doctor exit code should be stable across runs"
-    );
-}
-
+/// `registry repair` names a sandbox or workspace it cannot repair rather than
+/// panicking, which is the case a missing target produces.
 #[test]
 fn registry_repair_no_panic() {
-    let output = Command::new(common::enclave_bin())
-        .args(["registry", "repair"])
-        .output()
-        .expect("failed to run registry repair");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stderr.contains("panicked"),
-        "registry repair should not panic: {stderr}"
-    );
+    when_run(&["registry", "repair"], |output| {
+        let stderr = common::stderr_of(output);
+        assert!(
+            !stderr.contains("panicked"),
+            "registry repair should not panic: {stderr}"
+        );
+    });
 }

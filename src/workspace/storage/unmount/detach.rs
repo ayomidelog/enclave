@@ -44,7 +44,7 @@ pub(crate) fn unmount_error(path: &Path, error: &std::io::Error) -> anyhow::Erro
     anyhow::anyhow!(
         "failed to unmount workspace mount target={} errno={} namespace_holders={} detail={}",
         path.display(),
-        format_errno(error.raw_os_error()),
+        crate::fsutil::format_unmount_errno(error.raw_os_error()),
         if holders.is_empty() {
             "none".to_string()
         } else {
@@ -87,15 +87,4 @@ pub(crate) fn mount_holders(path: &Path) -> Vec<String> {
         }
     }
     holders
-}
-
-pub(super) fn format_errno(errno: Option<i32>) -> String {
-    match errno {
-        Some(libc::EBUSY) => "EBUSY(16)".to_string(),
-        Some(libc::ENOENT) => "ENOENT(2)".to_string(),
-        Some(libc::EINVAL) => "EINVAL(22)".to_string(),
-        Some(libc::EPERM) => "EPERM(1)".to_string(),
-        Some(value) => format!("errno({value})"),
-        None => "unknown".to_string(),
-    }
 }

@@ -45,6 +45,8 @@ The policy engine evaluates authorization rules before every daemon action.
 - **Deny always wins** within a rule group — if both an allow and deny rule match, the action is denied.
 - The default policy (allow or deny) applies when no rules match.
 
+**The policy is edited only by root.** `policy allow`, `policy deny`, `policy clear`, and `policy default` are restricted to uid 0 whatever the rules say, because authorizing them against the policy they edit is circular: a rule that allowed `policy.allow` would let its holder grant itself every other action. Reading the policy (`policy show`) is not restricted. The socket is the outer boundary — it is created `0600` and owned by root, so a non-root process cannot connect at all — and this is the check that keeps the policy file from being the way around itself if that ever changes.
+
 ```bash
 # Set default policy
 enclave policy default deny
@@ -160,6 +162,13 @@ into a terminal, a log, a CI job, a bug report. `--no-scrub` turns this off for
 debugging and is recorded in the daemon log. An interactive `workspace enter`
 session is not captured by anything that could scrub it, so it is not covered;
 neither is a command run with `--no-scrub`.
+
+**The workspace's own command log is scrubbed whatever the caller asked for.**
+`workspace exec` appends the command, its exit status, and its output to the
+workspace's runtime log file. That copy is always redacted, including for a
+command run with `--no-scrub`, because a token written there would outlive the
+command and sit on disk in a file nothing scrubs later. `--no-scrub` therefore
+decides only what the caller is shown, not what is written down.
 
 **A workspace's credentials are re-resolved before every command.** The files a
 workspace holds are rewritten from the store at the top of each daemon-run

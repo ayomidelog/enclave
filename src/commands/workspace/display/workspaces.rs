@@ -1,6 +1,7 @@
 //! The workspace list, one workspace's status, and its published ports.
 
-use super::format::{column_width, format_published_port, workspace_status_label};
+use super::format::{format_published_port, workspace_status_label};
+use crate::commands::table::column_width;
 use anyhow::Result;
 
 use super::*;

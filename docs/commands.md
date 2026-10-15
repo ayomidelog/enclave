@@ -311,17 +311,20 @@ enclave workspace cp mybox agent1 ./project/ ws:/home/project/
 ```
 
 Transfers stream `tar` directly across the workspace namespace boundary. It
-initially supports regular files and recursive directories. Permissions and
-timestamps are preserved; archive ownership is not restored. Existing symlinked
-destination components are rejected. The reported byte count is the logical
+supports regular files and recursive directories. Permissions and timestamps are
+preserved; archive ownership is not restored. Existing symlinked destination
+components are rejected. The reported byte count is the logical
 source/destination payload size, not a byte-for-byte pipe counter.
+
+`--gzip` compresses a directory transfer, and `--progress` reports progress on
+stderr. The JSON control response and normal stdout are unchanged by either.
 
 For directories, the destination follows standard `cp`-style behavior: an
 existing destination directory receives an entry named after the source, while
 a missing trailing-slash destination receives the source directory's contents.
 
-The initial implementation intentionally does not include compression, progress
-output, glob expansion, resumable transfers, or parallel directory transfer.
+Glob expansion, resumable transfers, and parallel directory transfer are not
+supported.
 
 ## Auth
 
@@ -402,7 +405,7 @@ it. The outcome is reported in the exit status:
 |--------|---------|
 | `0` | Stored. |
 | `2` | A token is already stored; pass `--force` to replace it. |
-| `3` | The token name or the user id cannot be used. |
+| `3` | The token name or the user id cannot be used, or the token read from stdin is empty. |
 | `4` | The token could not be read or written. |
 
 ### Moving a token into a namespace
@@ -503,6 +506,8 @@ enclave policy clear   [--uid UID]
 | `allow` | Add an allow rule for an action pattern (optionally per-UID). |
 | `deny` | Add a deny rule for an action pattern (optionally per-UID). |
 | `clear` | Remove all rules (optionally per-UID). |
+
+`show` reads the policy; the other four change it. Those four are restricted to root whatever the rules say, because authorizing them against the policy they edit would let a rule that allowed `policy.allow` grant its holder every other action.
 
 ## Registry
 

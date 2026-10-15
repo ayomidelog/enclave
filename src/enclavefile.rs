@@ -21,6 +21,13 @@ pub struct SandboxSection {
     pub name: String,
     #[serde(default = "default_suite")]
     pub suite: String,
+    /// The Debian mirror the sandbox is bootstrapped from.
+    ///
+    /// Omitted means the built-in default, which is what every Enclavefile did
+    /// before the field existed. The config file has a `mirror` too, but that one is
+    /// a default for `enclave create`'s flag and has no way to reach `enclave up`;
+    /// this one travels with the project, the same as `suite` does.
+    pub mirror: Option<String>,
     #[serde(default)]
     pub bootstrap_method: BootstrapMethod,
     pub memory_mb: Option<u64>,
@@ -90,6 +97,18 @@ fn validate_enclavefile(enclavefile: &Enclavefile) -> Result<()> {
     if enclavefile.sandbox.suite.is_empty() {
         bail!("Enclavefile: sandbox.suite must not be empty");
     }
+    // The suite and the mirror are both bootstrap inputs, so a bad one has to be
+    // refused where it is declared rather than at the start of a multi-minute
+    // debootstrap.
+    crate::sandbox::validate_debootstrap_inputs(
+        &enclavefile.sandbox.suite,
+        enclavefile
+            .sandbox
+            .mirror
+            .as_deref()
+            .unwrap_or(crate::sandbox::DEFAULT_DEBIAN_MIRROR),
+    )
+    .map_err(|err| anyhow::anyhow!("Enclavefile: sandbox is invalid: {err}"))?;
     if let Some(cpu_percent) = enclavefile.sandbox.cpu_percent {
         validate_cpu_percent(cpu_percent)
             .map_err(|err| anyhow::anyhow!("Enclavefile: sandbox.cpu_percent is invalid: {err}"))?;

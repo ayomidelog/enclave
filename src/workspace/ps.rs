@@ -1,7 +1,3 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::thread;
-
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -36,46 +32,21 @@ pub fn list_process_status(state_dir: &std::path::Path) -> Result<Vec<ProcessEnt
         Ok(probes)
     })?;
 
-    let job_count = probes.len();
-    let queue = Arc::new(Mutex::new(VecDeque::from_iter(
-        probes.into_iter().enumerate(),
-    )));
-    let worker_count = configured_ps_workers(job_count);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let mut entries = thread::scope(|scope| -> Result<Vec<ProcessEntry>> {
-        for _ in 0..worker_count {
-            let queue = Arc::clone(&queue);
-            let sender = sender.clone();
-            scope.spawn(move || loop {
-                let job = match queue.lock() {
-                    Ok(mut queue) => queue.pop_front(),
-                    Err(_) => return,
-                };
-                let Some((index, probe)) = job else {
-                    return;
-                };
-                let (status, pid, uptime) = resolve_live_status(&probe);
-                let entry = ProcessEntry {
-                    sandbox: probe.sandbox,
-                    workspace: probe.workspace,
-                    status,
-                    uptime,
-                    pid,
-                };
-                let _ = sender.send((index, entry));
-            });
+    let workers = crate::parallel::worker_count("ENCLAVE_PS_WORKERS", probes.len(), 4);
+    let mut entries = crate::parallel::map_bounded(probes, workers, |probe| {
+        let (status, pid, uptime) = resolve_live_status(&probe);
+        ProcessEntry {
+            sandbox: probe.sandbox,
+            workspace: probe.workspace,
+            status,
+            uptime,
+            pid,
         }
-        drop(sender);
-
-        let mut ordered = (0..job_count).map(|_| None).collect::<Vec<_>>();
-        for (index, entry) in receiver {
-            ordered[index] = Some(entry);
-        }
-        Ok(ordered
-            .into_iter()
-            .map(|entry| entry.expect("ps worker dropped a job"))
-            .collect())
-    })?;
+    })
+    .into_iter()
+    .enumerate()
+    .map(|(index, entry)| entry.ok_or_else(|| anyhow::anyhow!("ps worker {index} dropped its job")))
+    .collect::<Result<Vec<_>>>()?;
 
     entries.sort_by(|a, b| {
         a.sandbox
@@ -83,18 +54,6 @@ pub fn list_process_status(state_dir: &std::path::Path) -> Result<Vec<ProcessEnt
             .then_with(|| a.workspace.cmp(&b.workspace))
     });
     Ok(entries)
-}
-
-fn configured_ps_workers(job_count: usize) -> usize {
-    if job_count == 0 {
-        return 0;
-    }
-    std::env::var("ENCLAVE_PS_WORKERS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=64).contains(value))
-        .unwrap_or(4)
-        .min(job_count)
 }
 
 fn resolve_live_status(probe: &ProcessProbe) -> (String, Option<u32>, Option<u64>) {

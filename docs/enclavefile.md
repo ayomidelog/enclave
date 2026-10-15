@@ -43,6 +43,7 @@ Defines the sandbox environment.
 |-----|----------|---------|-------------|
 | `name` | Yes | — | Human-readable name for the sandbox. Used as the identifier in all commands. |
 | `suite` | No | `bookworm` | Debian release to bootstrap. Allowed values: `bookworm`, `bullseye`, `trixie`, `sid`, `stable`, `testing`, `oldstable`. |
+| `mirror` | No | `http://deb.debian.org/debian` | Debian mirror the sandbox is bootstrapped from. Must use `http://` or `https://`. The config file's `mirror` is a default for `enclave create` only; this is the one `enclave up` uses, and it travels with the project. |
 | `bootstrap_method` | No | `debootstrap` | How to create the sandbox rootfs. `debootstrap` builds a Debian/Ubuntu rootfs locally. `cached_rootfs` copies a prebuilt rootfs from `<state_dir>/sandboxes/rootfs-cache/base/` or a suite-specific cache. Use `enclave rootfs fetch` or `enclave rootfs import` to populate that cache ahead of time. |
 | `memory_mb` | No | — | Aggregate sandbox memory cap across all running workspaces. Requires cgroup v2 for enforcement. |
 | `cpu_percent` | No | — | Aggregate sandbox CPU share as a percentage of total machine CPU capacity. Requires cgroup v2 for enforcement. |

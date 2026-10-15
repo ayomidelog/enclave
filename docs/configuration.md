@@ -24,6 +24,7 @@ workspace_apparmor_profile = "enclave-workspace"
 workspace_selinux_label = "system_u:system_r:container_t:s0"
 suite = "bookworm"
 mirror = "http://deb.debian.org/debian"
+bootstrap_method = "debootstrap"
 wait_secs = 5
 ```
 

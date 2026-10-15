@@ -1,6 +1,8 @@
 use crate::workspace::ps::format_uptime;
 use crate::workspace::ProcessEntry;
 
+use crate::commands::table::column_width;
+
 pub(super) fn print_process_table(entries: &[ProcessEntry]) {
     if entries.is_empty() {
         println!("no workspaces");
@@ -46,15 +48,6 @@ fn format_pid_cell(pid: Option<u32>) -> String {
         Some(p) => p.to_string(),
         None => "\u{2014}".to_string(),
     }
-}
-
-fn column_width<T>(items: &[T], len_fn: impl Fn(&T) -> usize, min_width: usize) -> usize {
-    items
-        .iter()
-        .map(&len_fn)
-        .max()
-        .unwrap_or(min_width)
-        .max(min_width)
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ pub(super) fn dispatch_policy_set_default(params: &Value, config: &DaemonConfig)
 }
 
 pub(super) fn dispatch_policy_clear(params: &Value, config: &DaemonConfig) -> Result<Value> {
-    let uid = params.get("uid").and_then(Value::as_u64).map(|v| v as u32);
+    let uid = parse_uid(params)?;
     let updated = policy::clear_rules(&config.state_dir, uid)?;
     Ok(serde_json::to_value(updated)?)
 }
@@ -43,7 +43,7 @@ pub(super) fn dispatch_policy_rule(
     config: &DaemonConfig,
     is_allow: bool,
 ) -> Result<Value> {
-    let uid = params.get("uid").and_then(Value::as_u64).map(|v| v as u32);
+    let uid = parse_uid(params)?;
     let action = require_param_str(params, &["action"])?;
     let updated = if is_allow {
         policy::add_allow_rule(&config.state_dir, uid, action)?
@@ -51,4 +51,24 @@ pub(super) fn dispatch_policy_rule(
         policy::add_deny_rule(&config.state_dir, uid, action)?
     };
     Ok(serde_json::to_value(updated)?)
+}
+
+/// The uid a policy request names, when it names one.
+///
+/// A uid is a 32-bit value, so a larger one is a request the caller got wrong rather
+/// than a rule to write. Casting it would wrap: `4294967296` would become a rule for
+/// uid 0, and every uid differing only above 2^32 would collapse onto the same rule.
+fn parse_uid(params: &Value) -> Result<Option<u32>> {
+    let Some(value) = params.get("uid") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let raw = value
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("'uid' must be an unsigned integer"))?;
+    let uid =
+        u32::try_from(raw).map_err(|_| anyhow::anyhow!("'uid' must be a 32-bit uid, got {raw}"))?;
+    Ok(Some(uid))
 }

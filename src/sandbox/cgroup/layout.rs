@@ -57,16 +57,6 @@ pub fn ensure_sandbox_cgroup(
     )
 }
 
-pub fn create_workspace_cgroup(name: &str, config: &CgroupConfig) -> Result<Option<PathBuf>> {
-    ensure_child_cgroup(
-        &PathBuf::from(CGROUP_ROOT),
-        name,
-        config,
-        config.has_limits(),
-        false,
-    )
-}
-
 pub fn ensure_workspace_cgroup(
     parent: &Path,
     name: &str,

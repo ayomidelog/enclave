@@ -242,6 +242,24 @@ pub fn make_mount_private(target: &Path) -> std::io::Result<()> {
     }
 }
 
+/// The errno of a failed unmount, rendered with both its number and its name.
+///
+/// The number is what a caller can search a man page for and the name is what they
+/// recognise; a bare number is unreadable and a bare name cannot be looked up. The
+/// four an unmount of an Enclave mount actually produces are named, and anything else
+/// is reported by number rather than guessed at. Sandbox and workspace teardown both
+/// report an unmount failure, so they render it the same way from here.
+pub(crate) fn format_unmount_errno(errno: Option<i32>) -> String {
+    match errno {
+        Some(libc::EBUSY) => "EBUSY(16)".to_string(),
+        Some(libc::ENOENT) => "ENOENT(2)".to_string(),
+        Some(libc::EINVAL) => "EINVAL(22)".to_string(),
+        Some(libc::EPERM) => "EPERM(1)".to_string(),
+        Some(value) => format!("errno({value})"),
+        None => "unknown".to_string(),
+    }
+}
+
 pub(crate) fn unescape_mountinfo_path(path: &str) -> String {
     let mut result = String::with_capacity(path.len());
     let bytes = path.as_bytes();

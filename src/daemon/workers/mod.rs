@@ -15,7 +15,6 @@ const CONTROL_WORKER_COUNT: usize = 6;
 const TRANSFER_WORKER_COUNT: usize = 2;
 const CONTROL_QUEUE_CAPACITY: usize = 128;
 const TRANSFER_QUEUE_CAPACITY: usize = 8;
-const MAX_WORKER_COUNT: usize = 64;
 
 struct RequestJob {
     stream: UnixStream,
@@ -33,10 +32,12 @@ impl RequestWorkerPool {
         shutdown: &Arc<AtomicBool>,
         services: &super::services::DaemonServices,
     ) -> Result<Self> {
+        // The pool is long-lived rather than per-batch, so the count is the configured
+        // one and is not bounded by a number of jobs.
         let control_count =
-            configured_worker_count("ENCLAVE_CONTROL_WORKERS", CONTROL_WORKER_COUNT);
+            crate::parallel::env_worker_count("ENCLAVE_CONTROL_WORKERS", CONTROL_WORKER_COUNT);
         let transfer_count =
-            configured_worker_count("ENCLAVE_TRANSFER_WORKERS", TRANSFER_WORKER_COUNT);
+            crate::parallel::env_worker_count("ENCLAVE_TRANSFER_WORKERS", TRANSFER_WORKER_COUNT);
         let (control_sender, control_receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
         let (transfer_sender, transfer_receiver) = mpsc::sync_channel(TRANSFER_QUEUE_CAPACITY);
         let control_receiver = Arc::new(Mutex::new(control_receiver));
@@ -117,14 +118,6 @@ impl RequestWorkerPool {
         }
         unfinished
     }
-}
-
-fn configured_worker_count(variable: &str, default: usize) -> usize {
-    std::env::var(variable)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| (1..=MAX_WORKER_COUNT).contains(value))
-        .unwrap_or(default)
 }
 
 fn spawn_workers(

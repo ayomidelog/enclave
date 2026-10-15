@@ -101,8 +101,8 @@ pub(super) fn validate_mount_paths(metadata: &SandboxMetadata) -> Result<(String
     }
 
     let canonical_rootfs =
-        crate::fsutil::canonicalize_within(&sandbox_dir, &rootfs_path, "rootfs path")?;
-    let canonical_mounted = crate::fsutil::canonicalize_within(
+        crate::fsutil::ensure_path_within(&sandbox_dir, &rootfs_path, "rootfs path")?;
+    let canonical_mounted = crate::fsutil::ensure_path_within(
         &sandbox_dir,
         &mounted_rootfs_path,
         "mounted rootfs path",

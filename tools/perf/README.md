@@ -15,6 +15,7 @@ user-visible CLI and records the host metadata needed to compare runs.
 ./tools/perf/bench.sh workspace-list --iterations 30
 ./tools/perf/bench.sh registry --iterations 1000
 ./tools/perf/bench.sh many-files
+```
 
 Set `ENCLAVE_PERF_MANY_FILES=100000` before the benchmark for the full
 metadata-heavy fixture; the default 1000-file run is intended as a quick smoke
@@ -50,8 +51,11 @@ timings to stderr without changing normal output contracts.
 
 Use `enclave up --cache-setup` or `enclave restart --cache-setup` only when setup
 commands are known to be safe to skip after an unchanged Enclavefile digest.
+
+```bash
 ./tools/perf/bench.sh cp --sandbox mybox --workspace agent1 \
   --src /path/to/5GiB.bin --dst ws:/home/5GiB.bin --iterations 3
+```
 
 After generating fixtures, `--fixture-dir /tmp/enclave-fixtures` defaults the
 copy benchmark to the sparse 5 GiB host-to-workspace workload unless `--src`
@@ -61,7 +65,6 @@ Add `--progress` to `enclave workspace cp` for opt-in stderr progress updates;
 add `--gzip` for directory archive compression when CPU-for-bandwidth trade-offs
 are favorable;
 the JSON control response and normal stdout remain unchanged.
-```
 
 Commands that require namespaces or root privileges report `SKIP` instead of
 silently producing an invalid number. Use `strace=1`, `perf=1`, or `pidstat=1`
@@ -127,8 +130,6 @@ sudo -E env "PATH=$PATH" "HOME=$HOME" bash tools/ci/privileged-suite.sh --test-t
 ```
 
 Run the quota-backed lifecycle benchmark, which measures the tier whose storage
-is an ext4 image on a loop device rather than a directory:
-
 is an ext4 image on a loop device rather than a directory:
 
 ```bash

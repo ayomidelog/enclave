@@ -16,9 +16,8 @@ use anyhow::{Context, Result};
 
 pub use config::CgroupConfig;
 pub use layout::{
-    available_controllers, create_workspace_cgroup, ensure_sandbox_cgroup, ensure_workspace_cgroup,
-    is_cgroup_v2_available, remove_cgroup_path, remove_workspace_cgroup, runtime_cgroup_path,
-    sandbox_cgroup_name,
+    available_controllers, ensure_sandbox_cgroup, ensure_workspace_cgroup, is_cgroup_v2_available,
+    remove_cgroup_path, remove_workspace_cgroup, runtime_cgroup_path, sandbox_cgroup_name,
 };
 pub use process::{
     add_process_to_cgroup, cgroup_contains_pid, kill_cgroup_members, set_cgroup_frozen,

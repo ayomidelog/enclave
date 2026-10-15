@@ -52,6 +52,44 @@ fn a_missing_socket_is_reported_as_unreachable() {
     assert!(format!("{err:#}").contains("daemon socket not found"));
 }
 
+/// A socket file with nothing listening behind it is reported once, with a hint.
+///
+/// This is what a daemon that exited without cleaning up leaves behind. The reason
+/// travels as the error's source, so it must not also be written into the message:
+/// anyhow's alternate formatter prints the whole chain, and naming it twice is what
+/// produced "Connection refused (os error 111): Connection refused (os error 111)".
+#[test]
+fn a_stale_socket_is_reported_once_with_a_way_out() {
+    let dir = std::env::temp_dir().join(format!("enclave-stale-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&dir).expect("create socket dir");
+    let path = dir.join("manager.sock");
+    // Bound and closed: the path exists and is a socket, and nothing is listening.
+    let listener = UnixListener::bind(&path).expect("bind socket");
+    drop(listener);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).expect("restrict socket");
+
+    let err = send_request(&path, "ping", json!({})).expect_err("stale socket");
+    let rendered = format!("{err:#}");
+
+    assert!(is_daemon_unreachable(&err), "unexpected error: {rendered}");
+    assert!(
+        rendered.contains("nothing listening"),
+        "the message must say what the socket is: {rendered}"
+    );
+    assert!(
+        rendered.contains("enclave daemon start"),
+        "the message must name the way out: {rendered}"
+    );
+    // The errno appears exactly once, from the source and not from the message.
+    assert_eq!(
+        rendered.matches("Connection refused").count(),
+        1,
+        "the reason must not be repeated: {rendered}"
+    );
+
+    let _ = fs::remove_dir_all(dir);
+}
+
 #[test]
 fn a_daemon_that_answers_with_an_error_is_reachable() {
     let (dir, path, server) = serve_one_response(json!({

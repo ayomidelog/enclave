@@ -131,11 +131,5 @@ pub(crate) fn output_to_string(bytes: Vec<u8>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::output_to_string;
-
-    #[test]
-    fn persistent_output_decodes_lossy_utf8() {
-        assert_eq!(output_to_string(vec![b'o', b'k']), "ok");
-    }
-}
+#[path = "../../../../tests/src/workspace/session/persistent.rs"]
+mod tests;

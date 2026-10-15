@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
@@ -63,7 +63,7 @@ fn run_rootfs_import(args: RootfsImportArgs) -> Result<()> {
 }
 
 fn run_rootfs_fetch(args: RootfsFetchArgs) -> Result<()> {
-    let temp_dir = temporary_workspace("rootfs-fetch");
+    let temp_dir = crate::workspace::temporary_workspace("rootfs-fetch");
     fs::create_dir_all(&temp_dir)
         .with_context(|| format!("failed to create {}", temp_dir.display()))?;
     let temp_archive = temp_dir.join(file_name_from_url(&args.url));
@@ -166,7 +166,7 @@ fn import_rootfs_archive(archive: &Path, destination: &Path, replace: bool) -> R
     })?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
 
-    let temp_dir = temporary_workspace("rootfs-import");
+    let temp_dir = crate::workspace::temporary_workspace("rootfs-import");
     fs::create_dir_all(&temp_dir)
         .with_context(|| format!("failed to create {}", temp_dir.display()))?;
 
@@ -263,14 +263,6 @@ fn file_name_from_url(url: &str) -> String {
         .filter(|value| !value.is_empty())
         .unwrap_or("rootfs.tar.gz");
     name.to_string()
-}
-
-fn temporary_workspace(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir().join(format!("enclave-{label}-{}-{}", std::process::id(), nanos))
 }
 
 #[cfg(test)]

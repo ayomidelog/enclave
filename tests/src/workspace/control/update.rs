@@ -103,3 +103,102 @@ fn an_update_refuses_an_unusable_owner() {
 
     let _ = fs::remove_dir_all(state_dir);
 }
+
+/// A definition update refuses any request that mentions the disk, in either form.
+///
+/// `disk_bytes` is `Option<Option<u64>>`, and the guard tests `is_some()`, so both
+/// `Some(None)` ("clear it") and `Some(Some(x))` ("set it") are refused. That is what
+/// made the rollback that restores a previous definition dead code: it passed
+/// `Some(previous)`, which is always `is_some()`, so the restore always failed and the
+/// caller only logged it. The rollback now passes `None`, which is what this pins.
+#[test]
+fn an_update_mentioning_the_disk_is_refused_in_either_form() {
+    let (state_dir, sandbox, workspace) = fixture("disk-mention");
+
+    let update = |disk_bytes: Option<Option<u64>>| {
+        update_workspace_definition(
+            &state_dir,
+            &sandbox.id,
+            &workspace.id,
+            crate::workspace::WorkspaceDefinitionUpdate {
+                limits: crate::workspace::WorkspaceLimitsUpdate {
+                    disk_bytes,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+    };
+
+    for mentioned in [Some(None), Some(Some(64 * 1024 * 1024))] {
+        let err = update(mentioned).expect_err("an update that mentions the disk must be refused");
+        assert!(
+            err.to_string().contains("workspace resize"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    // `None` is "leave the disk alone", which is the only form a definition update
+    // may use, and is what the rollback now sends.
+    update(None).expect("an update that leaves the disk alone is accepted");
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
+/// A memory-only resize is not refused for the disk a host-backed workspace has not got.
+///
+/// The guard that refuses a disk resize on a workspace whose `/home` is a host
+/// directory belongs to the disk half of a resize. Reading the plan ran it
+/// unconditionally, so `--memory-mb` and `--no-memory-limit` failed on every workspace
+/// created with `workspace_dir`/`path` — which is the common case for a project
+/// directory, and the case the guard was never meant to touch.
+#[test]
+fn a_memory_only_resize_is_allowed_on_a_host_backed_workspace() {
+    let (state_dir, sandbox, workspace) = fixture("memory-host-backed");
+    // A host-backed workspace with a memory limit, which is the shape the resize
+    // used to reject before it had even looked at what was asked for.
+    crate::registry::with_registry_mut(&state_dir, |registry| {
+        let entry = registry
+            .sandboxes
+            .get_mut(&sandbox.id)
+            .expect("sandbox record");
+        // The resize requires a running sandbox, which is the state an operator
+        // would be in when they resize a workspace in it.
+        entry.metadata.status = SandboxStatus::Running;
+        let record = entry
+            .workspaces
+            .get_mut(&workspace.id)
+            .expect("workspace record");
+        record.home_mount_source_path = Some("/host/project".to_string());
+        record.limits.memory_bytes = Some(512 * 1024 * 1024);
+        Ok(())
+    })
+    .expect("mark the workspace host-backed");
+
+    let result = crate::workspace::control::update::resize_workspace_memory(
+        &state_dir,
+        &sandbox.id,
+        &workspace.id,
+        Some(1024 * 1024 * 1024),
+    );
+
+    assert!(
+        result.is_ok(),
+        "a memory-only resize must not be refused for the disk it has not got: {result:?}"
+    );
+
+    // And the disk half still refuses it, so the guard was moved rather than removed.
+    let disk = crate::workspace::control::update::resize_workspace_disk(
+        &state_dir,
+        &sandbox.id,
+        &workspace.id,
+        crate::workspace::storage::MIN_DISK_BYTES * 2,
+    );
+    let err = disk.expect_err("a disk resize of a host-backed workspace must be refused");
+    assert!(
+        err.to_string().contains("host-backed workspace directory"),
+        "unexpected error: {err:#}"
+    );
+
+    let _ = fs::remove_dir_all(state_dir);
+}
