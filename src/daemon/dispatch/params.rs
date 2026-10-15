@@ -175,10 +175,13 @@ pub(super) fn parse_cleanup_mode(params: &Value) -> Result<workspace::CleanupMod
 pub(super) fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::SandboxLimits> {
     let limits = sandbox::SandboxLimits {
         cpu_percent: params.get("cpu_percent").and_then(Value::as_f64),
-        memory_bytes: params
-            .get("memory_mb")
-            .and_then(Value::as_u64)
-            .map(|v| v.saturating_mul(1024 * 1024)),
+        // Checked rather than saturated, so a value that cannot be represented is
+        // refused. Saturating would turn an absurd request into a limit of 16 EiB,
+        // which is a number nobody asked for and no operator can act on.
+        memory_bytes: checked_megabytes(
+            params.get("memory_mb").and_then(Value::as_u64),
+            "memory_mb",
+        )?,
         max_processes: params.get("max_procs").and_then(Value::as_u64),
         disk_bytes: checked_megabytes(params.get("disk_mb").and_then(Value::as_u64), "disk_mb")?,
     };
@@ -189,8 +192,10 @@ pub(super) fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::San
 pub(super) fn parse_sandbox_limits_update(params: &Value) -> Result<sandbox::SandboxLimitsUpdate> {
     Ok(sandbox::SandboxLimitsUpdate {
         cpu_percent: parse_optional_f64_field(params, "cpu_percent")?,
-        memory_bytes: parse_optional_u64_field(params, "memory_mb")?
-            .map(|value| value.map(|mb| mb.saturating_mul(1024 * 1024))),
+        memory_bytes: checked_optional_megabytes(
+            parse_optional_u64_field(params, "memory_mb")?,
+            "memory_mb",
+        )?,
         max_processes: parse_optional_u64_field(params, "max_procs")?,
         disk_bytes: checked_optional_megabytes(
             parse_optional_u64_field(params, "disk_mb")?,

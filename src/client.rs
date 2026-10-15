@@ -82,12 +82,24 @@ impl std::fmt::Display for DaemonUnreachable {
                 "daemon socket not found at {}. Start daemon with `enclave daemon start`.",
                 socket_path.display()
             ),
+            // The reason is not repeated here. It travels as this error's source, and
+            // `anyhow`'s alternate formatter prints the whole chain, so naming it in
+            // both places is what produced
+            // "...: Connection refused (os error 111): Connection refused (os error
+            // 111)". The hint below is only added for the case that has one: a socket
+            // file with nothing behind it is a daemon that exited without cleaning up,
+            // and that is not something the caller can infer from the errno alone.
             Self::ConnectionFailed {
                 socket_path,
                 source,
-            } => write!(
+            } if source.kind() == std::io::ErrorKind::ConnectionRefused => write!(
                 formatter,
-                "failed to connect to daemon at {}: {source}",
+                "daemon socket {} has nothing listening on it, so a previous daemon exited without cleaning up. Start daemon with `enclave daemon start`.",
+                socket_path.display()
+            ),
+            Self::ConnectionFailed { socket_path, .. } => write!(
+                formatter,
+                "failed to connect to daemon at {}",
                 socket_path.display()
             ),
         }

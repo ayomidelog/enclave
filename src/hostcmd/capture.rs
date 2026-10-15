@@ -75,14 +75,24 @@ fn open_pidfd(pid: u32) -> Option<i32> {
 }
 
 /// Poll a pidfd for exit, returning true when it became readable.
+///
+/// The deadline is absolute, so an interrupted poll resumes with whatever time is
+/// left rather than a fresh copy of the whole budget. Restarting the timeout would
+/// let a signal that arrives repeatedly extend the wait without bound, which is the
+/// one thing this deadline exists to prevent.
 fn poll_pidfd(pidfd: i32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
     let mut descriptor = libc::pollfd {
         fd: pidfd,
         events: libc::POLLIN,
         revents: 0,
     };
-    let timeout_ms = timeout.as_millis().clamp(1, i32::MAX as u128) as i32;
     loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
         let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
         if result > 0 {
             return true;

@@ -68,16 +68,6 @@ pub fn resize_workspace_with_security(
         ));
     }
 
-    // A disk change needs a managed disk to change. This is the one place that is
-    // required, and it is required here rather than when the plan is read so a memory
-    // resize is not refused for a disk it never mentioned.
-    if disk_change.is_some() && plan.previous_disk_bytes.is_none() {
-        bail!(
-            "workspace '{}' has no Enclave-managed disk allocation; configure disk_mb when creating it",
-            plan.workspace.name
-        );
-    }
-
     // Every reason this request could be refused is checked here, before anything is
     // stopped or written. A disk resize stops the runtime, and a refusal after that
     // point would leave a workspace down for a request that was never possible.
@@ -85,6 +75,22 @@ pub fn resize_workspace_with_security(
     // A grow also has to fit the sandbox's disk budget. A shrink always fits: it
     // releases space rather than taking it.
     if let Some(new_disk_bytes) = disk_change {
+        // A disk change needs a managed disk to change. This is checked here rather
+        // than when the plan is read so a memory resize is not refused for a disk it
+        // never mentioned; a workspace whose `/home` is a host directory can never
+        // have one, so it gets the more specific of the two messages.
+        if plan.workspace.home_mount_source_path.is_some() {
+            bail!(
+                "workspace '{}' uses a host-backed workspace directory; disk resize is only supported for Enclave-managed storage",
+                plan.workspace.name
+            );
+        }
+        if plan.previous_disk_bytes.is_none() {
+            bail!(
+                "workspace '{}' has no Enclave-managed disk allocation; configure disk_mb when creating it",
+                plan.workspace.name
+            );
+        }
         if plan
             .previous_disk_bytes
             .is_some_and(|current| new_disk_bytes > current)
@@ -159,8 +165,32 @@ fn resize_workspace_image(
     )?;
 
     // Record the size that is actually on disk before relaunching, so a failure
-    // during the restart leaves the registry describing the real image.
-    set_workspace_disk_bytes(state_dir, plan, resize.new_bytes)?;
+    // during the restart leaves the registry describing the real image. This write
+    // is also where the sandbox budget is enforced, and the check it makes can only
+    // be authoritative before the image is touched; a refusal here is therefore
+    // answered by putting the image back rather than by keeping a size nothing has
+    // a record of.
+    if let Err(error) = set_workspace_disk_bytes(state_dir, plan, resize.new_bytes) {
+        // The restore is planned against the size the image is at now, which is the
+        // size this write was refused for; a plan made from the pre-resize record
+        // would read its own current size as the target and do nothing.
+        let mut resized = plan.workspace.clone();
+        resized.limits.disk_bytes = Some(resize.new_bytes);
+        let restore = crate::workspace::storage::resize_workspace_disk_allocation(
+            &resized,
+            resize.previous_bytes,
+        );
+        return Err(match restore {
+            Ok(_) => error.context(format!(
+                "restored workspace '{}' disk image to its previous {} byte size after the resize was refused",
+                plan.workspace.name, resize.previous_bytes
+            )),
+            Err(restore_error) => error.context(format!(
+                "could not restore workspace '{}' disk image to its previous {} byte size: {restore_error:#}",
+                plan.workspace.name, resize.previous_bytes
+            )),
+        });
+    }
 
     if was_running {
         restart_workspace_after_resize(state_dir, plan, apparmor_profile, selinux_label)?;
@@ -218,20 +248,13 @@ fn read_resize_plan(
             );
         }
         let previous_disk_bytes = workspace.limits.disk_bytes;
-        if workspace.home_mount_source_path.is_some() {
-            bail!(
-                "workspace '{}' uses a host-backed workspace directory; disk resize is only supported for Enclave-managed storage",
-                workspace.name
-            );
-        }
         // The budget is measured on what the other workspaces hold, so a resize that
         // replaces this workspace's allocation is not charged for both.
-        let other_workspace_disk_bytes = sandbox
-            .workspaces
-            .values()
-            .filter(|other| other.id != workspace_id)
-            .filter_map(|other| other.limits.disk_bytes)
-            .fold(0u64, u64::saturating_add);
+        let other_workspace_disk_bytes =
+            crate::workspace::create::sandbox_workspace_disk_bytes_excluding(
+                sandbox,
+                &workspace_id,
+            );
         Ok(ResizePlan {
             sandbox_id,
             workspace_id,
@@ -262,16 +285,43 @@ fn stop_workspace_for_resize(state_dir: &std::path::Path, plan: &ResizePlan) -> 
     })
 }
 
+/// Record a workspace's new disk allocation, enforcing the sandbox budget.
+///
+/// The budget is the sum of what a sandbox's workspaces have recorded, so the check
+/// and the write have to be one registry critical section. A check made outside the
+/// lock can be passed by two operations at once, and the sandbox then holds more than
+/// its budget with both records looking correct.
 fn set_workspace_disk_bytes(
     state_dir: &std::path::Path,
     plan: &ResizePlan,
     new_disk_bytes: u64,
 ) -> Result<()> {
     with_registry_mut(state_dir, |registry| {
-        let workspace = registry
+        let sandbox = registry
             .sandboxes
             .get_mut(&plan.sandbox_id)
-            .and_then(|sandbox| sandbox.workspaces.get_mut(&plan.workspace_id))
+            .ok_or_else(|| anyhow!("sandbox '{}' not found", plan.sandbox_id))?;
+        let previous = sandbox
+            .workspaces
+            .get(&plan.workspace_id)
+            .ok_or_else(|| anyhow!("workspace '{}' not found", plan.workspace_id))?
+            .limits
+            .disk_bytes
+            .unwrap_or(0);
+        // Only a grow takes space; a shrink always fits.
+        if new_disk_bytes > previous {
+            let others = crate::workspace::create::sandbox_workspace_disk_bytes_excluding(
+                sandbox,
+                &plan.workspace_id,
+            );
+            sandbox
+                .metadata
+                .limits
+                .check_disk_budget(others, new_disk_bytes)?;
+        }
+        let workspace = sandbox
+            .workspaces
+            .get_mut(&plan.workspace_id)
             .ok_or_else(|| anyhow!("workspace '{}' not found", plan.workspace_id))?;
         workspace.limits.disk_bytes = Some(new_disk_bytes);
         persist_workspace_metadata(workspace)

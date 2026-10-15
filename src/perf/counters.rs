@@ -115,11 +115,13 @@ static CLEANUP_LAST_ERRNO: AtomicU64 = AtomicU64::new(0);
 /// The argument is the errno of the final retryable failure when the caller has one,
 /// which is the value an operator needs to tell a busy cgroup apart from a missing
 /// one. The attempt count and the delays are recorded by the retry sites themselves.
+///
+/// The field is written on every exhaustion, including the ones that have no errno to
+/// report. Leaving it alone in that case would leave the previous exhaustion's errno in
+/// place, so a reader would see an errno that describes some other failure entirely.
 pub(crate) fn record_cleanup_retry_exhausted(last_errno: Option<i32>) {
     CLEANUP_RETRY_EXHAUSTED.fetch_add(1, Ordering::Relaxed);
-    if let Some(errno) = last_errno {
-        CLEANUP_LAST_ERRNO.store(errno as u64, Ordering::Relaxed);
-    }
+    CLEANUP_LAST_ERRNO.store(last_errno.unwrap_or(0) as u64, Ordering::Relaxed);
 }
 
 pub(crate) fn record_cleanup_retry() {

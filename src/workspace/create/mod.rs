@@ -45,6 +45,23 @@ pub(crate) fn sandbox_workspace_disk_bytes(sandbox: &crate::registry::RegistrySa
         .fold(0u64, u64::saturating_add)
 }
 
+/// The same total, less one workspace's own allocation.
+///
+/// A resize replaces an existing allocation rather than adding to it, so measuring
+/// the budget on the other workspaces is what keeps a workspace from being charged
+/// for both the size it has and the size it is asking for.
+pub(crate) fn sandbox_workspace_disk_bytes_excluding(
+    sandbox: &crate::registry::RegistrySandbox,
+    workspace_id: &str,
+) -> u64 {
+    sandbox
+        .workspaces
+        .values()
+        .filter(|workspace| workspace.id != workspace_id)
+        .filter_map(|workspace| workspace.limits.disk_bytes)
+        .fold(0u64, u64::saturating_add)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceCreateOptions {
     pub limits: WorkspaceLimits,
@@ -279,6 +296,15 @@ pub fn create_workspace_with_options(
                 sandbox_entry.metadata.id
             );
         }
+        // The budget is enforced here, under the registry lock, and not only in the
+        // read-only pre-check above. The pre-check is a fast failure for the common
+        // case; it cannot be authoritative, because two creates that both pass it can
+        // both commit and leave the sandbox over budget. That is reachable without
+        // racing anything: `workspace.start_many` runs its items on a thread pool.
+        sandbox_entry.metadata.limits.check_disk_budget(
+            sandbox_workspace_disk_bytes(sandbox_entry),
+            limits.disk_bytes.unwrap_or(0),
+        )?;
         if sandbox_entry
             .workspaces
             .values()

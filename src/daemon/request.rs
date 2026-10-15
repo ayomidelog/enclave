@@ -76,7 +76,7 @@ pub(super) fn handle_client(
     // timing is dropped while the id is still current and its log line can name
     // the operation. Reading and parsing the request are not part of this span;
     // they are the request's own transport cost, not the work it asks for.
-    let _request_total = crate::perf::Timer::new("daemon.request");
+    let _request_total = crate::perf::Timer::request("daemon.request");
 
     // A lifecycle operation is worth one line at the default level: it is how an
     // operator ties a command to the journal record and the phase timings for the
