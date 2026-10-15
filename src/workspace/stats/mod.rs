@@ -117,9 +117,11 @@ fn collect_workspace_stats(
             scope.spawn(move || loop {
                 let job = match queue.lock() {
                     Ok(mut queue) => queue.pop_front(),
-                    // A poisoned queue means another worker panicked; stopping
-                    // leaves the collector to report the missing index.
-                    Err(_) => return,
+                    // A poisoned queue means another worker panicked. The jobs in it
+                    // are plain data, so the queue is taken back from the poison
+                    // rather than abandoned: abandoning it would leave the collector
+                    // below with a hole it can only describe, not fill.
+                    Err(poisoned) => poisoned.into_inner().pop_front(),
                 };
                 let Some((index, workspace, sandbox_limits, pid, cpu_percent)) = job else {
                     return;
@@ -137,11 +139,15 @@ fn collect_workspace_stats(
         for (index, report) in receiver {
             ordered[index] = Some(report);
         }
-        let mut reports = Vec::with_capacity(job_count);
-        for report in ordered {
-            reports.push(report.expect("stats worker dropped a job")?);
-        }
-        Ok(reports)
+        ordered
+            .into_iter()
+            .enumerate()
+            .map(|(index, report)| {
+                report
+                    .ok_or_else(|| anyhow::anyhow!("stats worker {index} dropped its job"))
+                    .and_then(|report| report)
+            })
+            .collect::<Result<Vec<_>>>()
     })?;
     reports.sort_by(|a, b| {
         a.sandbox_id

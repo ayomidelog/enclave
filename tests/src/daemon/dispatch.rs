@@ -175,6 +175,32 @@ fn workspace_limit_parsing_rejects_overflow_in_create_and_update() {
         .contains("memory_mb"));
 }
 
+/// Sandbox memory is checked for overflow like every other size the daemon takes.
+///
+/// It was the one that saturated instead, so an absurd `memory_mb` became a limit of
+/// 16 EiB rather than a request the caller had got wrong — while the `disk_mb` beside
+/// it in the same struct was already refused.
+#[test]
+fn sandbox_limit_parsing_rejects_overflow_in_create_and_update() {
+    let create = serde_json::json!({"memory_mb": u64::MAX});
+    assert!(parse_sandbox_limits_create(&create)
+        .expect_err("create overflow must fail")
+        .to_string()
+        .contains("memory_mb"));
+
+    let update = serde_json::json!({"memory_mb": u64::MAX});
+    assert!(parse_sandbox_limits_update(&update)
+        .expect_err("update overflow must fail")
+        .to_string()
+        .contains("memory_mb"));
+
+    // And a representable value still becomes bytes, so the check did not simply
+    // start refusing everything.
+    let ok = parse_sandbox_limits_create(&serde_json::json!({"memory_mb": 4096}))
+        .expect("a normal limit is accepted");
+    assert_eq!(ok.memory_bytes, Some(4096 * 1024 * 1024));
+}
+
 #[test]
 fn clear_tmp_on_restart_accepts_boolean_values() {
     assert_eq!(

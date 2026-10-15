@@ -47,9 +47,13 @@ pub fn list_process_status(state_dir: &std::path::Path) -> Result<Vec<ProcessEnt
             let queue = Arc::clone(&queue);
             let sender = sender.clone();
             scope.spawn(move || loop {
+                // A poisoned queue means another worker panicked. Returning would
+                // leave this worker's jobs unclaimed and the collector below with a
+                // hole it cannot describe, so the queue is taken back from the poison
+                // instead: the jobs in it are plain data and are still worth running.
                 let job = match queue.lock() {
                     Ok(mut queue) => queue.pop_front(),
-                    Err(_) => return,
+                    Err(poisoned) => poisoned.into_inner().pop_front(),
                 };
                 let Some((index, probe)) = job else {
                     return;
@@ -71,10 +75,13 @@ pub fn list_process_status(state_dir: &std::path::Path) -> Result<Vec<ProcessEnt
         for (index, entry) in receiver {
             ordered[index] = Some(entry);
         }
-        Ok(ordered
+        ordered
             .into_iter()
-            .map(|entry| entry.expect("ps worker dropped a job"))
-            .collect())
+            .enumerate()
+            .map(|(index, entry)| {
+                entry.ok_or_else(|| anyhow::anyhow!("ps worker {index} dropped its job"))
+            })
+            .collect::<Result<Vec<_>>>()
     })?;
 
     entries.sort_by(|a, b| {

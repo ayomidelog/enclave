@@ -1,6 +1,5 @@
 mod bootstrap;
 mod cache;
-#[allow(dead_code)]
 pub mod cgroup;
 mod features;
 mod lifecycle;

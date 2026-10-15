@@ -70,7 +70,7 @@ where
     // fixed multi-second delay before cgroup.kill is used.
     wait_for_targets_to_exit(&pending, crate::deadlines::runtime_term_grace().get());
 
-    let mut remaining = collect_running_targets(&pending);
+    let remaining = collect_running_targets(&pending);
     for (pid, _) in &remaining {
         let cgroup_killed = crate::sandbox::cgroup::runtime_cgroup_path(*pid)?
             .filter(|path| {
@@ -108,7 +108,6 @@ where
         }
     }
 
-    remaining.clear();
     Ok(result)
 }
 

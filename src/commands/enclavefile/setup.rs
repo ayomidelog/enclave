@@ -64,6 +64,13 @@ pub(super) fn setup_digest(ef: &Enclavefile) -> String {
     digest.update(ef.sandbox.name.as_bytes());
     digest.update([0]);
     digest.update(ef.sandbox.suite.as_bytes());
+    // Only a declared mirror is folded in, so an Enclavefile that does not name one
+    // keeps the digest it had before the field existed and does not invalidate every
+    // recorded setup result on upgrade.
+    if let Some(mirror) = ef.sandbox.mirror.as_deref() {
+        digest.update([0]);
+        digest.update(mirror.as_bytes());
+    }
     digest.update([0]);
     digest.update(ef.sandbox.bootstrap_method.to_string().as_bytes());
     for command in &ef.sandbox.setup {

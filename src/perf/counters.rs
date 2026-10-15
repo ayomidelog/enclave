@@ -203,8 +203,14 @@ pub(crate) fn metrics() -> serde_json::Value {
         "request_latency_us": histogram_values(&REQUEST_LATENCY),
         "request_latency_percentiles_us":
             percentile_values(&REQUEST_LATENCY, &LATENCY_BUCKETS_US),
+        // Every timer lands in this one histogram, including the `cli.total` and
+        // `daemon.request` wrappers and the phases nested inside them, so it is a
+        // mixed population and its percentiles do not describe any one thing. It is
+        // still reported because a sample count is useful, but a reader who wants a
+        // phase number wants `phase_latency_by_name`, which is per phase.
         "phase_latency_us": histogram_values(&PHASE_LATENCY),
         "phase_latency_percentiles_us": percentile_values(&PHASE_LATENCY, &PHASE_BUCKETS_US),
+        "phase_latency_mixed_population": true,
         "phase_latency_by_name": named_phase_values(),
     })
 }

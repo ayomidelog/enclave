@@ -38,12 +38,11 @@ pub fn load_config(explicit_path: Option<&Path>) -> Result<FileConfig> {
         .with_context(|| format!("failed to read config {}", path.display()))?;
     let parsed: FileConfig = toml::from_str(&raw)
         .with_context(|| format!("failed to parse config {}", path.display()))?;
-    validate_file_config(&parsed).with_context(|| {
-        format!(
-            "invalid semantic values in config {}; fix suite/mirror",
-            path.display()
-        )
-    })?;
+    // The context names the file only. Naming a field here would be wrong for most
+    // of what this validates: the AppArmor and SELinux labels are rejected by the
+    // same call, and the inner error already names the field it is about.
+    validate_file_config(&parsed)
+        .with_context(|| format!("invalid values in config {}", path.display()))?;
     Ok(parsed)
 }
 

@@ -41,7 +41,15 @@ pub(super) fn create_and_setup_sandbox(
     let request = json!({
         "name": ef.sandbox.name,
         "suite": ef.sandbox.suite,
-        "mirror": DEFAULT_DEBIAN_MIRROR,
+        // The Enclavefile's own mirror when it declares one, and the built-in
+        // default otherwise. The config file's `mirror` is a default for `enclave
+        // create`'s flag and never reached this path, so a project that needed a
+        // different mirror had no way to say so through `enclave up` at all.
+        "mirror": ef
+            .sandbox
+            .mirror
+            .as_deref()
+            .unwrap_or(DEFAULT_DEBIAN_MIRROR),
         "bootstrap_method": ef.sandbox.bootstrap_method.to_string(),
         "memory_mb": ef.sandbox.memory_mb,
         "cpu_percent": ef.sandbox.cpu_percent,
