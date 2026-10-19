@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::AtomicBool;
@@ -13,8 +14,10 @@ use super::DaemonConfig;
 
 const CONTROL_WORKER_COUNT: usize = 6;
 const TRANSFER_WORKER_COUNT: usize = 2;
+const EXEC_WORKER_COUNT: usize = 16;
 const CONTROL_QUEUE_CAPACITY: usize = 128;
 const TRANSFER_QUEUE_CAPACITY: usize = 8;
+const EXEC_QUEUE_CAPACITY: usize = 64;
 
 struct RequestJob {
     stream: UnixStream,
@@ -23,6 +26,7 @@ struct RequestJob {
 pub(super) struct RequestWorkerPool {
     control_sender: SyncSender<RequestJob>,
     transfer_sender: SyncSender<RequestJob>,
+    exec_sender: SyncSender<RequestJob>,
     workers: Vec<thread::JoinHandle<()>>,
 }
 
@@ -38,11 +42,17 @@ impl RequestWorkerPool {
             crate::parallel::env_worker_count("ENCLAVE_CONTROL_WORKERS", CONTROL_WORKER_COUNT);
         let transfer_count =
             crate::parallel::env_worker_count("ENCLAVE_TRANSFER_WORKERS", TRANSFER_WORKER_COUNT);
+        // Commands are the one class that can occupy a worker for minutes, so they
+        // get their own pool: a stuck command costs one exec slot instead of one of
+        // the six control threads that answer `ping` and lifecycle calls.
+        let exec_count = crate::parallel::env_worker_count("ENCLAVE_EXEC_WORKERS", EXEC_WORKER_COUNT);
         let (control_sender, control_receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
         let (transfer_sender, transfer_receiver) = mpsc::sync_channel(TRANSFER_QUEUE_CAPACITY);
+        let (exec_sender, exec_receiver) = mpsc::sync_channel(EXEC_QUEUE_CAPACITY);
         let control_receiver = Arc::new(Mutex::new(control_receiver));
         let transfer_receiver = Arc::new(Mutex::new(transfer_receiver));
-        let mut workers = Vec::with_capacity(control_count + transfer_count);
+        let exec_receiver = Arc::new(Mutex::new(exec_receiver));
+        let mut workers = Vec::with_capacity(control_count + transfer_count + exec_count);
         workers.extend(spawn_workers(
             control_receiver,
             control_count,
@@ -59,25 +69,50 @@ impl RequestWorkerPool {
             shutdown,
             services,
         )?);
+        workers.extend(spawn_workers(
+            exec_receiver,
+            exec_count,
+            "exec",
+            config,
+            shutdown,
+            services,
+        )?);
         Ok(Self {
             control_sender,
             transfer_sender,
+            exec_sender,
             workers,
         })
     }
 
+    /// Hand a connection to the pool that serves it, never blocking the accept loop.
+    ///
+    /// A blocking `send` here would turn a full queue into an outage of its own: the
+    /// accept loop would stop accepting, so a saturated exec pool would also stop
+    /// answering `ping`. When a queue is full the client is told the daemon is busy
+    /// and the connection is closed, which the caller can retry.
     pub(super) fn submit(&self, stream: UnixStream) -> Result<()> {
-        let is_transfer = stream_is_transfer(&stream);
-        let sender = if is_transfer {
-            &self.transfer_sender
-        } else {
-            &self.control_sender
+        let class = classify_stream(&stream);
+        let (sender, capacity) = match class {
+            RequestClass::Transfer => (&self.transfer_sender, TRANSFER_QUEUE_CAPACITY),
+            RequestClass::Exec => (&self.exec_sender, EXEC_QUEUE_CAPACITY),
+            RequestClass::Control => (&self.control_sender, CONTROL_QUEUE_CAPACITY),
         };
-        sender.send(RequestJob { stream }).context(if is_transfer {
-            "daemon transfer queue is closed or full"
-        } else {
-            "daemon control queue is closed or full"
-        })
+        match sender.try_send(RequestJob { stream }) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(job)) => {
+                tracing::warn!(
+                    class = ?class,
+                    capacity,
+                    "daemon request queue is full; rejecting the connection"
+                );
+                reject_busy(job.stream, class, capacity);
+                Ok(())
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                Err(anyhow::anyhow!("daemon {class:?} queue is closed"))
+            }
+        }
     }
 
     /// Stop taking work and join the workers, giving up after the grace period.
@@ -90,10 +125,12 @@ impl RequestWorkerPool {
         let Self {
             control_sender,
             transfer_sender,
+            exec_sender,
             workers,
         } = self;
         drop(control_sender);
         drop(transfer_sender);
+        drop(exec_sender);
 
         let deadline = std::time::Instant::now() + grace;
         loop {
@@ -165,7 +202,29 @@ fn spawn_workers(
 /// What one request did, once a panic cannot escape it.
 mod request;
 
-use request::{run_request, stream_is_transfer, RequestOutcome};
+use request::{classify_stream, run_request, RequestClass, RequestOutcome};
+
+/// Tell a client its request was refused because the pool is saturated.
+///
+/// The response uses the same wire shape as a dispatched request, so the client's
+/// normal error path reports it, and it names the pool so an operator can tell
+/// which one is full without reading the daemon's log.
+fn reject_busy(mut stream: UnixStream, class: RequestClass, capacity: usize) {
+    let response = crate::protocol::Response {
+        ok: false,
+        result: None,
+        error: Some(format!(
+            "daemon {class:?} queue is full ({capacity} pending); retry the request"
+        )),
+        code: Some(crate::error::ErrorCode::RateLimited),
+        operation_id: uuid::Uuid::new_v4().to_string(),
+    };
+    if let Ok(payload) = serde_json::to_vec(&response) {
+        let _ = stream.write_all(&payload);
+        let _ = stream.write_all(b"\n");
+        let _ = stream.flush();
+    }
+}
 
 #[cfg(test)]
 #[path = "../../../tests/src/daemon/workers.rs"]

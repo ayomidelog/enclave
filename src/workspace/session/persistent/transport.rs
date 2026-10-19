@@ -80,6 +80,10 @@ pub(super) fn send_command(
     stream
         .shutdown(std::net::Shutdown::Write)
         .context("failed to finish persistent command request")?;
+    // No deadline here on purpose: the helper answers only once the command's
+    // child exits, so any bound on this read is a bound on how long a legitimate
+    // command may run. What keeps a long command from freezing the daemon is the
+    // separate exec pool, not a timeout.
     let mut response_line = String::new();
     BufReader::new(stream)
         .read_line(&mut response_line)

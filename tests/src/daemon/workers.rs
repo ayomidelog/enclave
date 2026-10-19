@@ -1,5 +1,5 @@
 use super::request::{run_request, RequestOutcome};
-use super::stream_is_transfer;
+use super::{classify_stream, RequestClass};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -10,7 +10,7 @@ fn classifies_workspace_copy_without_consuming_request() {
     writer
         .write_all(br#"{"action":"workspace.cp","params":{}}\n"#)
         .unwrap();
-    assert!(stream_is_transfer(&reader));
+    assert_eq!(classify_stream(&reader), RequestClass::Transfer);
     let mut buffer = [0u8; 128];
     let size = unsafe {
         libc::recv(
@@ -30,7 +30,36 @@ fn classifies_control_request_separately() {
     writer
         .write_all(br#"{"action":"workspace.list","params":{}}\n"#)
         .unwrap();
-    assert!(!stream_is_transfer(&reader));
+    assert_eq!(classify_stream(&reader), RequestClass::Control);
+}
+
+#[test]
+fn classifies_workspace_exec_into_its_own_pool() {
+    // The wedge this prevents: six commands that each wait on a workspace helper
+    // occupied all six control workers, so `ping` timed out while the daemon was
+    // healthy, and the caller reaped it. A command must never hold a control slot.
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .write_all(b"{\"action\":\"workspace.exec\",\"params\":{}}\n")
+        .unwrap();
+    assert_eq!(classify_stream(&reader), RequestClass::Exec);
+}
+
+#[test]
+fn classifies_sandbox_exec_setup_into_the_exec_pool() {
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .write_all(b"{\"action\":\"sandbox.exec_setup\",\"params\":{}}\n")
+        .unwrap();
+    assert_eq!(classify_stream(&reader), RequestClass::Exec);
+}
+
+#[test]
+fn an_empty_socket_is_classified_as_control() {
+    // Nothing has been written yet, so there is no payload to inspect. Control is
+    // the safe default: it is the pool whose requests do not depend on a large body.
+    let (_writer, reader) = UnixStream::pair().unwrap();
+    assert_eq!(classify_stream(&reader), RequestClass::Control);
 }
 
 #[test]
