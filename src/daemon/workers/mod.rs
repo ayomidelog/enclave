@@ -45,7 +45,8 @@ impl RequestWorkerPool {
         // Commands are the one class that can occupy a worker for minutes, so they
         // get their own pool: a stuck command costs one exec slot instead of one of
         // the six control threads that answer `ping` and lifecycle calls.
-        let exec_count = crate::parallel::env_worker_count("ENCLAVE_EXEC_WORKERS", EXEC_WORKER_COUNT);
+        let exec_count =
+            crate::parallel::env_worker_count("ENCLAVE_EXEC_WORKERS", EXEC_WORKER_COUNT);
         let (control_sender, control_receiver) = mpsc::sync_channel(CONTROL_QUEUE_CAPACITY);
         let (transfer_sender, transfer_receiver) = mpsc::sync_channel(TRANSFER_QUEUE_CAPACITY);
         let (exec_sender, exec_receiver) = mpsc::sync_channel(EXEC_QUEUE_CAPACITY);
