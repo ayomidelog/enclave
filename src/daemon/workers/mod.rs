@@ -17,7 +17,13 @@ const TRANSFER_WORKER_COUNT: usize = 2;
 const EXEC_WORKER_COUNT: usize = 16;
 const CONTROL_QUEUE_CAPACITY: usize = 128;
 const TRANSFER_QUEUE_CAPACITY: usize = 8;
-const EXEC_QUEUE_CAPACITY: usize = 64;
+// A pending request is a socket and a blocked thread, so the queue is cheap and
+// should absorb a burst rather than reject it. Sixty-four was too small: every
+// heartbeat chat in a deployment ticks on the same boundary, and the resulting
+// simultaneous workspace commands overflowed it, which surfaced to agents as
+// failed tool calls. The bound still exists so a runaway caller cannot queue
+// without limit.
+const EXEC_QUEUE_CAPACITY: usize = 512;
 
 struct RequestJob {
     stream: UnixStream,
