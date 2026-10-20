@@ -98,14 +98,30 @@ pub(crate) fn execute_persistent_command(
         }
         bail!("persistent workspace session helper exited unexpectedly");
     }
-    send_command(
+    let result = send_command(
         &mut helper,
         runtime_pid,
         runtime_starttime_ticks,
         workspace,
         cwd,
         command,
-    )
+    );
+    if let Err(error) = &result {
+        if format!("{error:#}").contains(transport::HELPER_TIMEOUT_PREFIX) {
+            // The helper stopped answering. It is holding this workspace's command
+            // mutex, so leaving it in the cache would make every later command for
+            // the workspace queue behind a socket that will never speak again.
+            // Kill it, drop it, and let the next command start a fresh one.
+            let _ = helper.child.kill();
+            let _ = helper.child.wait();
+            let _ = fs::remove_file(&helper.socket);
+            drop(helper);
+            if let Ok(mut guard) = helpers.lock() {
+                guard.remove(&key);
+            }
+        }
+    }
+    result
 }
 
 pub(crate) fn invalidate(pid: u32, starttime_ticks: u64) {

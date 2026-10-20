@@ -11,6 +11,12 @@ use crate::workspace::types::WorkspaceMetadata;
 
 use super::PersistentHelper;
 
+/// Marks the one failure that means the helper itself stopped answering.
+///
+/// The caller kills and drops a helper that raises this, so the next command for
+/// the workspace starts a fresh one instead of queueing behind a dead socket.
+pub(crate) const HELPER_TIMEOUT_PREFIX: &str = "persistent_helper_timeout";
+
 #[derive(Debug, Serialize)]
 struct CommandRequest<'a> {
     auth_token: &'a str,
@@ -80,14 +86,25 @@ pub(super) fn send_command(
     stream
         .shutdown(std::net::Shutdown::Write)
         .context("failed to finish persistent command request")?;
-    // No deadline here on purpose: the helper answers only once the command's
-    // child exits, so any bound on this read is a bound on how long a legitimate
-    // command may run. What keeps a long command from freezing the daemon is the
-    // separate exec pool, not a timeout.
+    // The helper answers only after the command's own child exits, so this bound is
+    // also the longest one command may run. It is generous by default and only
+    // exists so a command that never exits cannot pin this thread, and with it an
+    // exec worker and the workspace's command mutex, forever.
+    let deadline = crate::deadlines::helper_response();
+    stream
+        .set_read_timeout(Some(deadline.value))
+        .context("failed to bound the persistent command response wait")?;
     let mut response_line = String::new();
     BufReader::new(stream)
         .read_line(&mut response_line)
-        .context("failed to read persistent command response")?;
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => anyhow::anyhow!(
+                "{HELPER_TIMEOUT_PREFIX}: the workspace helper did not answer within {:?} (raise {} to allow longer commands)",
+                deadline.value,
+                deadline.variable
+            ),
+            _ => anyhow::Error::new(error).context("failed to read persistent command response"),
+        })?;
     if response_line.is_empty() {
         bail!("persistent workspace session helper closed the connection")
     }

@@ -70,7 +70,7 @@ pub(super) fn handle_persistent_command(
     }
 }
 
-fn drain_command_pipes(
+pub(crate) fn drain_command_pipes(
     stdout_reader: File,
     stderr_reader: File,
     child: Pid,
@@ -82,7 +82,14 @@ fn drain_command_pipes(
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut child_status = None;
-    while child_status.is_none() || stdout_reader.is_some() || stderr_reader.is_some() {
+    // Wait for the command itself, never for its pipes to reach EOF. A command is
+    // free to leave a descendant behind that inherited stdout/stderr - a background
+    // job, a started daemon, `nohup ... &` - and that descendant keeps the write
+    // ends open long after the command exited. Waiting for EOF then waits forever,
+    // which pinned the helper, the workspace's command mutex, and through them a
+    // daemon exec worker. Every later command for that workspace queued behind it
+    // until the whole exec pool was stuck and its queue overflowed.
+    while child_status.is_none() {
         let mut descriptors = Vec::with_capacity(2);
         if let Some(reader) = stdout_reader.as_ref() {
             descriptors.push(libc::pollfd {
@@ -142,7 +149,52 @@ fn drain_command_pipes(
             }
         }
     }
+    // The direct child is gone, so everything it wrote is already in the pipe
+    // buffer. Drain that, give a descendant a brief moment to flush anything still
+    // in flight, and return instead of blocking on an EOF that may never come.
+    drain_after_exit(&mut stdout_reader, &mut stdout)?;
+    drain_after_exit(&mut stderr_reader, &mut stderr)?;
     Ok((child_status.unwrap_or(1), stdout, stderr))
+}
+
+/// Drain what a pipe still holds after the command exited, then stop.
+///
+/// The wait is short and bounded because the command is already gone: its output
+/// is in the buffer, and only a descendant that inherited the pipe could still be
+/// writing. Truncating that descendant's later output is the correct trade - the
+/// alternative is never returning at all.
+fn drain_after_exit(reader: &mut Option<File>, output: &mut Vec<u8>) -> Result<()> {
+    let Some(file) = reader.as_ref() else {
+        return Ok(());
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    loop {
+        let mut descriptor = libc::pollfd {
+            fd: file.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(());
+        }
+        let timeout_ms = remaining.as_millis().min(100) as libc::c_int;
+        let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+        if ready < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error).context("failed to poll persistent command output");
+        }
+        if ready == 0 {
+            continue;
+        }
+        // `drain_pipe` reads until the pipe is empty or closed.
+        if drain_pipe(file, output)? {
+            return Ok(());
+        }
+    }
 }
 
 fn drain_pipe(reader: &File, output: &mut Vec<u8>) -> Result<bool> {

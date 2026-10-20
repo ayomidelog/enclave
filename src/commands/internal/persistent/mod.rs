@@ -106,6 +106,13 @@ const PERSISTENT_HELPER_IDLE_TIMEOUT_MS: libc::c_int = 5_000;
 
 mod command;
 
+#[cfg(test)]
+pub(crate) use command::drain_command_pipes;
+
+#[cfg(test)]
+#[path = "../../../../tests/src/commands/internal/persistent.rs"]
+mod tests;
+
 use command::handle_persistent_command;
 /// Whether the runtime this helper serves is still alive.
 ///
@@ -135,7 +142,7 @@ fn runtime_pidfd_alive(pidfd: i32) -> bool {
     descriptor.revents & (libc::POLLIN | libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) == 0
 }
 
-fn create_pipe() -> Result<(File, File)> {
+pub(crate) fn create_pipe() -> Result<(File, File)> {
     let mut fds = [0; 2];
     let result = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
     if result != 0 {
@@ -146,7 +153,7 @@ fn create_pipe() -> Result<(File, File)> {
     }))
 }
 
-fn redirect_pipe_to_stdio(writer: File, target_fd: i32) -> Result<()> {
+pub(crate) fn redirect_pipe_to_stdio(writer: File, target_fd: i32) -> Result<()> {
     let result = unsafe { libc::dup2(writer.as_raw_fd(), target_fd) };
     if result < 0 {
         return Err(std::io::Error::last_os_error()).context("failed to redirect command output");
