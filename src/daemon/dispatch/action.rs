@@ -39,6 +39,8 @@ pub(super) enum Action {
     WorkspaceUpdate,
     WorkspaceResize,
     WorkspaceExec,
+    /// Stop the command a workspace is currently running.
+    WorkspaceExecCancel,
     WorkspaceCp,
     WorkspacePortPublish,
     WorkspacePortUnpublish,
@@ -154,6 +156,7 @@ impl Action {
             "workspace.update" | "workspace.update_auth" => Self::WorkspaceUpdate,
             "workspace.resize" => Self::WorkspaceResize,
             "workspace.exec" => Self::WorkspaceExec,
+            "workspace.exec.cancel" => Self::WorkspaceExecCancel,
             "workspace.cp" => Self::WorkspaceCp,
             "workspace.port.publish" => Self::WorkspacePortPublish,
             "workspace.port.unpublish" => Self::WorkspacePortUnpublish,

@@ -1,4 +1,9 @@
+mod cancel;
 mod certificate;
+
+#[cfg(test)]
+#[path = "../../tests/src/workspace/cancel.rs"]
+mod cancel_tests;
 mod cleanup;
 mod control;
 mod cp;
@@ -22,11 +27,36 @@ pub const DEFAULT_WORKSPACE_PATH: &str =
     "/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 pub use crate::network::publish::PortPublisher;
+pub(crate) use cancel::cancel_file_path;
+pub use cancel::{cancel_workspace_command, CancelOutcome};
 pub(crate) use certificate::{
     verify_workspace_cleanup, verify_workspace_destroyed, WorkspaceCleanupCertificate,
 };
 pub(crate) use cleanup::retained_summary;
 pub use cleanup::{CleanupMode, RetainedResource};
+
+/// Resolve a sandbox and workspace selector to the workspace's host directory.
+pub(crate) fn resolve_workspace_path(
+    state_dir: &std::path::Path,
+    sandbox_selector: &str,
+    workspace_selector: &str,
+) -> anyhow::Result<std::path::PathBuf> {
+    use anyhow::Context as _;
+    let workspace = crate::registry::with_registry(state_dir, |registry| {
+        let sandbox_id = crate::sandbox::resolve_sandbox_id(registry, sandbox_selector)?;
+        let sandbox = registry
+            .sandboxes
+            .get(&sandbox_id)
+            .with_context(|| format!("sandbox '{sandbox_id}' not found"))?;
+        let workspace_id = control::resolve_workspace_id(sandbox, workspace_selector)?;
+        let workspace = sandbox
+            .workspaces
+            .get(&workspace_id)
+            .with_context(|| format!("workspace '{workspace_id}' not found"))?;
+        Ok(std::path::PathBuf::from(&workspace.workspace_path))
+    })?;
+    Ok(workspace)
+}
 pub use control::resize_workspace_disk;
 pub use control::resize_workspace_memory;
 pub(crate) use control::start_workspace_with_security;

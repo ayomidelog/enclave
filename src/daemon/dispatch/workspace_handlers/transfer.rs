@@ -25,6 +25,27 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_exec(
     Ok(serde_json::to_value(result)?)
 }
 
+/// Stop the command a workspace is running right now.
+///
+/// Resolves the workspace to its host path, then signals the process group the
+/// helper published. This is the only way to stop a command the daemon started:
+/// the command lives in the helper's pid namespace, so its own pid means nothing
+/// on the host, but its process group is visible from both.
+pub(in crate::daemon::dispatch) fn dispatch_workspace_exec_cancel(
+    params: &Value,
+    config: &DaemonConfig,
+) -> Result<Value> {
+    let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
+    let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
+    let workspace_path =
+        crate::workspace::resolve_workspace_path(&config.state_dir, sandbox, workspace_selector)?;
+    let outcome = crate::workspace::cancel_workspace_command(&workspace_path)?;
+    Ok(serde_json::json!({
+        "cancelled": outcome.cancelled,
+        "already_finished": outcome.already_finished,
+    }))
+}
+
 pub(in crate::daemon::dispatch) fn dispatch_workspace_cp(
     params: &Value,
     config: &DaemonConfig,

@@ -36,7 +36,7 @@ use super::{
     report_retained_resources, require_confirmation, send, send_managed,
 };
 
-use exec::{resolve_workspace_target_from_optional, run_workspace_exec};
+use exec::{resolve_workspace_target_from_optional, run_workspace_cancel, run_workspace_exec};
 use lifecycle::{
     run_workspace_create, run_workspace_destroy, run_workspace_list, run_workspace_remove,
     run_workspace_resize, run_workspace_start, run_workspace_stats, run_workspace_status,
@@ -78,6 +78,7 @@ pub(crate) fn run_workspace_command(socket: &Path, command: WorkspaceCommands) -
         WorkspaceCommands::SnapshotGc(args) => run_workspace_snapshot_gc(&ctx, args),
         WorkspaceCommands::Exec(args) => run_workspace_exec(&ctx, args),
         WorkspaceCommands::Run(args) => run_workspace_exec(&ctx, args),
+        WorkspaceCommands::Cancel(args) => run_workspace_cancel(&ctx, args),
         WorkspaceCommands::Port { command } => run_workspace_port_command(&ctx, command),
     }
 }

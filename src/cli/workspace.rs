@@ -152,6 +152,15 @@ pub struct WorkspaceExecArgs {
     pub command: Vec<String>,
 }
 
+/// Stop the command a workspace is currently running.
+#[derive(Args, Debug)]
+pub struct WorkspaceCancelArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox_id: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace_id: String,
+}
+
 #[derive(Args, Debug)]
 pub struct WorkspacePortPublishArgs {
     #[arg(value_parser = parse_entity_name)]

@@ -28,12 +28,12 @@ pub use session::{
     WorkspaceSessionPersistentHelperArgs,
 };
 pub use workspace::{
-    WorkspaceCpArgs, WorkspaceCreateArgs, WorkspaceDestroyArgs, WorkspaceEnterArgs,
-    WorkspaceExecArgs, WorkspaceListArgs, WorkspaceLogsArgs, WorkspacePortPublishArgs,
-    WorkspacePortUnpublishArgs, WorkspaceRemoveArgs, WorkspaceResizeArgs, WorkspaceRestoreArgs,
-    WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs, WorkspaceSnapshotGcArgs,
-    WorkspaceSnapshotImportArgs, WorkspaceTargetArgs, WorkspaceTargetOrLocalArgs,
-    WorkspaceWipeArgs,
+    WorkspaceCancelArgs, WorkspaceCpArgs, WorkspaceCreateArgs, WorkspaceDestroyArgs,
+    WorkspaceEnterArgs, WorkspaceExecArgs, WorkspaceListArgs, WorkspaceLogsArgs,
+    WorkspacePortPublishArgs, WorkspacePortUnpublishArgs, WorkspaceRemoveArgs, WorkspaceResizeArgs,
+    WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
+    WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
+    WorkspaceTargetOrLocalArgs, WorkspaceWipeArgs,
 };
 
 #[derive(Parser, Debug)]
@@ -170,6 +170,8 @@ pub enum WorkspaceCommands {
     SnapshotGc(WorkspaceSnapshotGcArgs),
     Exec(WorkspaceExecArgs),
     Run(WorkspaceExecArgs),
+    /// Stop the command this workspace is running right now.
+    Cancel(WorkspaceCancelArgs),
     Port {
         #[command(subcommand)]
         command: WorkspacePortCommands,

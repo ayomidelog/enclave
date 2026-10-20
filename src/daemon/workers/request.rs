@@ -103,3 +103,49 @@ pub(super) fn classify_stream(stream: &UnixStream) -> RequestClass {
     }
     RequestClass::Control
 }
+
+/// Peek the workspace an exec request targets, without consuming the request.
+///
+/// The pool uses this to give each workspace a bounded share of exec workers, so a
+/// workspace issuing several slow commands cannot take the whole pool while others
+/// starve. A request whose body has not arrived yet has no key: it is admitted
+/// normally and takes its chances like any other, because blocking the accept loop
+/// to wait for the body would be worse than the unfairness it avoids.
+pub(super) fn peek_workspace_key(stream: &UnixStream) -> Option<String> {
+    let mut buffer = [0u8; 4096];
+    let size = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if size <= 0 {
+        return None;
+    }
+    let head = String::from_utf8_lossy(&buffer[..size as usize]);
+    // The request is a single-line JSON object. Pull the workspace field without
+    // parsing the whole thing: a body may be truncated at the peek boundary.
+    for field in ["\"workspace\"", "\"workspace_id\"", "\"name\""] {
+        let Some(start) = head.find(field) else {
+            continue;
+        };
+        let after = &head[start + field.len()..];
+        let Some(colon) = after.find(':') else {
+            continue;
+        };
+        let rest = after[colon + 1..].trim_start();
+        let Some(rest) = rest.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = rest.find('"') else {
+            continue;
+        };
+        let value = &rest[..end];
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}

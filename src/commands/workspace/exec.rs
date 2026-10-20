@@ -1,10 +1,40 @@
 use super::*;
+use crate::cli::WorkspaceCancelArgs;
 
 pub(super) fn run_workspace_exec(
     ctx: &WorkspaceCommandContext<'_>,
     args: WorkspaceExecArgs,
 ) -> Result<()> {
     enter::run_workspace_exec_direct(ctx, args)
+}
+
+/// Stop the command a workspace is running right now.
+///
+/// Exits 0 when nothing was running, because the caller asked for the workspace to
+/// be free and it is. Reports whether something was actually stopped so a script
+/// can tell the two apart.
+pub(super) fn run_workspace_cancel(
+    ctx: &WorkspaceCommandContext<'_>,
+    args: WorkspaceCancelArgs,
+) -> Result<()> {
+    let response = send_managed(
+        ctx.socket,
+        "workspace.exec.cancel",
+        serde_json::json!({
+            "sandbox": args.sandbox_id,
+            "workspace": args.workspace_id,
+        }),
+    )?;
+    let cancelled = response
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if cancelled {
+        println!("cancelled the running command");
+    } else {
+        println!("no command was running");
+    }
+    Ok(())
 }
 
 pub(super) fn resolve_workspace_target_from_optional(

@@ -74,9 +74,9 @@ use workspace_definition::{
 use workspace_handlers::existing_workspace_update;
 use workspace_handlers::{
     dispatch_workspace_cp, dispatch_workspace_create, dispatch_workspace_exec,
-    dispatch_workspace_list, dispatch_workspace_logs, dispatch_workspace_resize,
-    dispatch_workspace_start_many, dispatch_workspace_target, dispatch_workspace_update,
-    dispatch_workspace_wipe,
+    dispatch_workspace_exec_cancel, dispatch_workspace_list, dispatch_workspace_logs,
+    dispatch_workspace_resize, dispatch_workspace_start_many, dispatch_workspace_target,
+    dispatch_workspace_update, dispatch_workspace_wipe,
 };
 
 /// Route one request to the handler for its action.
@@ -160,6 +160,7 @@ pub(crate) fn dispatch(
             dispatch_workspace_resize(&request.params, config, port_publisher)
         }
         Action::WorkspaceExec => dispatch_workspace_exec(&request.params, config),
+        Action::WorkspaceExecCancel => dispatch_workspace_exec_cancel(&request.params, config),
         Action::WorkspaceCp => dispatch_workspace_cp(&request.params, config, client_stream),
         Action::WorkspacePortPublish => {
             dispatch_workspace_port_publish(&request.params, config, port_publisher)

@@ -1,5 +1,5 @@
 use super::request::{run_request, RequestOutcome};
-use super::{classify_stream, RequestClass};
+use super::{classify_stream, peek_workspace_key, RequestClass};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -60,6 +60,49 @@ fn an_empty_socket_is_classified_as_control() {
     // the safe default: it is the pool whose requests do not depend on a large body.
     let (_writer, reader) = UnixStream::pair().unwrap();
     assert_eq!(classify_stream(&reader), RequestClass::Control);
+}
+
+#[test]
+fn an_exec_request_reports_the_workspace_it_targets() {
+    // The pool gives each workspace a bounded share of exec workers, which needs
+    // the target workspace before the request is dispatched.
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .write_all(b"{\"action\":\"workspace.exec\",\"params\":{\"workspace\":\"session-abc\",\"command\":[\"ls\"]}}\n")
+        .unwrap();
+    assert_eq!(peek_workspace_key(&reader).as_deref(), Some("session-abc"));
+    // The peek must not consume the request the worker still has to read.
+    let mut buffer = [0u8; 128];
+    let size = unsafe {
+        libc::recv(
+            reader.as_raw_fd(),
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            libc::MSG_PEEK,
+        )
+    };
+    assert!(size > 0);
+    assert!(String::from_utf8_lossy(&buffer[..size as usize]).contains("session-abc"));
+}
+
+#[test]
+fn a_workspace_id_field_is_recognised_too() {
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .write_all(
+            b"{\"action\":\"workspace.exec\",\"params\":{\"workspace_id\":\"session-xyz\"}}\n",
+        )
+        .unwrap();
+    assert_eq!(peek_workspace_key(&reader).as_deref(), Some("session-xyz"));
+}
+
+#[test]
+fn a_request_without_a_workspace_has_no_key() {
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .write_all(b"{\"action\":\"workspace.exec\",\"params\":{}}\n")
+        .unwrap();
+    assert_eq!(peek_workspace_key(&reader), None);
 }
 
 #[test]
