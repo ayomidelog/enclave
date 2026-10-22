@@ -65,10 +65,9 @@ impl LifecycleLeases {
             }
             LeaseScope::Workspace { sandbox, workspace } => {
                 guards.push(self.global.acquire_shared()?);
-                // The workspace lock is taken first so that two operations on
-                // the same workspace serialize before either competes for the
-                // sandbox, and the sandbox lock is taken shared so unrelated
-                // workspaces in it keep running.
+                // The workspace gate is taken before the sandbox gate. Global
+                // operations are acquired before either, so the lock order is
+                // global -> workspace -> sandbox everywhere.
                 let workspace_gate = self.workspace_gate(&sandbox, &workspace);
                 guards.push(workspace_gate.acquire_exclusive()?);
                 let sandbox_gate = self.sandbox_gate(&sandbox);
@@ -76,6 +75,26 @@ impl LifecycleLeases {
             }
         }
         Ok(LeaseGuard { _guards: guards })
+    }
+
+    /// Acquire one workspace's gates without taking the global gate again.
+    ///
+    /// Doctor repair holds the global gate for the whole operation and still
+    /// wants the same per-workspace recheck a sweeper uses. Acquiring a normal
+    /// workspace scope here would wait on the global shared gate held by the
+    /// repair itself.
+    pub(crate) fn acquire_workspace_only(
+        &self,
+        sandbox: &str,
+        workspace: &str,
+    ) -> Result<LeaseGuard> {
+        let workspace_gate = self.workspace_gate(sandbox, workspace);
+        let workspace_guard = workspace_gate.acquire_exclusive()?;
+        let sandbox_gate = self.sandbox_gate(sandbox);
+        let sandbox_guard = sandbox_gate.acquire_shared()?;
+        Ok(LeaseGuard {
+            _guards: vec![workspace_guard, sandbox_guard],
+        })
     }
 
     fn sandbox_gate(&self, sandbox: &str) -> Arc<Gate> {

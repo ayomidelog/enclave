@@ -15,7 +15,7 @@
 
 pub(crate) mod active_operations;
 mod dispatch;
-mod leases;
+pub(crate) mod leases;
 pub(crate) mod policy;
 mod ports;
 mod rate_limiter;

@@ -45,6 +45,7 @@ pub(super) fn dispatch_daemon_doctor(
         active_operations: services.active_operations.as_ref(),
         activity: services.activity.as_ref(),
         policy: services.policy.as_ref(),
+        leases: services.leases.as_ref(),
     };
     let report = crate::doctor::run_doctor(&config.state_dir, Some(&daemon))?;
     Ok(serde_json::to_value(report)?)
@@ -59,6 +60,7 @@ pub(super) fn dispatch_daemon_doctor_repair(
         active_operations: services.active_operations.as_ref(),
         activity: services.activity.as_ref(),
         policy: services.policy.as_ref(),
+        leases: services.leases.as_ref(),
     };
     let report = crate::doctor::repair_doctor_with_policy(
         &config.state_dir,
