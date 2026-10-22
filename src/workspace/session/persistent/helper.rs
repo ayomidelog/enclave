@@ -3,6 +3,7 @@
 use std::fs::{self, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -91,13 +92,38 @@ pub(super) fn start_helper(
         args.push(name.to_string());
         args.push(fd.to_string());
     }
-    let mut child = Command::new(current_exe)
-        .args(args)
+    let mut command = Command::new(current_exe);
+    command.args(args);
+    // The helper is the leader of a private process group. A command forked by
+    // the helper inherits that group, so cancelling the helper can signal the
+    // command and every descendant that stayed in the group without guessing at
+    // a pid that may already have been recycled.
+    // SAFETY: `setpgid` is async-signal-safe and runs between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(helper_stderr))
         .spawn()
         .context("failed to spawn persistent workspace session helper")?;
+    let starttime_ticks = match crate::workspace::session::process_starttime_ticks(child.id()) {
+        Ok(starttime_ticks) => starttime_ticks,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = fs::remove_file(&socket);
+            return Err(error)
+                .context("failed to read persistent workspace session helper start time");
+        }
+    };
     drop(fds);
     drop(pidfd);
 
@@ -113,6 +139,7 @@ pub(super) fn start_helper(
             return Ok(PersistentHelper {
                 socket,
                 auth_token,
+                starttime_ticks,
                 child,
             });
         }

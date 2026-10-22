@@ -181,7 +181,12 @@ pub fn signal_process_group(
     if pgid <= 1 || i32::try_from(leader_pid).ok() != Some(pgid) {
         bail!("refusing to signal process group {pgid}");
     }
-    if process_matches(leader_pid, starttime_ticks) {
+    let Some(expected_starttime_ticks) = starttime_ticks else {
+        // A group id is a pid. Signalling it without the start time would let a
+        // recycled pid turn a stale job record into a signal for unrelated work.
+        bail!("refusing to signal process group {pgid}: leader start time is unknown");
+    };
+    if process_matches(leader_pid, Some(expected_starttime_ticks)) {
         signal_whole_group(pgid, signal)?;
         return Ok(());
     }
@@ -194,7 +199,7 @@ pub fn signal_process_group(
         if !stat.has_exited() {
             bail!("refusing to signal process group {pgid}: leader {leader_pid} changed identity");
         }
-        if starttime_ticks.is_some_and(|expected| stat.starttime_ticks != expected) {
+        if stat.starttime_ticks != expected_starttime_ticks {
             bail!("refusing to signal process group {pgid}: leader {leader_pid} changed identity");
         }
     }

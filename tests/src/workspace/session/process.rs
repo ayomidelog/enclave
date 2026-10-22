@@ -411,3 +411,27 @@ fn a_reused_leader_pid_does_not_expose_an_unrelated_group() {
     let _ = leader.wait();
     let _ = std::fs::remove_file(marker);
 }
+
+#[test]
+fn a_group_without_a_known_start_time_is_not_signalled() {
+    let mut command = Command::new("sleep");
+    command.arg("30");
+    // SAFETY: `setpgid` is async-signal-safe and runs before exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = command.spawn().expect("spawn group leader");
+    let pgid = i32::try_from(child.id()).expect("pid fits an i32");
+    let error = signal_process_group(child.id(), None, pgid, libc::SIGKILL)
+        .expect_err("an unknown start time must not be treated as an identity");
+    assert!(error.to_string().contains("start time is unknown"));
+    assert!(process_matches(child.id(), None));
+    let _ = child.kill();
+    let _ = child.wait();
+}

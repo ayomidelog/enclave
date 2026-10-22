@@ -210,10 +210,15 @@ pub fn detached_count(processes: &[WorkspaceProcess], runtime_pid: u32) -> usize
 
 /// A process group a background job belongs to, if the runtime still matches.
 pub fn process_group_alive(pgid: i32, starttime_ticks: Option<u64>) -> bool {
+    let Some(expected) = starttime_ticks else {
+        // Without a start time a pid is only a number. It may already name an
+        // unrelated process, so there is no identity to verify before using it.
+        return false;
+    };
     let Ok(pid) = u32::try_from(pgid) else {
         return false;
     };
-    session::process_matches(pid, starttime_ticks)
+    session::process_matches(pid, Some(expected))
 }
 
 /// Whether any host process still belongs to `pgid`.
@@ -225,13 +230,16 @@ pub fn process_group_has_members(pgid: i32, leader_starttime_ticks: Option<u64>)
     if pgid <= 1 {
         return false;
     }
-    if let (Some(expected), Some(pid)) = (leader_starttime_ticks, u32::try_from(pgid).ok()) {
-        if session::process_starttime_ticks(pid).is_ok_and(|actual| actual != expected) {
-            // The leader PID now names a different process. The group id may
-            // have been reused, so none of its members are this job's
-            // descendants.
-            return false;
-        }
+    let Some(expected) = leader_starttime_ticks else {
+        return false;
+    };
+    let Some(pid) = u32::try_from(pgid).ok() else {
+        return false;
+    };
+    if session::process_starttime_ticks(pid).is_ok_and(|actual| actual != expected) {
+        // The leader PID now names a different process. The group id may
+        // have been reused, so none of its members are this job's descendants.
+        return false;
     }
     let Ok(entries) = fs::read_dir("/proc") else {
         return false;

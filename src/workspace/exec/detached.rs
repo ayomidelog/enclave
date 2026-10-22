@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::workspace::types::WorkspaceMetadata;
 use crate::workspace::ActivityService;
@@ -31,7 +31,7 @@ pub(crate) fn spawn_workspace_command_detached(
     job.keep_running = keep_running;
     crate::workspace::jobs::persist(state_dir, &job)?;
     activity.register_job(job.clone());
-    let child = match super::spawn_workspace_command_in_group(
+    let mut child = match super::spawn_workspace_command_in_group(
         workspace,
         cwd,
         command,
@@ -51,7 +51,22 @@ pub(crate) fn spawn_workspace_command_detached(
     };
     let pid = child.id();
     job.pid = Some(pid);
-    job.starttime_ticks = crate::workspace::session::process_starttime_ticks(pid).ok();
+    let starttime_ticks = match crate::workspace::session::process_starttime_ticks(pid) {
+        Ok(starttime_ticks) => starttime_ticks,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            job.status = crate::workspace::JobStatus::Failed;
+            job.error = Some(format!(
+                "failed to record detached command start time: {error:#}"
+            ));
+            job.finished_at = Some(crate::workspace::activity_now());
+            crate::workspace::jobs::persist(state_dir, &job)?;
+            activity.update_job(job);
+            return Err(error).context("failed to record detached command start time");
+        }
+    };
+    job.starttime_ticks = Some(starttime_ticks);
     // The helper is made a process-group leader before exec. Only record a
     // group identity once the kernel confirms it; a pid is not evidence that
     // `setpgid` succeeded, and signalling a group by assumption could reach a
@@ -84,7 +99,6 @@ pub(crate) fn spawn_workspace_command_detached(
     let job_starttime_ticks = job.starttime_ticks;
     let activity_for_waiter = Arc::clone(&activity);
     thread::spawn(move || {
-        let mut child = child;
         let outcome = child.wait();
         // A helper that exits before its descendants leaves work that no
         // process is supervising. Keep the job bounded: give the group a

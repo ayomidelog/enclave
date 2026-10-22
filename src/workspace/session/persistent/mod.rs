@@ -43,10 +43,23 @@ struct HelperKey {
 pub(super) struct PersistentHelper {
     pub(super) socket: PathBuf,
     pub(super) auth_token: String,
+    pub(super) starttime_ticks: u64,
     pub(super) child: Child,
 }
 
 static HELPERS: OnceLock<Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>> = OnceLock::new();
+
+/// The shared inputs for one command run through a cached helper.
+struct HelperCommand<'a> {
+    helper: Arc<Mutex<PersistentHelper>>,
+    workspace: &'a WorkspaceMetadata,
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    cwd: &'a str,
+    command: &'a [String],
+    key: HelperKey,
+    helpers: &'a Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
+}
 
 pub(crate) fn execute_persistent_command(
     workspace: &WorkspaceMetadata,
@@ -100,6 +113,10 @@ pub(crate) fn execute_persistent_command(
         // cache here. Otherwise the next command finds the corpse and fails, and
         // every command after it does the same: a cancelled workspace would never
         // recover without restarting the daemon.
+        // The helper may have exited after leaving a descendant in its process
+        // group. Kill the group before dropping the cache entry so that work does
+        // not outlive the only record that can address it.
+        kill_helper_group(&mut alive);
         drop(alive);
         if let Ok(mut guard) = helpers.lock() {
             guard.remove(&key);
@@ -119,36 +136,43 @@ pub(crate) fn execute_persistent_command(
                 .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
             guard.insert(key, Arc::clone(&fresh));
         }
-        return run_on_helper(
-            fresh,
+        return run_on_helper(HelperCommand {
+            helper: fresh,
             workspace,
             runtime_pid,
             runtime_starttime_ticks,
             cwd,
             command,
-        );
+            key,
+            helpers,
+        });
     }
     drop(alive);
-    run_on_helper(
+    run_on_helper(HelperCommand {
         helper,
         workspace,
         runtime_pid,
         runtime_starttime_ticks,
         cwd,
         command,
-    )
+        key,
+        helpers,
+    })
 }
 
 /// Send one command through `helper` and account for what the outcome means.
-fn run_on_helper(
-    helper: Arc<Mutex<PersistentHelper>>,
-    workspace: &WorkspaceMetadata,
-    runtime_pid: u32,
-    runtime_starttime_ticks: u64,
-    cwd: &str,
-    command: &[String],
-) -> Result<PersistentCommandOutput> {
-    let mut helper = helper
+fn run_on_helper(request: HelperCommand<'_>) -> Result<PersistentCommandOutput> {
+    let HelperCommand {
+        helper: helper_handle,
+        workspace,
+        runtime_pid,
+        runtime_starttime_ticks,
+        cwd,
+        command,
+        key,
+        helpers,
+    } = request;
+    let mut helper = helper_handle
         .lock()
         .map_err(|_| anyhow::anyhow!("persistent helper lock poisoned"))?;
     // Publish this workspace as busy, with the helper's pid, before the command is
@@ -161,7 +185,7 @@ fn run_on_helper(
     // read.
     let busy_path =
         crate::workspace::cancel_file_path(std::path::Path::new(&workspace.workspace_path));
-    let _ = publish_busy_marker(&busy_path, helper.child.id());
+    let _ = publish_busy_marker(&busy_path, helper.child.id(), helper.starttime_ticks);
     let mut result = send_command(
         &mut helper,
         runtime_pid,
@@ -174,15 +198,19 @@ fn run_on_helper(
         output.helper_pid = Some(helper.child.id());
     }
     let _ = fs::remove_file(&busy_path);
-    if let Err(error) = &result {
-        if format!("{error:#}").contains(transport::HELPER_TIMEOUT_PREFIX) {
-            // The helper stopped answering. It is holding this workspace's command
-            // mutex, so leaving it in the cache would make every later command for
-            // the workspace queue behind a socket that will never speak again.
-            let _ = helper.child.kill();
-            let _ = helper.child.wait();
-            let _ = fs::remove_file(&helper.socket);
-        }
+    let timed_out = result
+        .as_ref()
+        .err()
+        .is_some_and(|error| format!("{error:#}").contains(transport::HELPER_TIMEOUT_PREFIX));
+    if timed_out {
+        // The helper stopped answering. It is holding this workspace's command
+        // mutex, so leaving it in the cache would make every later command for
+        // the workspace queue behind a socket that will never speak again.
+        kill_helper_group(&mut helper);
+    }
+    drop(helper);
+    if timed_out {
+        evict_helper(key, helpers, &helper_handle);
     }
     result
 }
@@ -191,16 +219,17 @@ pub(crate) fn invalidate(pid: u32, starttime_ticks: u64) {
     let Some(helpers) = HELPERS.get() else {
         return;
     };
-    if let Ok(mut guard) = helpers.lock() {
-        if let Some(helper) = guard.remove(&HelperKey {
+    let removed = if let Ok(mut guard) = helpers.lock() {
+        guard.remove(&HelperKey {
             pid,
             starttime_ticks,
-        }) {
-            if let Ok(mut helper) = helper.lock() {
-                let _ = helper.child.kill();
-                let _ = helper.child.wait();
-                let _ = fs::remove_file(&helper.socket);
-            }
+        })
+    } else {
+        None
+    };
+    if let Some(helper) = removed {
+        if let Ok(mut helper) = helper.lock() {
+            kill_helper_group(&mut helper);
         }
     }
 }
@@ -208,15 +237,48 @@ pub(crate) fn invalidate(pid: u32, starttime_ticks: u64) {
 /// Record that this workspace is running a command, and which helper owns it.
 ///
 /// Written atomically so a cancel never reads a half-written id.
-fn publish_busy_marker(path: &std::path::Path, helper_pid: u32) -> Result<()> {
+fn publish_busy_marker(
+    path: &std::path::Path,
+    helper_pid: u32,
+    starttime_ticks: u64,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let temp = path.with_extension("tmp");
-    let starttime = crate::workspace::session::process_starttime_ticks(helper_pid)?;
-    fs::write(&temp, format!("{helper_pid} {starttime}\n"))?;
+    fs::write(&temp, format!("{helper_pid} {starttime_ticks}\n"))?;
     fs::rename(&temp, path)?;
     Ok(())
+}
+
+/// Kill a helper and every command descendant that shares its process group.
+fn kill_helper_group(helper: &mut PersistentHelper) {
+    let pid = helper.child.id();
+    let _ = crate::workspace::session::signal_process_group(
+        pid,
+        Some(helper.starttime_ticks),
+        pid as i32,
+        libc::SIGKILL,
+    );
+    let _ = helper.child.kill();
+    let _ = helper.child.wait();
+    let _ = fs::remove_file(&helper.socket);
+}
+
+/// Remove a dead helper from the cache, but only if it is still the same one.
+fn evict_helper(
+    key: HelperKey,
+    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
+    expected: &Arc<Mutex<PersistentHelper>>,
+) {
+    if let Ok(mut guard) = helpers.lock() {
+        if guard
+            .get(&key)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            guard.remove(&key);
+        }
+    }
 }
 
 pub(crate) fn output_to_string(bytes: Vec<u8>) -> String {

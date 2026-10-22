@@ -37,27 +37,16 @@ pub(super) fn handle_persistent_command(
     let child = unsafe { fork() }.context("failed to fork persistent command")?;
     match child {
         ForkResult::Parent { child } => {
-            // Publish the command's process-group id before waiting for it, so a
-            // cancel arriving mid-command can find and signal the whole group.
-            // The child makes itself a group leader, so its pid is the group id.
-            if let Some(path) = request.cancel_file.as_deref() {
-                if let Err(error) = publish_cancel_file(path, child.as_raw()) {
-                    // A command that cannot be cancelled is still worth running;
-                    // say so and continue rather than failing the request.
-                    eprintln!("enclave: cancel file not published: {error:#}");
-                }
-            }
             drop(stdout_writer);
             drop(stderr_writer);
             let (code, stdout, stderr) = drain_command_pipes(stdout_reader, stderr_reader, child)?;
-            if let Some(path) = request.cancel_file.as_deref() {
-                let _ = std::fs::remove_file(path);
-            }
+            // A foreground command must not leave background work behind; the
+            // explicit background mode is the only way to keep a descendant.
+            terminate_group_descendants();
             let response = PersistentCommandResponse {
                 exit_code: code,
                 stdout: crate::workspace::session::output_to_string(stdout),
                 stderr: crate::workspace::session::output_to_string(stderr),
-                process_group: Some(child.as_raw()),
             };
             serde_json::to_writer(&mut stream, &response)
                 .context("failed to write persistent command response")?;
@@ -67,10 +56,6 @@ pub(super) fn handle_persistent_command(
             Ok(())
         }
         ForkResult::Child => {
-            // Lead a new process group so a cancel can signal the command and
-            // everything it started, without reaching the helper itself. The
-            // helper deliberately stays in its own group.
-            unsafe { libc::setpgid(0, 0) };
             redirect_pipe_to_stdio(stdout_writer, libc::STDOUT_FILENO)?;
             redirect_pipe_to_stdio(stderr_writer, libc::STDERR_FILENO)?;
             if let Err(error) = run_workspace_command_child(
@@ -132,6 +117,11 @@ pub(crate) fn drain_command_pipes(
                     return Err(error).context("failed to poll persistent command output");
                 }
             }
+        } else {
+            // Both pipes are closed but the command is still running. Without a
+            // sleep this branch spins on `poll` with no descriptors and burns a
+            // core until the child exits.
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         if let Some(reader) = stdout_reader.as_ref() {
             if descriptors
@@ -213,27 +203,6 @@ fn drain_after_exit(reader: &mut Option<File>, output: &mut Vec<u8>) -> Result<(
             return Ok(());
         }
     }
-}
-
-/// Record the command's process-group id where a cancel can read it.
-///
-/// The file is written after the child exists but before it is waited on, so a
-/// cancel that arrives while the command runs always finds the id. It is removed
-/// when the command finishes, so a stale id is never signalled later.
-fn publish_cancel_file(path: &str, pgid: i32) -> Result<()> {
-    let target = Path::new(path);
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    // Write to a temporary name and rename, so a cancel never reads a half-written
-    // id and signals an unrelated process group.
-    let temp = target.with_extension("tmp");
-    std::fs::write(&temp, format!("{pgid}\n"))
-        .with_context(|| format!("failed to write {}", temp.display()))?;
-    std::fs::rename(&temp, target)
-        .with_context(|| format!("failed to publish {}", target.display()))?;
-    Ok(())
 }
 
 fn drain_pipe(reader: &File, output: &mut Vec<u8>) -> Result<bool> {

@@ -520,12 +520,17 @@ pub fn job_alive(job: &JobRecord) -> bool {
     let Some(pid) = job.pid else {
         return false;
     };
-    if processes::process_matches(pid, job.starttime_ticks) {
+    let Some(starttime_ticks) = job.starttime_ticks else {
+        // A job without a start time is not an identity. Treat it as dead so a
+        // recycled pid cannot make stale work look alive or signallable.
+        return false;
+    };
+    if processes::process_matches(pid, Some(starttime_ticks)) {
         return true;
     }
     job.process_group.is_some_and(|pgid| {
-        processes::process_group_alive(pgid, job.starttime_ticks)
-            || processes::process_group_has_members(pgid, job.starttime_ticks)
+        processes::process_group_alive(pgid, Some(starttime_ticks))
+            || processes::process_group_has_members(pgid, Some(starttime_ticks))
     })
 }
 
@@ -553,7 +558,10 @@ fn signal_job(job: &JobRecord, signal: i32) {
             return;
         }
     }
-    if processes::process_matches(pid, job.starttime_ticks) {
+    if job
+        .starttime_ticks
+        .is_some_and(|starttime| processes::process_matches(pid, Some(starttime)))
+    {
         let _ = unsafe { libc::kill(pid as i32, signal) };
     }
 }

@@ -167,7 +167,14 @@ pub fn exec_workspace_command_with_options(
     job.starttime_ticks = output
         .helper_pid
         .and_then(|pid| session::process_starttime_ticks(pid).ok());
-    job.process_group = output.process_group;
+    // The persistent helper is the leader of the command's process group. Use
+    // its verified host identity rather than a pid read inside the workspace's
+    // PID namespace, which is not a host process-group id.
+    job.process_group = output.helper_pid.and_then(|pid| {
+        session::process_group_id(pid)
+            .ok()
+            .filter(|pgid| *pgid == pid as i32)
+    });
     job.status = if output.exit_code == 0 {
         crate::workspace::JobStatus::Exited
     } else {

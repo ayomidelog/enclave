@@ -46,3 +46,10 @@ fn a_zombie_is_not_a_live_process_group_member() {
     assert!(!process_group_has_members(pgid, Some(starttime)));
     let _ = child.wait();
 }
+
+#[test]
+fn an_unknown_start_time_cannot_prove_a_process_group_is_alive() {
+    let pgid = unsafe { libc::getpgrp() };
+    assert!(!process_group_has_members(pgid, None));
+    assert!(!process_group_alive(pgid, None));
+}

@@ -69,40 +69,70 @@ fn wait_for_group_descendants() {
     let pgid = unsafe { libc::getpgrp() };
     let self_pid = std::process::id();
     loop {
-        if !has_other_group_member(pgid, self_pid) {
+        if group_members_except_self(pgid, self_pid).is_empty() {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
 }
 
-fn has_other_group_member(pgid: libc::pid_t, self_pid: u32) -> bool {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            return false;
-        };
-        let Ok(pid) = name.parse::<u32>() else {
-            return false;
-        };
-        if pid == self_pid {
-            return false;
+/// Terminate descendants left behind by a foreground command.
+///
+/// A foreground command is not allowed to leave background work behind: that is
+/// what the explicit `--background` mode is for. The persistent helper leads the
+/// command group, so killing the other members reaches descendants that inherited
+/// the group without touching the helper itself.
+pub(crate) fn terminate_group_descendants() {
+    let pgid = unsafe { libc::getpgrp() };
+    let self_pid = std::process::id();
+    let descendants = group_members_except_self(pgid, self_pid);
+    if descendants.is_empty() {
+        return;
+    }
+    for pid in descendants {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
         }
-        let Ok(raw) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            return false;
-        };
-        let Some(rest) = raw.rsplit_once(") ").map(|(_, rest)| rest) else {
-            return false;
-        };
-        let mut fields = rest.split_whitespace();
-        let state = fields.next();
-        let group = fields
-            .nth(1)
-            .and_then(|value| value.parse::<libc::pid_t>().ok());
-        group == Some(pgid) && !matches!(state, Some("Z" | "X" | "x"))
-    })
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    while std::time::Instant::now() < deadline
+        && !group_members_except_self(pgid, self_pid).is_empty()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    for pid in group_members_except_self(pgid, self_pid) {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGKILL);
+        }
+    }
+}
+
+fn group_members_except_self(pgid: libc::pid_t, self_pid: u32) -> Vec<u32> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_str().map(str::to_string)?;
+            let Ok(pid) = name.parse::<u32>() else {
+                return None;
+            };
+            if pid == self_pid {
+                return None;
+            }
+            let Ok(raw) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                return None;
+            };
+            let rest = raw.rsplit_once(") ").map(|(_, rest)| rest)?;
+            let mut fields = rest.split_whitespace();
+            let state = fields.next();
+            let group = fields
+                .nth(1)
+                .and_then(|value| value.parse::<libc::pid_t>().ok());
+            (group == Some(pgid) && !matches!(state, Some("Z" | "X" | "x"))).then_some(pid)
+        })
+        .collect()
 }
 
 pub(crate) fn run_workspace_command_child(
