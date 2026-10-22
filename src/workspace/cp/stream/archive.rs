@@ -148,7 +148,11 @@ pub(crate) fn extract_workspace_archive_with_stats<R: Read>(
     }
     let root = stage.path().join(source_name);
     if fs::symlink_metadata(&root).is_err() {
-        bail!("workspace tar archive did not contain expected entry '{source_name}'");
+        // Reaching here means tar produced no entry for the source at all, which
+        // happens when the path does not exist inside the workspace. Say that,
+        // rather than describing the archive: the caller asked to copy a file and
+        // needs to know the file is not there, not how the archive was shaped.
+        bail!("no such file or directory in the workspace: '{source_name}'");
     }
     Ok((logical_bytes, files))
 }

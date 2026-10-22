@@ -261,15 +261,19 @@ pub(crate) fn run_workspace_to_host(
         .take()
         .context("workspace tar stdout unavailable")?;
     set_pipe_capacity(stream.as_raw_fd());
-    let (logical_bytes, files) = if gzip {
+    let extracted = if gzip {
         extract_workspace_archive_with_stats(GzDecoder::new(stream), &stage, source_name)
     } else {
         extract_workspace_archive_with_stats(stream, &stage, source_name)
-    }
-    .context("failed to validate workspace tar archive")?;
+    };
     let workspace_output = wait_child_output(&mut workspace_tar, client_stream)
         .context("failed to wait for workspace tar")?;
+    // Report what tar said before reporting what the archive looked like. A tar
+    // that failed because the source is missing produces an empty archive, and the
+    // archive check would then describe a shape problem while the real cause - the
+    // path does not exist - stayed in tar's stderr. The caller gets tar's reason.
     ensure_transfer_success("workspace tar", &workspace_output)?;
+    let (logical_bytes, files) = extracted.context("failed to validate workspace tar archive")?;
     stage.commit(source_name, destination.final_name(source_name))?;
     Ok(TransferOutput {
         logical_bytes,
