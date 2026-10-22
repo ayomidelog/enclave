@@ -2,6 +2,8 @@
 name = "enclave"
 version = "2.3.2"
 edition = "2021"
+resolver = "3"
+rust-version = "1.85"
 description = "Enclave Linux workspace isolation platform"
 license = "MIT"
 
