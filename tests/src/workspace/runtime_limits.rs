@@ -17,6 +17,9 @@ fn workspace_with_memory(memory_bytes: Option<u64>) -> WorkspaceMetadata {
         sandbox_id: "sb-1".to_string(),
         name: "ws".to_string(),
         created_at: "2026-03-11T00:00:00Z".to_string(),
+        last_request_at: None,
+        last_process_activity_at: None,
+        last_stopped_at: None,
         workspace_path: "/tmp/enclave-rlimit-test/ws-1".to_string(),
         filesystem_path: "/tmp/enclave-rlimit-test/ws-1/fs".to_string(),
         filesystem_mount_target: "/home".to_string(),
@@ -34,6 +37,9 @@ fn workspace_with_memory(memory_bytes: Option<u64>) -> WorkspaceMetadata {
         runtime_pid: None,
         runtime_starttime_ticks: None,
         namespace_refs: Default::default(),
+        keep_running: false,
+        idle_stop_after_secs: None,
+        destroy_after_secs: None,
         clear_tmp_on_restart: false,
         limits: WorkspaceLimits {
             memory_bytes,
@@ -41,6 +47,36 @@ fn workspace_with_memory(memory_bytes: Option<u64>) -> WorkspaceMetadata {
         },
         assigned_ip: None,
     }
+}
+
+#[test]
+fn the_cgroup_config_carries_the_effective_workspace_limits() {
+    let workspace = WorkspaceMetadata {
+        limits: WorkspaceLimits {
+            cpu_percent: Some(25.0),
+            max_processes: Some(321),
+            memory_bytes: Some(128 * MIB),
+            ..WorkspaceLimits::default()
+        },
+        ..workspace_with_memory(None)
+    };
+    let config = crate::sandbox::cgroup::CgroupConfig::from_limits(
+        workspace.limits.memory_bytes,
+        workspace.limits.cpu_percent,
+        workspace.limits.max_processes,
+    )
+    .expect("build cgroup config");
+
+    assert_eq!(config.memory_bytes, Some(128 * MIB));
+    assert_eq!(config.pids_max, Some(321));
+    assert!(
+        config.cpu_quota_us.is_some(),
+        "a declared CPU share must become a cgroup quota"
+    );
+    assert!(
+        config.has_limits(),
+        "the config must be recognised as limited"
+    );
 }
 
 /// A child process to point the limit at, which is the same uid so it can be set.

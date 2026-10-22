@@ -33,6 +33,16 @@ struct AutoStartDefaults {
     wait_secs: u64,
     workspace_apparmor_profile: Option<String>,
     workspace_selinux_label: Option<String>,
+    idle_stop_after_secs: Option<u64>,
+    destroy_after_secs: Option<u64>,
+    default_workspace_cpu_percent: Option<f64>,
+    default_workspace_max_processes: Option<u64>,
+    task_count_threshold: u64,
+    detached_process_threshold: u64,
+    max_running_workspaces: Option<usize>,
+    sweep_interval_secs: u64,
+    sweep_enabled: bool,
+    evict_idle: bool,
 }
 
 /// Set once by the CLI entry point from the config file.
@@ -60,6 +70,16 @@ pub(crate) fn configure_automatic_start_defaults(
         wait_secs: file_config.wait_secs.unwrap_or(5),
         workspace_apparmor_profile: file_config.workspace_apparmor_profile.clone(),
         workspace_selinux_label: file_config.workspace_selinux_label.clone(),
+        idle_stop_after_secs: file_config.idle_stop_after_secs,
+        destroy_after_secs: file_config.destroy_after_secs,
+        default_workspace_cpu_percent: file_config.default_workspace_cpu_percent,
+        default_workspace_max_processes: file_config.default_workspace_max_processes,
+        task_count_threshold: file_config.task_count_threshold.unwrap_or(1024),
+        detached_process_threshold: file_config.detached_process_threshold.unwrap_or(32),
+        max_running_workspaces: file_config.max_running_workspaces,
+        sweep_interval_secs: file_config.sweep_interval_secs.unwrap_or(30),
+        sweep_enabled: file_config.sweep_enabled.unwrap_or(true),
+        evict_idle: file_config.evict_idle.unwrap_or(true),
     });
     let _ = EXPLICIT_DAEMON_START.set(explicit_daemon_start);
 }
@@ -99,6 +119,16 @@ pub(crate) fn ensure_daemon_running_for_action(socket: &Path, action: &str) -> R
         wait_secs: defaults.wait_secs,
         workspace_apparmor_profile: defaults.workspace_apparmor_profile,
         workspace_selinux_label: defaults.workspace_selinux_label,
+        idle_stop_after_secs: defaults.idle_stop_after_secs,
+        destroy_after_secs: defaults.destroy_after_secs,
+        default_workspace_cpu_percent: defaults.default_workspace_cpu_percent,
+        default_workspace_max_processes: defaults.default_workspace_max_processes,
+        task_count_threshold: defaults.task_count_threshold,
+        detached_process_threshold: defaults.detached_process_threshold,
+        max_running_workspaces: defaults.max_running_workspaces,
+        sweep_interval_secs: defaults.sweep_interval_secs,
+        sweep_enabled: defaults.sweep_enabled,
+        evict_idle: defaults.evict_idle,
     };
     start_daemon(socket, args)
 }
@@ -135,6 +165,16 @@ fn default_auto_start_defaults() -> AutoStartDefaults {
         wait_secs: 5,
         workspace_apparmor_profile: None,
         workspace_selinux_label: None,
+        idle_stop_after_secs: None,
+        destroy_after_secs: None,
+        default_workspace_cpu_percent: None,
+        default_workspace_max_processes: None,
+        task_count_threshold: 1024,
+        detached_process_threshold: 32,
+        max_running_workspaces: None,
+        sweep_interval_secs: 30,
+        sweep_enabled: true,
+        evict_idle: true,
     }
 }
 

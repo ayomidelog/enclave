@@ -61,12 +61,31 @@ pub fn cancel_workspace_command(workspace_path: &Path) -> Result<CancelOutcome> 
             return Err(error).with_context(|| format!("failed to read {}", path.display()))
         }
     };
-    let helper_pid: i32 = raw
-        .trim()
+    let mut identity = raw.split_whitespace();
+    let helper_pid: i32 = identity
+        .next()
+        .context("missing helper pid")?
         .parse()
         .with_context(|| format!("invalid helper pid in {}", path.display()))?;
+    let helper_starttime = identity
+        .next()
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .with_context(|| format!("invalid helper start time in {}", path.display()))
+        })
+        .transpose()?;
+    if helper_starttime.is_none() {
+        bail!("missing helper start time in {}", path.display());
+    }
     if helper_pid <= 1 {
         bail!("refusing to signal pid {helper_pid}");
+    }
+    if helper_starttime.is_some_and(|expected| {
+        let actual = crate::workspace::session::process_starttime_ticks(helper_pid as u32);
+        actual.is_ok_and(|actual| actual != expected)
+    }) {
+        bail!("refusing to signal pid {helper_pid}: it changed identity");
     }
 
     // SIGKILL rather than SIGTERM: the helper is not the user's program and has no

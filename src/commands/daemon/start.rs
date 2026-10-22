@@ -64,6 +64,7 @@ pub(super) fn start_daemon(socket: &Path, args: StartArgs) -> Result<()> {
     let log_file_err = log_file
         .try_clone()
         .with_context(|| format!("failed to clone daemon log {}", log_path.display()))?;
+    let policy_args = daemon_policy_args(&args);
     let mut child = Command::new(exe)
         .arg("--socket")
         .arg(socket)
@@ -81,6 +82,7 @@ pub(super) fn start_daemon(socket: &Path, args: StartArgs) -> Result<()> {
                 .map(|value| vec!["--workspace-apparmor-profile".to_string(), value.clone()])
                 .unwrap_or_default(),
         )
+        .args(policy_args)
         .args(
             args.workspace_selinux_label
                 .as_ref()
@@ -120,6 +122,50 @@ pub(super) fn start_daemon(socket: &Path, args: StartArgs) -> Result<()> {
         socket.display(),
         args.wait_secs
     )
+}
+
+/// Forward the daemon policy flags to the detached `daemon run` process.
+fn daemon_policy_args(args: &StartArgs) -> Vec<String> {
+    let mut rendered = vec![
+        "--sweep-interval-secs".to_string(),
+        args.sweep_interval_secs.to_string(),
+        "--task-count-threshold".to_string(),
+        args.task_count_threshold.to_string(),
+        "--detached-process-threshold".to_string(),
+        args.detached_process_threshold.to_string(),
+    ];
+    if let Some(value) = args.idle_stop_after_secs {
+        rendered.extend(["--idle-stop-after-secs".to_string(), value.to_string()]);
+    }
+    if let Some(value) = args.destroy_after_secs {
+        rendered.extend(["--destroy-after-secs".to_string(), value.to_string()]);
+    }
+    if let Some(value) = args.default_workspace_cpu_percent {
+        rendered.extend([
+            "--default-workspace-cpu-percent".to_string(),
+            value.to_string(),
+        ]);
+    }
+    if let Some(value) = args.default_workspace_max_processes {
+        rendered.extend([
+            "--default-workspace-max-processes".to_string(),
+            value.to_string(),
+        ]);
+    }
+    if let Some(value) = args.max_running_workspaces {
+        rendered.extend(["--max-running-workspaces".to_string(), value.to_string()]);
+    }
+    if !args.sweep_enabled {
+        rendered.extend(["--sweep-enabled".to_string(), "false".to_string()]);
+    } else {
+        rendered.extend(["--sweep-enabled".to_string(), "true".to_string()]);
+    }
+    if !args.evict_idle {
+        rendered.extend(["--evict-idle".to_string(), "false".to_string()]);
+    } else {
+        rendered.extend(["--evict-idle".to_string(), "true".to_string()]);
+    }
+    rendered
 }
 
 /// Create a directory the daemon will write to, taking it over if needed.

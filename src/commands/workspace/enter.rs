@@ -20,15 +20,8 @@ pub(super) fn run_workspace_enter(
         args.workspace,
         args.sandbox
     );
-    let response = send_managed(
-        ctx.socket,
-        "workspace.runtime",
-        serde_json::json!({
-            "sandbox": args.sandbox,
-            "workspace": args.workspace,
-        }),
-    )?;
-    let runtime: WorkspaceRuntimeInfo = serde_json::from_value(response)?;
+    let runtime = request_runtime_with_lease(ctx.socket, &args.sandbox, &args.workspace)?;
+    let lease = runtime.command_lease.clone();
 
     let requested_shell = args
         .shell
@@ -37,7 +30,9 @@ pub(super) fn run_workspace_enter(
         .or_else(|| std::env::var("SHELL").ok())
         .unwrap_or_else(|| "/bin/sh".to_string());
     let shell = choose_shell_in_rootfs(&runtime.sandbox_rootfs_path, &requested_shell)?;
-    run_internal_workspace_command(runtime, &args.cwd, &[shell, "-i".to_string()])
+    let result = run_internal_workspace_command(runtime, &args.cwd, &[shell, "-i".to_string()]);
+    release_command_lease(ctx, lease.as_deref());
+    exit_with_command_status(result)
 }
 
 pub(super) fn run_workspace_exec_direct(
@@ -46,6 +41,30 @@ pub(super) fn run_workspace_exec_direct(
 ) -> Result<()> {
     if args.command.is_empty() {
         bail!("workspace exec requires at least one command argument");
+    }
+
+    if args.background {
+        let response = send_managed(
+            ctx.socket,
+            "workspace.exec",
+            serde_json::json!({
+                "sandbox": args.sandbox_id,
+                "workspace": args.workspace_id,
+                "cwd": args.cwd,
+                "command": args.command,
+                "background": true,
+                "keep_running": args.keep_running,
+                "ttl_secs": args.ttl_secs,
+            }),
+        )?;
+        println!(
+            "job {}",
+            response
+                .get("job_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+        );
+        return Ok(());
     }
 
     // The output of a command can contain a token the workspace holds, and the
@@ -57,16 +76,11 @@ pub(super) fn run_workspace_exec_direct(
         tracing::warn!(
             "--no-scrub: the output of this command is printed exactly as it was written, including any injected token value"
         );
-        let response = send_managed(
-            ctx.socket,
-            "workspace.runtime",
-            serde_json::json!({
-                "sandbox": args.sandbox_id,
-                "workspace": args.workspace_id,
-            }),
-        )?;
-        let runtime: WorkspaceRuntimeInfo = serde_json::from_value(response)?;
-        return run_internal_workspace_command(runtime, &args.cwd, &args.command);
+        let runtime = request_runtime_with_lease(ctx.socket, &args.sandbox_id, &args.workspace_id)?;
+        let lease = runtime.command_lease.clone();
+        let result = run_internal_workspace_command(runtime, &args.cwd, &args.command);
+        release_command_lease(ctx, lease.as_deref());
+        return exit_with_command_status(result);
     }
 
     let response = send_managed(
@@ -93,6 +107,108 @@ pub(super) fn run_workspace_exec_direct(
     Ok(())
 }
 
+/// Release the daemon-side lease after a direct CLI command finishes.
+fn release_command_lease(ctx: &WorkspaceCommandContext<'_>, lease: Option<&str>) {
+    if let Some(lease) = lease {
+        let _ = send_managed(
+            ctx.socket,
+            "workspace.command.end",
+            serde_json::json!({ "lease": lease }),
+        );
+    }
+}
+
+/// Propagate a command's exit status only after its lease has been released.
+///
+/// Calling `process::exit` inside the command runner would drop the lease object
+/// without giving the explicit release request a chance to run. The daemon would
+/// eventually reap the lease when this pid disappeared, but an idle sweep in that
+/// window should still see the command as finished immediately.
+fn exit_with_command_status(result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let Some(code) = command_exit_code(&error) {
+                std::process::exit(code);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn command_exit_code(error: &anyhow::Error) -> Option<i32> {
+    error
+        .downcast_ref::<CommandExitStatus>()
+        .map(|status| status.0)
+}
+
+/// Ask the daemon for a runtime and take a lease owned by this CLI process.
+///
+/// The daemon cannot own this lease: it outlives every CLI invocation, so a
+/// lease keyed by the daemon pid would never expire if the CLI crashed. The
+/// command process's pid and start time are an identity the daemon can verify
+/// on every sweep and that disappears with the command.
+fn request_runtime_with_lease(
+    socket: &Path,
+    sandbox: &str,
+    workspace: &str,
+) -> Result<WorkspaceRuntimeInfo> {
+    let owner_pid = std::process::id();
+    let owner_starttime_ticks = process_starttime_ticks(owner_pid)?;
+    let response = send_managed(
+        socket,
+        "workspace.command.begin",
+        serde_json::json!({
+            "sandbox": sandbox,
+            "workspace": workspace,
+            "owner_pid": owner_pid,
+            "owner_starttime_ticks": owner_starttime_ticks,
+        }),
+    )?;
+    let lease = response
+        .get("lease")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let response = send_managed(
+        socket,
+        "workspace.runtime",
+        serde_json::json!({
+            "sandbox": sandbox,
+            "workspace": workspace,
+        }),
+    );
+    let mut runtime: WorkspaceRuntimeInfo = match response {
+        Ok(response) => serde_json::from_value(response)?,
+        Err(error) => {
+            if let Some(lease) = lease.as_deref() {
+                release_command_lease(&WorkspaceCommandContext { socket }, Some(lease));
+            }
+            return Err(error);
+        }
+    };
+    runtime.command_lease = lease;
+    Ok(runtime)
+}
+
+/// The start time of a process read directly from `/proc`.
+///
+/// The CLI runs outside a workspace but uses the same identity format the
+/// daemon's process checks use, so a recycled pid cannot keep a stale lease
+/// alive.
+fn process_starttime_ticks(pid: u32) -> Result<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .with_context(|| format!("failed to read /proc/{pid}/stat"))?;
+    let rest = stat
+        .rsplit_once(") ")
+        .map(|(_, rest)| rest)
+        .context("failed to parse process start time")?;
+    rest.split_whitespace()
+        .nth(19)
+        .context("process stat has no start-time field")?
+        .parse::<u64>()
+        .context("failed to parse process start time")
+}
+
 /// Run a command in the workspace and exit with its status.
 ///
 /// The status is always propagated: a one-shot command that fails has to fail the
@@ -115,13 +231,23 @@ fn run_internal_workspace_command(
         .status()
         .context("failed to start internal workspace command helper")?;
     // A process killed by a signal has no code, and it did not succeed, so it is
-    // reported as a plain failure.
-    let code = status.code().unwrap_or(1);
-    if code != 0 {
-        std::process::exit(code);
+    // reported as a plain failure. The caller exits after releasing its lease.
+    match status.code().unwrap_or(1) {
+        0 => Ok(()),
+        code => Err(anyhow::Error::new(CommandExitStatus(code))),
     }
-    Ok(())
 }
+
+#[derive(Debug)]
+struct CommandExitStatus(i32);
+
+impl std::fmt::Display for CommandExitStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "workspace command exited with status {}", self.0)
+    }
+}
+
+impl std::error::Error for CommandExitStatus {}
 
 /// Arguments for the helper that runs a command inside a workspace runtime.
 ///

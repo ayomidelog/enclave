@@ -87,3 +87,36 @@ fn a_refused_start_keeps_a_directory_whose_record_survived() {
 
     let _ = fs::remove_dir_all(state_dir);
 }
+
+#[test]
+fn a_running_limit_reserves_a_slot_under_the_registry_lock() {
+    let (state_dir, mut sandbox, mut first) = fixture("capacity");
+    sandbox.limits.max_running_workspaces = Some(1);
+    first.status = WorkspaceStatus::Stopped;
+    let second_dir = std::path::PathBuf::from(&sandbox.workspaces_path).join("workspace-two");
+    fs::create_dir_all(&second_dir).unwrap();
+    let mut second = workspace_metadata(&sandbox, &second_dir, None);
+    second.id = "workspace-two".to_string();
+    second.name = "workspace-two".to_string();
+    second.status = WorkspaceStatus::Stopped;
+    crate::registry::with_registry_mut(&state_dir, |registry| {
+        let entry = registry.sandboxes.get_mut(&sandbox.id).expect("sandbox");
+        entry.metadata = sandbox.clone();
+        entry.workspaces.insert(first.id.clone(), first.clone());
+        entry.workspaces.insert(second.id.clone(), second.clone());
+        Ok(())
+    })
+    .unwrap();
+
+    super::super::start::mark_workspace_starting(&state_dir, &sandbox.id, &first.id)
+        .expect("the first start reserves the only slot");
+    let error = super::super::start::mark_workspace_starting(&state_dir, &sandbox.id, &second.id)
+        .expect_err("the second start must be refused");
+    assert_eq!(
+        crate::error::code_of(&error),
+        crate::error::ErrorCode::Conflict
+    );
+    assert!(error.to_string().contains("running-workspace limit"));
+
+    let _ = fs::remove_dir_all(state_dir);
+}

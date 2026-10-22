@@ -36,6 +36,45 @@ pub(super) fn print_process_table(entries: &[ProcessEntry]) {
     }
 }
 
+pub(super) fn print_process_table_with_processes(entries: &[ProcessEntry]) {
+    print_process_table(entries);
+    for entry in entries {
+        if entry.processes.is_empty() {
+            continue;
+        }
+        println!();
+        println!("{} / {}", entry.sandbox, entry.workspace);
+        println!("  PID      PPID     PGID     AGE       CPU%   RSS        THREADS  DETACHED  JOB  COMMAND");
+        for process in &entry.processes {
+            println!(
+                "  {:<8} {:<8} {:<8} {:<9} {:<6} {:<10} {:<8} {:<9} {:<4} {}",
+                process.pid,
+                process.ppid,
+                process.process_group,
+                process
+                    .age_secs
+                    .map(format_uptime)
+                    .unwrap_or_else(|| "-".to_string()),
+                process
+                    .cpu_percent
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_else(|| "-".to_string()),
+                process
+                    .rss_bytes
+                    .map(|value| format!("{:.1}M", value as f64 / 1024.0 / 1024.0))
+                    .unwrap_or_else(|| "-".to_string()),
+                process
+                    .threads
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                if process.detached { "yes" } else { "no" },
+                process.job_id.as_deref().unwrap_or("-"),
+                process.command,
+            );
+        }
+    }
+}
+
 fn format_uptime_cell(uptime: Option<u64>) -> String {
     match uptime {
         Some(secs) => format_uptime(secs),

@@ -5,6 +5,204 @@
 
 use super::*;
 
+fn running_workspace_fixture(name: &str, runtime_pid: u32) -> std::path::PathBuf {
+    use crate::registry::RegistrySandbox;
+    use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
+    use std::collections::BTreeMap;
+
+    let state = std::env::temp_dir().join(format!(
+        "enclave-doctor-{name}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    crate::registry::ensure_registry(&state).expect("create registry");
+    let sandbox_dir = state.join("sandboxes").join("sandbox-id");
+    let workspace_dir = sandbox_dir.join("workspaces").join("workspace-id");
+    std::fs::create_dir_all(&workspace_dir).expect("create workspace fixture");
+    let sandbox = SandboxMetadata {
+        id: "sandbox-id".to_string(),
+        name: "box".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "http://deb.debian.org/debian".to_string(),
+        bootstrap_method: BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
+        mounted_rootfs_path: sandbox_dir.join("rootfs.mnt").to_string_lossy().to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status: SandboxStatus::Running,
+    };
+    let workspace = crate::workspace::WorkspaceMetadata {
+        id: "workspace-id".to_string(),
+        sandbox_id: sandbox.id.clone(),
+        name: "workspace".to_string(),
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        last_request_at: Some(chrono::Utc::now().to_rfc3339()),
+        last_process_activity_at: None,
+        last_stopped_at: None,
+        workspace_path: workspace_dir.to_string_lossy().to_string(),
+        filesystem_path: workspace_dir.join("fs").to_string_lossy().to_string(),
+        filesystem_mount_target: "/home".to_string(),
+        home_mount_source_path: None,
+        sandbox_rootfs_path: sandbox.rootfs_path.clone(),
+        overlay_home_base_path: sandbox.home_base_path.clone(),
+        overlay_home_upper_path: String::new(),
+        overlay_home_work_path: String::new(),
+        overlay_home_merged_path: String::new(),
+        auth_providers: Vec::new(),
+        owner: None,
+        env_tokens: Vec::new(),
+        published_ports: Vec::new(),
+        status: crate::workspace::WorkspaceStatus::Running,
+        runtime_pid: Some(runtime_pid),
+        runtime_starttime_ticks: crate::workspace::session::process_starttime_ticks(runtime_pid)
+            .ok(),
+        namespace_refs: Default::default(),
+        clear_tmp_on_restart: false,
+        keep_running: false,
+        idle_stop_after_secs: None,
+        destroy_after_secs: None,
+        limits: Default::default(),
+        assigned_ip: None,
+    };
+    crate::registry::with_registry_mut(&state, |registry| {
+        registry.sandboxes.insert(
+            sandbox.id.clone(),
+            RegistrySandbox {
+                metadata: sandbox,
+                workspaces: BTreeMap::from([(workspace.id.clone(), workspace)]),
+            },
+        );
+        Ok(())
+    })
+    .expect("insert workspace fixture");
+    state
+}
+
+#[test]
+fn task_count_threshold_is_reported() {
+    let state = running_workspace_fixture("tasks", std::process::id());
+    let check = crate::doctor::activity::check_task_counts_with(&state, 10, |_| Some(11));
+    assert_eq!(check.status, "warn");
+    assert!(check.detail.contains("11 tasks"), "{}", check.detail);
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn detached_process_threshold_is_reported() {
+    let state = running_workspace_fixture("detached", std::process::id());
+    let check = crate::doctor::activity::check_detached_processes_with(&state, 0, |_| 1);
+    assert_eq!(check.status, "warn");
+    assert!(
+        check.detail.contains("1 detached process"),
+        "{}",
+        check.detail
+    );
+    let _ = std::fs::remove_dir_all(state);
+}
+
+#[test]
+fn workspace_activity_reports_idle_but_skips_live_ports_and_pins() {
+    use crate::registry::RegistrySandbox;
+    use crate::sandbox::{BootstrapMethod, SandboxLimits, SandboxMetadata, SandboxStatus};
+    use std::collections::BTreeMap;
+
+    let state = std::env::temp_dir().join(format!(
+        "enclave-doctor-activity-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = std::fs::remove_dir_all(&state);
+    crate::registry::ensure_registry(&state).expect("create registry");
+    let sandbox_dir = state.join("sandboxes/sandbox-id");
+    let metadata = SandboxMetadata {
+        id: "sandbox-id".to_string(),
+        name: "box".to_string(),
+        suite: "bookworm".to_string(),
+        mirror: "http://deb.debian.org/debian".to_string(),
+        bootstrap_method: BootstrapMethod::CachedRootfs,
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        sandbox_path: sandbox_dir.to_string_lossy().to_string(),
+        rootfs_path: sandbox_dir.join("rootfs").to_string_lossy().to_string(),
+        rootfs_lower_path: None,
+        mounted_rootfs_path: sandbox_dir.join("rootfs.mnt").to_string_lossy().to_string(),
+        workspaces_path: sandbox_dir.join("workspaces").to_string_lossy().to_string(),
+        home_base_path: sandbox_dir.join("home-base").to_string_lossy().to_string(),
+        limits: SandboxLimits::default(),
+        status: SandboxStatus::Running,
+    };
+    let old = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+    let workspace = |id: &str| crate::workspace::WorkspaceMetadata {
+        id: id.to_string(),
+        sandbox_id: metadata.id.clone(),
+        name: id.to_string(),
+        created_at: "2026-08-06T00:00:00Z".to_string(),
+        last_request_at: Some(old.clone()),
+        last_process_activity_at: None,
+        last_stopped_at: None,
+        workspace_path: sandbox_dir
+            .join("workspaces")
+            .join(id)
+            .to_string_lossy()
+            .to_string(),
+        filesystem_path: String::new(),
+        filesystem_mount_target: "/home".to_string(),
+        home_mount_source_path: None,
+        sandbox_rootfs_path: metadata.rootfs_path.clone(),
+        overlay_home_base_path: metadata.home_base_path.clone(),
+        overlay_home_upper_path: String::new(),
+        overlay_home_work_path: String::new(),
+        overlay_home_merged_path: String::new(),
+        auth_providers: Vec::new(),
+        owner: None,
+        env_tokens: Vec::new(),
+        published_ports: Vec::new(),
+        status: crate::workspace::WorkspaceStatus::Running,
+        runtime_pid: None,
+        runtime_starttime_ticks: None,
+        namespace_refs: Default::default(),
+        clear_tmp_on_restart: false,
+        keep_running: id == "pinned",
+        idle_stop_after_secs: None,
+        destroy_after_secs: None,
+        limits: Default::default(),
+        assigned_ip: None,
+    };
+    let mut workspaces = BTreeMap::new();
+    for id in ["idle", "pinned", "serving"] {
+        workspaces.insert(id.to_string(), workspace(id));
+    }
+    crate::registry::with_registry_mut(&state, |registry| {
+        registry.sandboxes.insert(
+            metadata.id.clone(),
+            RegistrySandbox {
+                metadata,
+                workspaces,
+            },
+        );
+        Ok(())
+    })
+    .expect("insert workspace fixture");
+
+    let check = crate::doctor::activity::check_workspace_activity(
+        &state,
+        Some(60),
+        |_, id| id == "pinned",
+        |_, id| id == "serving",
+        |_, _| 0,
+    );
+    assert_eq!(check.status, "warn", "{}", check.detail);
+    assert!(check.detail.contains("idle"), "{}", check.detail);
+    assert!(!check.detail.contains("pinned"), "{}", check.detail);
+    assert!(!check.detail.contains("serving"), "{}", check.detail);
+
+    let _ = std::fs::remove_dir_all(state);
+}
+
 #[test]
 fn check_stale_cgroups_does_not_panic() {
     let state_dir = std::env::temp_dir().join(format!(

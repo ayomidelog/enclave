@@ -47,8 +47,13 @@ fn cancelling_signals_the_published_helper_and_reports_it() {
         .spawn()
         .expect("spawn child");
     let helper_pid = child.id() as i32;
-    std::fs::write(cancel_file_path(&workspace.root), format!("{helper_pid}\n"))
-        .expect("publish cancel file");
+    let starttime = crate::workspace::session::process_starttime_ticks(helper_pid as u32)
+        .expect("helper start time");
+    std::fs::write(
+        cancel_file_path(&workspace.root),
+        format!("{helper_pid} {starttime}\n"),
+    )
+    .expect("publish cancel file");
 
     let outcome = cancel_workspace_command(&workspace.root).expect("cancel");
     assert!(
@@ -66,7 +71,7 @@ fn a_cancel_file_naming_an_exited_helper_is_treated_as_finished() {
     let workspace = TempWorkspace::new();
     // A group id that cannot exist: the command finished between publishing and
     // cancelling, which is the race a cancel has to tolerate.
-    std::fs::write(cancel_file_path(&workspace.root), "2147483646\n").expect("write");
+    std::fs::write(cancel_file_path(&workspace.root), "2147483646 1\n").expect("write");
     let outcome = cancel_workspace_command(&workspace.root).expect("cancel");
     assert!(!outcome.cancelled);
     assert!(outcome.already_finished);
@@ -83,6 +88,6 @@ fn a_malformed_cancel_file_is_an_error_not_a_signal() {
 #[test]
 fn a_cancel_file_naming_init_is_refused() {
     let workspace = TempWorkspace::new();
-    std::fs::write(cancel_file_path(&workspace.root), "1\n").expect("write");
+    std::fs::write(cancel_file_path(&workspace.root), "1 1\n").expect("write");
     assert!(cancel_workspace_command(&workspace.root).is_err());
 }

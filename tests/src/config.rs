@@ -35,6 +35,16 @@ workspace_selinux_label = "system_u:system_r:container_t:s0"
 suite = "bookworm"
 mirror = "http://deb.debian.org/debian"
 wait_secs = 15
+idle_stop_after_secs = 90
+destroy_after_secs = 3600
+default_workspace_cpu_percent = 25
+default_workspace_max_processes = 512
+max_running_workspaces = 8
+sweep_interval_secs = 45
+sweep_enabled = false
+evict_idle = false
+task_count_threshold = 2048
+detached_process_threshold = 16
 "#
     )
     .unwrap();
@@ -67,6 +77,16 @@ wait_secs = 15
         Some("http://deb.debian.org/debian")
     );
     assert_eq!(config.wait_secs, Some(15));
+    assert_eq!(config.idle_stop_after_secs, Some(90));
+    assert_eq!(config.destroy_after_secs, Some(3600));
+    assert_eq!(config.default_workspace_cpu_percent, Some(25.0));
+    assert_eq!(config.default_workspace_max_processes, Some(512));
+    assert_eq!(config.max_running_workspaces, Some(8));
+    assert_eq!(config.sweep_interval_secs, Some(45));
+    assert_eq!(config.sweep_enabled, Some(false));
+    assert_eq!(config.evict_idle, Some(false));
+    assert_eq!(config.task_count_threshold, Some(2048));
+    assert_eq!(config.detached_process_threshold, Some(16));
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -136,6 +156,23 @@ fn load_config_defers_debootstrap_binary_validation_until_bootstrap() {
     if dir.exists() {
         fs::remove_dir_all(&dir).expect("failed to cleanup temp test dir");
     }
+}
+
+#[test]
+fn load_config_rejects_zero_sweep_interval() {
+    let dir =
+        std::env::temp_dir().join(format!("enclave-config-zero-sweep-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    fs::write(&path, "sweep_interval_secs = 0\n").unwrap();
+
+    let error = load_config(Some(&path)).expect_err("zero sweep interval must fail");
+    assert!(
+        format!("{error:#}").contains("sweep_interval_secs"),
+        "{error:#}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

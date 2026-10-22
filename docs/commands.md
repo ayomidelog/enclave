@@ -25,8 +25,8 @@ transition line, because it changed nothing.
 ## Daemon
 
 ```bash
-enclave daemon run    [--state-dir PATH] [--pid-file PATH] [--debootstrap-binary BIN] [--workspace-apparmor-profile PROFILE] [--workspace-selinux-label LABEL]
-enclave daemon start  [--state-dir PATH] [--pid-file PATH] [--debootstrap-binary BIN] [--workspace-apparmor-profile PROFILE] [--workspace-selinux-label LABEL] [--wait-secs N]
+enclave daemon run    [--state-dir PATH] [--pid-file PATH] [--debootstrap-binary BIN] [--workspace-apparmor-profile PROFILE] [--workspace-selinux-label LABEL] [--idle-stop-after-secs N] [--destroy-after-secs N] [--max-running-workspaces N] [--default-workspace-cpu-percent N] [--default-workspace-max-processes N] [--sweep-interval-secs N] [--sweep-enabled BOOL] [--evict-idle BOOL] [--task-count-threshold N] [--detached-process-threshold N]
+enclave daemon start  [--state-dir PATH] [--pid-file PATH] [--debootstrap-binary BIN] [--workspace-apparmor-profile PROFILE] [--workspace-selinux-label LABEL] [--wait-secs N] [--idle-stop-after-secs N] [--destroy-after-secs N] [--max-running-workspaces N] [--default-workspace-cpu-percent N] [--default-workspace-max-processes N] [--sweep-interval-secs N] [--sweep-enabled BOOL] [--evict-idle BOOL] [--task-count-threshold N] [--detached-process-threshold N]
 enclave daemon status
 enclave daemon stop
 enclave ping
@@ -36,14 +36,14 @@ enclave doctor [--repair]
 
 | Command | Description |
 |---------|-------------|
-| `daemon run` | Run the daemon in the foreground. |
-| `daemon start` | Start the daemon in the background and wait for it to be ready. |
+| `daemon run` | Run the daemon in the foreground. The lifecycle flags set the sweep interval, idle and retention windows, daemon-wide running-workspace cap, default workspace CPU/process limits, and doctor thresholds. |
+| `daemon start` | Start the daemon in the background and wait for it to be ready. It accepts the same lifecycle policy flags as `daemon run`. |
 | `daemon status` | Check if the daemon is running, and report the lifecycle operation running now and the last one that ran. |
 | `daemon stop` | Stop the daemon. |
 | `ping` | Send a ping to the daemon and print the response. |
 | `health` | Print daemon health information (state dir, uptime, etc.). |
-| `doctor` | Run diagnostic checks: registry consistency, orphaned and nested workspace cgroups, orphaned mounts and sandbox rootfs mounts, workspace networking (veth interfaces, NAT rules, and anti-spoofing rules), loop devices backing workspace images, orphan runtimes whose metadata is gone, the operation journal, host capabilities, and published host ports no running workspace is using. Mounts and interfaces Enclave did not create are reported separately and left in place. |
-| `doctor --repair` | Reconcile registry and filesystem state, resolve an interrupted lifecycle transition (complete an interrupted stop, roll back an interrupted start), remove stale workspace mounts and namespace state, retire firewall rules for interfaces that are gone, and validate daemon ownership. Only mounts and rules Enclave created are released; anything it cannot attribute to itself is reported and left alone. Requires a running daemon unless global `--start-daemon` is supplied. |
+| `doctor` | Run diagnostic checks: registry consistency, orphaned and nested workspace cgroups, orphaned mounts and sandbox rootfs mounts, workspace networking (veth interfaces, NAT rules, and anti-spoofing rules), loop devices backing workspace images, orphan runtimes whose metadata is gone, the operation journal, host capabilities, published host ports no running workspace is using, idle workspaces, task-count pressure, and tracked detached-process pressure. Mounts and interfaces Enclave did not create are reported separately and left in place. |
+| `doctor --repair` | Reconcile registry and filesystem state, resolve an interrupted lifecycle transition (complete an interrupted stop, roll back an interrupted start), remove stale workspace mounts and namespace state, retire firewall rules for interfaces that are gone, stop idle workspaces through the verified stop path, and validate daemon ownership. Only mounts and rules Enclave created are released; anything it cannot attribute to itself is reported and left alone. Requires a running daemon unless global `--start-daemon` is supplied. |
 
 Destructive commands do not start a stopped daemon automatically. Start it with `enclave daemon start`, or opt in for one invocation with the global `--start-daemon` flag:
 
@@ -218,7 +218,9 @@ enclave workspace status  <sandbox> <workspace>
 enclave workspace remove  <sandbox> <workspace>
 enclave workspace wipe
 enclave workspace enter   <sandbox> <workspace> [--cwd /home] [--shell /bin/bash]
-enclave workspace exec    <sandbox> <workspace> [--cwd /home] [--no-scrub] -- <command...>
+enclave workspace exec    <sandbox> <workspace> [--cwd /home] [--no-scrub] [--background] [--ttl-secs N] [--keep-running] -- <command...>
+enclave workspace jobs    <sandbox> <workspace> [--job ID]
+enclave workspace keep    <sandbox> <workspace> (--keep-running | --no-keep-running | --idle-stop-after-secs N | --destroy-after-secs N)
 enclave workspace run     <sandbox> <workspace> [--cwd /home] -- <command...>
 enclave workspace port publish   <sandbox> <workspace> <127.0.0.1:HOST_PORT:WORKSPACE_PORT[/tcp]>
 enclave workspace port unpublish <sandbox> <workspace> <127.0.0.1:HOST_PORT[/tcp]>
@@ -243,12 +245,32 @@ enclave workspace stats   <workspace>
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). The session's output is not captured, so it is not scrubbed of injected token values. |
 | `exec` | Execute a one-shot command inside a workspace. The daemon captures the output and replaces every injected token value with `[REDACTED]`, so a command that prints a credential does not put it in your terminal, your log, or your shell history. `--no-scrub` prints the output exactly as written and warns that it may contain a credential; it also restores the direct streaming path, which is what you want for a command that reads stdin or writes a lot of output. |
+| `jobs` | List durable foreground and background job records for a workspace. Each record carries the job id, command, mode, start and finish time, PID/start-time identity, process group, status, exit code, TTL, and keep-running policy. |
+| `keep` | Change only the lifecycle fields named on the command line. `--keep-running` pins the workspace, `--no-keep-running` removes the pin, and the idle/destroy window flags update their window without changing the pin. At least one is required. |
 | `run` | Run a command inside a workspace (alias for exec). |
 | `port publish` | Persist and activate a loopback-only TCP port mapping for a workspace. |
 | `port unpublish` | Remove a previously declared loopback-only TCP port mapping. |
 | `port list` | Show declared and active published ports for a workspace. |
 | `logs` | Show workspace session logs. `--follow` continuously streams appended log output. |
 | `stats` | Show workspace resource metrics like CPU %, memory usage/limit, memory %, network I/O, block I/O, pids, and threads. |
+
+`workspace exec` creates a job for every command. A foreground job holds a command
+lease for the whole request, so the idle sweeper cannot stop its workspace. A
+background job is returned immediately and remains tracked after the CLI exits:
+use `--background`, and optionally `--ttl-secs N` to stop it after a deadline or
+`--keep-running` to keep the workspace alive while it runs.
+An ordinary background job remains tracked but does not pin the workspace; only
+`--keep-running` does. It is stopped by the idle policy unless the workspace is
+otherwise active or the job has an explicit TTL.
+
+`workspace jobs` reports both durable records and their terminal outcomes. The
+job identity is the host helper process's pid and start time; a detached helper is
+also the leader of its own process group, which is what the TTL reaper signals.
+
+`enclave ps --processes` adds one row per process in each workspace, including
+its PID, PPID, age, CPU sample, RSS, thread count, detached state, job id, and
+command. A detached row means the process belongs to a tracked background job;
+ordinary service children are not mislabeled as detached.
 
 ### Resize a workspace
 
@@ -288,7 +310,9 @@ workspace allocations are measured against:
 enclave resize mybox --memory-mb 8192
 enclave resize mybox --disk-mb 32768
 enclave resize mybox --max-procs 512
+enclave resize mybox --max-running-workspaces 4
 enclave resize mybox --no-disk-budget
+enclave resize mybox --no-max-running-workspaces
 ```
 
 Memory and process limits are cgroup values and are applied to a running sandbox

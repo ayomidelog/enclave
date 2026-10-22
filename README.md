@@ -32,6 +32,7 @@ didn't exist. So I built it.
 | | Enclave | Docker |
 |---|---|---|
 | **Rootfs sharing** | All workspaces share one sandbox rootfs | Each container has its own layered rootfs |
+| **Idle lifecycle** | Tracks activity, command leases, jobs, and retention per workspace | Containers remain until explicitly removed |
 | **Environment source** | `debootstrap` or prebuilt rootfs | OCI images pulled from registries |
 | **Runtime** | Single daemon → direct `unshare`/`nsenter` | dockerd → containerd → runc |
 | **Configuration** | Single `Enclavefile` (TOML) | `Dockerfile` + `docker-compose.yml` |
@@ -220,6 +221,19 @@ features.
 Workspace runtimes are hardened with user-namespace isolation, capability dropping,
 read-only `/proc/sys` and `/sys` remounts, seccomp deny rules, and optional
 AppArmor/SELinux hooks.
+
+The daemon also tracks lifecycle activity. Real `start`, `enter`, `exec`, `cp`, and
+published-port operations update a durable timestamp; `status` and `stats` do not.
+Idle runtimes are stopped through the normal verified stop path, with their files
+kept until a separate `destroy_after` window expires. Foreground commands and live
+published-port connections prevent an idle stop, while background commands are
+durable jobs with an optional TTL and `keep_running` pin.
+
+Use `enclave workspace jobs <sandbox> <workspace>` to inspect tracked commands and
+`enclave ps --processes` for a per-process view with PID, PPID, age, CPU, RSS,
+thread count, and detached-job identity. `enclave workspace stats` reports
+`process_count` (PID-namespace processes) separately from `task_count` (cgroup
+threads/tasks).
 
 Managed workspace disk limits cover more than `/home`: when `disk_mb` is configured,
 the workspace uses a quota-backed root OverlayFS layer, so writes under `/opt`,

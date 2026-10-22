@@ -55,6 +55,7 @@ pub(crate) fn run_create(socket: &Path, args: CreateArgs) -> Result<()> {
         "cpu_percent": args.cpu_percent,
         "max_procs": args.max_procs,
         "disk_mb": args.disk_mb,
+        "max_running_workspaces": args.max_running_workspaces,
     });
     // The create request blocks for the whole bootstrap, so it runs on its own
     // thread and this thread polls the log the bootstrap is writing.

@@ -190,6 +190,23 @@ pub fn stop_workspace_with_certificate(
     drop(cleanup_phase);
     match result {
         Ok((metadata, certificate)) => {
+            // The runtime cgroup has been killed by this point, which also ends
+            // every detached job in it. Persist that outcome now rather than
+            // leaving `jobs` reporting `running` until the next daemon startup
+            // notices the pid is gone. A failed stop must not rewrite the job
+            // records: its runtime may still be alive, and the next successful
+            // stop is what proves those jobs ended.
+            if let Err(error) = crate::workspace::jobs::cancel_running_for_workspace(
+                state_dir,
+                &sandbox_id,
+                &workspace_id,
+                "workspace stopped",
+            ) {
+                tracing::warn!(
+                    "failed to mark jobs for workspace '{}' as cancelled: {error:#}",
+                    workspace_id
+                );
+            }
             journal.succeed()?;
             Ok((metadata, certificate))
         }

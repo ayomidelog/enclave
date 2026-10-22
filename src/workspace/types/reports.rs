@@ -12,11 +12,16 @@ use crate::workspace::ports::PublishedPortStatus;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceExecResult {
+    #[serde(default)]
+    pub job_id: Option<String>,
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
     pub mount_ns: String,
     pub pid_ns: String,
+    /// The tracked job this command created, when it was run as a background job.
+    #[serde(default)]
+    pub background_job_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,8 +63,22 @@ pub struct WorkspaceStatusReport {
     pub created_at: String,
     pub allocated_path: String,
     pub status: WorkspaceStatus,
-    pub active_process_count: usize,
+    pub process_count: usize,
+    #[serde(default)]
+    pub task_count: Option<u64>,
     pub resource_usage: Option<String>,
+    #[serde(default)]
+    pub last_request_at: Option<String>,
+    #[serde(default)]
+    pub last_process_activity_at: Option<String>,
+    #[serde(default)]
+    pub last_stopped_at: Option<String>,
+    #[serde(default)]
+    pub keep_running: bool,
+    #[serde(default)]
+    pub idle_stop_after_secs: Option<u64>,
+    #[serde(default)]
+    pub destroy_after_secs: Option<u64>,
     #[serde(default)]
     pub limits: WorkspaceLimits,
     #[serde(default)]
@@ -75,7 +94,12 @@ pub struct WorkspaceStatsReport {
     pub name: String,
     pub status: WorkspaceStatus,
     pub pid: Option<u32>,
-    pub active_process_count: usize,
+    /// Distinct processes in the workspace PID namespace.
+    pub process_count: usize,
+    /// Tasks, including threads, as counted by cgroup `pids.current`.
+    pub task_count: Option<u64>,
+    /// Runtime-leader thread count, kept for compatibility with older readers.
+    #[serde(default)]
     pub threads: Option<u64>,
     pub cpu_percent: Option<f64>,
     pub cpu_limit_percent: Option<f64>,
@@ -88,7 +112,11 @@ pub struct WorkspaceStatsReport {
     pub net_tx_bytes: Option<u64>,
     pub block_read_bytes: Option<u64>,
     pub block_write_bytes: Option<u64>,
+    /// Cgroup `pids.current`; kept as the raw kernel value for compatibility.
+    #[serde(default)]
     pub pids_current: Option<u64>,
+    /// Cgroup `pids.max`; kept as the raw kernel value for compatibility.
+    #[serde(default)]
     pub pids_limit: Option<u64>,
 }
 
@@ -105,6 +133,9 @@ pub struct WorkspaceRuntimeInfo {
     /// must attach them here so the workspace limits apply to them.
     #[serde(default)]
     pub cgroup_path: Option<String>,
+    /// Lease token held while a CLI is directly attached to this runtime.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_lease: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

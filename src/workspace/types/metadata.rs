@@ -18,6 +18,20 @@ pub struct WorkspaceMetadata {
     pub sandbox_id: String,
     pub name: String,
     pub created_at: String,
+    /// The last real request that acted on this workspace.
+    ///
+    /// Status and stats reads deliberately do not update it. The idle sweeper
+    /// uses it to tell a workspace somebody is working in from one that is only
+    /// still running because nobody stopped it.
+    #[serde(default)]
+    pub last_request_at: Option<String>,
+    /// The last time a command or detached job made observable progress.
+    #[serde(default)]
+    pub last_process_activity_at: Option<String>,
+    /// When the runtime was last stopped. This survives the stop so the separate
+    /// destroy-after policy can measure a stopped workspace's age.
+    #[serde(default)]
+    pub last_stopped_at: Option<String>,
     pub workspace_path: String,
     pub filesystem_path: String,
     pub filesystem_mount_target: String,
@@ -51,6 +65,17 @@ pub struct WorkspaceMetadata {
     pub namespace_refs: NamespaceRefs,
     #[serde(default)]
     pub clear_tmp_on_restart: bool,
+    /// Exempt this workspace from idle stops and least-recently-used eviction.
+    #[serde(default)]
+    pub keep_running: bool,
+    /// Stop an idle runtime after this many seconds. `None` inherits the daemon
+    /// default and zero disables the idle stop for this workspace.
+    #[serde(default)]
+    pub idle_stop_after_secs: Option<u64>,
+    /// Destroy a stopped workspace after this many seconds. `None` inherits the
+    /// daemon default and zero keeps its files indefinitely.
+    #[serde(default)]
+    pub destroy_after_secs: Option<u64>,
     #[serde(default)]
     pub limits: WorkspaceLimits,
 

@@ -73,8 +73,9 @@ use workspace_definition::{
 #[cfg(test)]
 use workspace_handlers::existing_workspace_update;
 use workspace_handlers::{
-    dispatch_workspace_cp, dispatch_workspace_create, dispatch_workspace_exec,
-    dispatch_workspace_exec_cancel, dispatch_workspace_list, dispatch_workspace_logs,
+    dispatch_workspace_command_begin, dispatch_workspace_command_end, dispatch_workspace_cp,
+    dispatch_workspace_create, dispatch_workspace_exec, dispatch_workspace_exec_cancel,
+    dispatch_workspace_jobs_list, dispatch_workspace_list, dispatch_workspace_logs,
     dispatch_workspace_resize, dispatch_workspace_start_many, dispatch_workspace_target,
     dispatch_workspace_update, dispatch_workspace_wipe,
 };
@@ -104,7 +105,7 @@ pub(crate) fn dispatch(
         Action::Ping => Ok(json!({"status": "pong"})),
         Action::DaemonHealth => dispatch_daemon_health(config, services),
         Action::DaemonDoctor => dispatch_daemon_doctor(config, port_publisher, services),
-        Action::DaemonDoctorRepair => dispatch_daemon_doctor_repair(config),
+        Action::DaemonDoctorRepair => dispatch_daemon_doctor_repair(config, services),
         Action::Init => dispatch_init(config),
         Action::SandboxCreate => dispatch_sandbox_create(&request.params, config),
         Action::SandboxUpdate => dispatch_sandbox_update(&request.params, config),
@@ -127,23 +128,23 @@ pub(crate) fn dispatch(
             dispatch_workspace_create(&request.params, config, port_publisher)
         }
         Action::WorkspaceStart => {
-            dispatch_workspace_target(&request.params, config, "start", port_publisher)
+            dispatch_workspace_target(&request.params, config, "start", port_publisher, services)
         }
         Action::WorkspaceStartMany => {
-            dispatch_workspace_start_many(&request.params, config, port_publisher)
+            dispatch_workspace_start_many(&request.params, config, port_publisher, services)
         }
         Action::WorkspaceStop => {
-            dispatch_workspace_target(&request.params, config, "stop", port_publisher)
+            dispatch_workspace_target(&request.params, config, "stop", port_publisher, services)
         }
         Action::WorkspaceDestroy => {
-            dispatch_workspace_target(&request.params, config, "destroy", port_publisher)
+            dispatch_workspace_target(&request.params, config, "destroy", port_publisher, services)
         }
         Action::WorkspaceWipe => dispatch_workspace_wipe(&request.params, config, port_publisher),
         Action::WorkspaceStatus => {
-            dispatch_workspace_target(&request.params, config, "status", port_publisher)
+            dispatch_workspace_target(&request.params, config, "status", port_publisher, services)
         }
         Action::WorkspaceStats => {
-            dispatch_workspace_target(&request.params, config, "stats", port_publisher)
+            dispatch_workspace_target(&request.params, config, "stats", port_publisher, services)
         }
         Action::WorkspaceStatsList => {
             let stats = workspace::list_running_workspace_stats(&config.state_dir)?;
@@ -151,7 +152,7 @@ pub(crate) fn dispatch(
         }
         Action::WorkspaceList => dispatch_workspace_list(&request.params, config),
         Action::WorkspaceRemove => {
-            dispatch_workspace_target(&request.params, config, "remove", port_publisher)
+            dispatch_workspace_target(&request.params, config, "remove", port_publisher, services)
         }
         Action::WorkspaceUpdate => {
             dispatch_workspace_update(&request.params, config, port_publisher)
@@ -159,9 +160,18 @@ pub(crate) fn dispatch(
         Action::WorkspaceResize => {
             dispatch_workspace_resize(&request.params, config, port_publisher)
         }
-        Action::WorkspaceExec => dispatch_workspace_exec(&request.params, config),
+        Action::WorkspaceExec => dispatch_workspace_exec(&request.params, config, services),
         Action::WorkspaceExecCancel => dispatch_workspace_exec_cancel(&request.params, config),
-        Action::WorkspaceCp => dispatch_workspace_cp(&request.params, config, client_stream),
+        Action::WorkspaceCommandBegin => {
+            dispatch_workspace_command_begin(&request.params, config, services)
+        }
+        Action::WorkspaceCommandEnd => dispatch_workspace_command_end(&request.params, services),
+        Action::WorkspaceJobsList => {
+            dispatch_workspace_jobs_list(&request.params, config, services)
+        }
+        Action::WorkspaceCp => {
+            dispatch_workspace_cp(&request.params, config, services, client_stream)
+        }
         Action::WorkspacePortPublish => {
             dispatch_workspace_port_publish(&request.params, config, port_publisher)
         }
@@ -172,13 +182,17 @@ pub(crate) fn dispatch(
             dispatch_workspace_port_list(&request.params, config, port_publisher)
         }
         Action::WorkspaceRuntime => {
-            dispatch_workspace_target(&request.params, config, "runtime", port_publisher)
+            dispatch_workspace_target(&request.params, config, "runtime", port_publisher, services)
         }
         Action::WorkspaceLogs => dispatch_workspace_logs(&request.params, config),
         Action::WorkspaceSnapshot => dispatch_workspace_snapshot(&request.params, config),
-        Action::WorkspaceSnapshotList => {
-            dispatch_workspace_target(&request.params, config, "snapshot_list", port_publisher)
-        }
+        Action::WorkspaceSnapshotList => dispatch_workspace_target(
+            &request.params,
+            config,
+            "snapshot_list",
+            port_publisher,
+            services,
+        ),
         Action::WorkspaceRestore => dispatch_workspace_restore(&request.params, config),
         Action::WorkspaceSnapshotGc => dispatch_workspace_snapshot_gc(&request.params, config),
         Action::WorkspaceSnapshotExport => {

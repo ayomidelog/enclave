@@ -23,7 +23,8 @@ pub(super) use definition::{
 };
 pub(super) use lifecycle::dispatch_workspace_target;
 pub(super) use transfer::{
-    dispatch_workspace_cp, dispatch_workspace_exec, dispatch_workspace_exec_cancel,
+    dispatch_workspace_command_begin, dispatch_workspace_command_end, dispatch_workspace_cp,
+    dispatch_workspace_exec, dispatch_workspace_exec_cancel, dispatch_workspace_jobs_list,
     dispatch_workspace_logs,
 };
 pub(super) use wipe::dispatch_workspace_wipe;

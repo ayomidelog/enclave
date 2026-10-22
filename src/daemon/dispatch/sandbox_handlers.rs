@@ -70,6 +70,7 @@ pub(super) fn dispatch_sandbox_resize(params: &Value, config: &DaemonConfig) -> 
         "previous_memory_bytes": before.limits.memory_bytes,
         "previous_disk_bytes": before.limits.disk_bytes,
         "previous_max_processes": before.limits.max_processes,
+        "previous_max_running_workspaces": before.limits.max_running_workspaces,
     }))
 }
 

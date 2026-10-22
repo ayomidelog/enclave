@@ -1,3 +1,5 @@
+mod activity;
+pub mod activity_service;
 mod cancel;
 mod certificate;
 
@@ -11,9 +13,11 @@ mod create;
 mod cwd;
 mod exec;
 mod inventory;
+pub mod jobs;
 mod logs;
 mod orphans;
 mod ports;
+mod processes;
 pub mod ps;
 mod runtime;
 mod runtime_limits;
@@ -25,6 +29,33 @@ mod types;
 
 pub const DEFAULT_WORKSPACE_PATH: &str =
     "/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Process-wide defaults configured by the daemon before it serves requests.
+static DEFAULT_WORKSPACE_CPU_PERCENT: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
+static DEFAULT_WORKSPACE_MAX_PROCESSES: std::sync::OnceLock<Option<u64>> =
+    std::sync::OnceLock::new();
+static MAX_RUNNING_WORKSPACES: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
+pub(crate) fn configure_default_limits(cpu_percent: Option<f64>, max_processes: Option<u64>) {
+    let _ = DEFAULT_WORKSPACE_CPU_PERCENT.set(cpu_percent);
+    let _ = DEFAULT_WORKSPACE_MAX_PROCESSES.set(max_processes);
+}
+
+pub(crate) fn default_workspace_cpu_percent() -> Option<f64> {
+    DEFAULT_WORKSPACE_CPU_PERCENT.get().copied().flatten()
+}
+
+pub(crate) fn default_workspace_max_processes() -> Option<u64> {
+    DEFAULT_WORKSPACE_MAX_PROCESSES.get().copied().flatten()
+}
+
+pub(crate) fn configure_max_running_workspaces(limit: Option<usize>) {
+    let _ = MAX_RUNNING_WORKSPACES.set(limit);
+}
+
+pub(crate) fn daemon_max_running_workspaces() -> Option<usize> {
+    MAX_RUNNING_WORKSPACES.get().copied().flatten()
+}
 
 pub use crate::network::publish::PortPublisher;
 pub(crate) use cancel::cancel_file_path;
@@ -57,6 +88,12 @@ pub(crate) fn resolve_workspace_path(
     })?;
     Ok(workspace)
 }
+pub use activity::{
+    destroy_threshold, idle_for_secs, idle_threshold, is_idle, last_activity, mark_stopped,
+    now as activity_now, parse_timestamp, touch as touch_activity,
+    touch_registry_only as touch_activity_registry_only, ActivityKind,
+};
+pub use activity_service::{ActivityService, CommandLease};
 pub use control::resize_workspace_disk;
 pub use control::resize_workspace_memory;
 pub(crate) use control::start_workspace_with_security;
@@ -80,11 +117,16 @@ pub use create::{create_workspace, create_workspace_with_options, WorkspaceCreat
 pub(crate) use exec::spawn_workspace_command_detached;
 pub use exec::{exec_workspace_command, exec_workspace_command_with_options, WorkspaceExecOptions};
 pub use inventory::{ResourceIdentity, ResourceInventory, ResourceKind};
+pub use jobs::{JobMode, JobRecord, JobStatus};
 pub use logs::workspace_logs;
 pub use orphans::{find_orphan_runtime, OrphanRuntime};
 pub use ports::{
     configured_port_statuses, merge_published_port_statuses, validate_published_ports,
     PublishedPortBinding, PublishedPortSpec, PublishedPortState, PublishedPortStatus,
+};
+pub(crate) use processes::process_group_has_members;
+pub use processes::{
+    detached_count, job_process_count, list_workspace_processes, WorkspaceProcess,
 };
 pub use ps::{list_process_status, ProcessEntry};
 pub use runtime::workspace_runtime_info;

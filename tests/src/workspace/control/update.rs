@@ -81,6 +81,66 @@ fn an_owner_binding_is_set_kept_and_cleared() {
     let _ = fs::remove_dir_all(state_dir);
 }
 
+#[test]
+fn lifecycle_window_updates_distinguish_omitted_from_cleared() {
+    let (state_dir, sandbox, workspace) = fixture("lifecycle-windows");
+    let read = |state_dir: &std::path::Path| {
+        crate::registry::with_registry(state_dir, |registry| {
+            Ok(registry
+                .sandboxes
+                .get(&sandbox.id)
+                .and_then(|entry| entry.workspaces.get(&workspace.id))
+                .map(|record| {
+                    (
+                        record.keep_running,
+                        record.idle_stop_after_secs,
+                        record.destroy_after_secs,
+                    )
+                }))
+        })
+        .expect("read registry")
+        .expect("workspace")
+    };
+    let update = |limits: crate::workspace::WorkspaceLimitsUpdate| {
+        update_workspace_definition(
+            &state_dir,
+            &sandbox.id,
+            &workspace.id,
+            crate::workspace::WorkspaceDefinitionUpdate {
+                limits,
+                ..Default::default()
+            },
+        )
+        .expect("update lifecycle windows")
+    };
+
+    update(crate::workspace::WorkspaceLimitsUpdate {
+        keep_running: Some(true),
+        idle_stop_after_secs: Some(Some(120)),
+        destroy_after_secs: Some(Some(3600)),
+        ..Default::default()
+    });
+    assert_eq!(read(&state_dir), (true, Some(120), Some(3600)));
+
+    // Omitting a field leaves it alone. In particular, setting only the pin must
+    // not erase the windows, and setting only a window must not change the pin.
+    update(crate::workspace::WorkspaceLimitsUpdate {
+        idle_stop_after_secs: Some(Some(300)),
+        ..Default::default()
+    });
+    assert_eq!(read(&state_dir), (true, Some(300), Some(3600)));
+
+    // An explicit null clears the per-workspace override, falling back to the
+    // daemon default rather than keeping the old value.
+    update(crate::workspace::WorkspaceLimitsUpdate {
+        destroy_after_secs: Some(None),
+        ..Default::default()
+    });
+    assert_eq!(read(&state_dir), (true, Some(300), None));
+
+    let _ = fs::remove_dir_all(state_dir);
+}
+
 /// A definition update refuses an owner that could not name a namespace.
 ///
 /// The id becomes a directory name under the auth store, so a workspace bound to

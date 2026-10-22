@@ -49,6 +49,7 @@ Defines the sandbox environment.
 | `cpu_percent` | No | — | Aggregate sandbox CPU share as a percentage of total machine CPU capacity. Requires cgroup v2 for enforcement. |
 | `max_procs` | No | — | Aggregate sandbox process-count cap. Requires cgroup v2 for enforcement. |
 | `disk_mb` | No | — | Total disk budget for the sandbox's workspaces. A sandbox rootfs is a shared lower layer rather than an image, so this caps the sum of its workspaces' `disk_mb` allocations and is enforced when a workspace is created or grown. Change it on an existing sandbox with `enclave resize <sandbox> --disk-mb N`. |
+| `max_running_workspaces` | No | — | Maximum number of workspace runtimes this sandbox may run at once. Reaching it rejects a new start with a conflict rather than stopping another workspace. |
 | `setup` | No | `[]` | List of shell commands run inside the sandbox root via `chroot` during creation and on later `enclave up` / `enclave restart` runs. Use idempotent commands. |
 
 ### Setup Commands
@@ -96,6 +97,11 @@ Each `[workspace.*]` block defines a workspace. The key after `workspace.` is th
 | `max_open_files` | No | — | Per-workspace file-descriptor cap (`RLIMIT_NOFILE`). |
 | `disk_mb` | No | — | Per-workspace disk quota for Enclave-managed writable storage. On quota-backed workspaces, `/home`, workspace-private `/tmp`, and the root OverlayFS copy-on-write layer share the same quota-backed filesystem, including writes under `/opt`, `/var`, `/etc`, and `/root`. Not supported when `workspace_dir` / `path` mounts a host directory into `/home`. |
 | `clear_tmp_on_restart` | No | `false` | Clear the managed workspace `/tmp` after a successful workspace or sandbox stop, before the next start. This is opt-in and has no effect on host-mounted `workspace_dir` / `path` storage. |
+| `keep_running` | No | `false` | Pin this workspace against idle stops and capacity eviction. This is an explicit workspace property; names and caller identity do not pin anything. |
+| `idle_stop_after_secs` | No | daemon default | Override the idle-stop window for this workspace. `0` disables idle stopping for it. |
+| `destroy_after_secs` | No | daemon default | Override the retention window after this workspace stops. `0` keeps its files indefinitely. |
+| `run_ttl_secs` | No | — | Stop the `run` command after this many seconds. `0` means no TTL. |
+| `run_keep_running` | No | `false` | Keep this workspace alive while its `run` background job is alive. |
 | `auth` | No | `[]` | List of auth providers to inject into this workspace. Supported values: `enclave`, `github`, `npm`. Only listed providers are exposed. |
 | `owner` | No | — | The auth namespace this workspace's tokens are read from, e.g. `owner = "alice"`. Omitted means the shared namespace at `<state_dir>/auth`, which is what every workspace used before namespaces existed. |
 | `env_tokens` | No | `[]` | List of environment variables to inject into this workspace. Any well-formed variable name is accepted: uppercase letters, digits, and `_`. `GITHUB_TOKEN` reads the `github` provider's token; any other name reads the store slot it derives (`NETFLIX_PASSWORD` reads `netflix-password`). |

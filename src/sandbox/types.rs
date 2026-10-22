@@ -108,6 +108,9 @@ pub struct SandboxLimits {
     /// rather than silently exceeded.
     #[serde(default)]
     pub disk_bytes: Option<u64>,
+    /// The most workspace runtimes this sandbox may have running at once.
+    #[serde(default)]
+    pub max_running_workspaces: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -116,6 +119,7 @@ pub struct SandboxLimitsUpdate {
     pub memory_bytes: Option<Option<u64>>,
     pub max_processes: Option<Option<u64>>,
     pub disk_bytes: Option<Option<u64>>,
+    pub max_running_workspaces: Option<Option<usize>>,
 }
 
 impl SandboxLimits {
@@ -124,6 +128,9 @@ impl SandboxLimits {
             validate_cpu_percent(cpu_percent)?;
         }
         validate_memory_bytes(self.memory_bytes)?;
+        if self.max_running_workspaces == Some(0) {
+            bail!("max_running_workspaces must be greater than 0");
+        }
         Ok(())
     }
 
@@ -196,6 +203,13 @@ impl SandboxLimits {
             changed |= self.disk_bytes != disk_bytes;
             self.disk_bytes = disk_bytes;
         }
+        if let Some(max_running_workspaces) = update.max_running_workspaces {
+            if max_running_workspaces == Some(0) {
+                bail!("max_running_workspaces must be greater than 0");
+            }
+            changed |= self.max_running_workspaces != max_running_workspaces;
+            self.max_running_workspaces = max_running_workspaces;
+        }
         self.validate()?;
         Ok(changed)
     }
@@ -207,6 +221,7 @@ impl SandboxLimitsUpdate {
             && self.memory_bytes.is_none()
             && self.max_processes.is_none()
             && self.disk_bytes.is_none()
+            && self.max_running_workspaces.is_none()
     }
 }
 
@@ -263,6 +278,8 @@ pub struct SandboxResizeReport {
     pub previous_disk_bytes: Option<u64>,
     #[serde(default)]
     pub previous_max_processes: Option<u64>,
+    #[serde(default)]
+    pub previous_max_running_workspaces: Option<usize>,
 }
 
 /// Which base-image backend a sandbox root filesystem is on.

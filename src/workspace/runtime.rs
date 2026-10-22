@@ -84,5 +84,6 @@ pub fn workspace_runtime_info(
         runtime_starttime_ticks: starttime_ticks,
         sandbox_rootfs_path: workspace.sandbox_rootfs_path.clone(),
         cgroup_path,
+        command_lease: None,
     })
 }

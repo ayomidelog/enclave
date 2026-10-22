@@ -95,6 +95,11 @@ pub(crate) fn mark_workspace_starting(
     workspace_id: &str,
 ) -> Result<String> {
     with_registry_mut(state_dir, |registry| {
+        // Capacity is reserved under the same lock that changes the workspace
+        // from Stopped to Starting. Checking it only while resolving the target
+        // leaves a window in which parallel starts all observe the same free
+        // slot before any of them records that it is taking one.
+        ensure_start_capacity(registry, sandbox_id, workspace_id)?;
         let used = collect_all_used_ip_octets(registry);
         let assigned_ip = network::ipam::allocate_ip(&used)?;
         let workspace = registry
@@ -107,6 +112,59 @@ pub(crate) fn mark_workspace_starting(
         persist_workspace_metadata(workspace)?;
         Ok(assigned_ip)
     })
+}
+
+/// Refuse a start that would exceed a sandbox or daemon-wide running limit.
+///
+/// This runs inside the registry mutation, where `Starting` is recorded, so a
+/// slot cannot be observed by two concurrent starts. A transitional workspace
+/// counts as occupying a slot because its runtime is about to exist.
+fn ensure_start_capacity(
+    registry: &crate::registry::Registry,
+    sandbox_id: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    let sandbox = registry
+        .sandboxes
+        .get(sandbox_id)
+        .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+    let occupies_slot = |workspace: &&WorkspaceMetadata| {
+        workspace.id != workspace_id
+            && matches!(
+                workspace.status,
+                WorkspaceStatus::Starting | WorkspaceStatus::Running
+            )
+    };
+    let running_in_sandbox = sandbox.workspaces.values().filter(occupies_slot).count();
+    if let Some(limit) = sandbox.metadata.limits.max_running_workspaces {
+        if running_in_sandbox >= limit {
+            return Err(crate::error::coded(
+                crate::error::ErrorCode::Conflict,
+                format!(
+                    "sandbox '{}' is at its running-workspace limit ({}); stop a workspace or raise max_running_workspaces",
+                    sandbox.metadata.id, limit
+                ),
+            ));
+        }
+    }
+    if let Some(limit) = crate::workspace::daemon_max_running_workspaces() {
+        let running = registry
+            .sandboxes
+            .values()
+            .flat_map(|sandbox| sandbox.workspaces.values())
+            .filter(occupies_slot)
+            .count();
+        if running >= limit {
+            return Err(crate::error::coded(
+                crate::error::ErrorCode::Conflict,
+                format!(
+                    "the daemon is at its running-workspace limit ({}); stop a workspace or raise max_running_workspaces",
+                    limit
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Roll a failed launch back to `Stopped`, tearing down anything the partial

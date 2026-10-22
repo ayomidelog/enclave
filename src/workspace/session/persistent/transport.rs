@@ -34,6 +34,8 @@ struct CommandResponse {
     exit_code: i32,
     stdout: String,
     stderr: String,
+    #[serde(default)]
+    process_group: Option<i32>,
 }
 
 #[derive(Debug)]
@@ -41,6 +43,10 @@ pub(crate) struct PersistentCommandOutput {
     pub(crate) exit_code: i32,
     pub(crate) stdout: String,
     pub(crate) stderr: String,
+    /// The host pid of the helper that supervised the command.
+    pub(crate) helper_pid: Option<u32>,
+    /// The host process group the helper forked for the command.
+    pub(crate) process_group: Option<i32>,
 }
 
 pub(super) fn send_command(
@@ -83,6 +89,8 @@ pub(super) fn send_command(
         // state directory is not visible at its host path. Publishing the id there
         // created a stray file in the workspace instead of a file the daemon could
         // read, so the cancel file is only written when the paths agree.
+        // The helper's mount namespace does not expose the host state directory,
+        // so cancellation is still driven by the daemon's busy marker.
         cancel_file: None,
     };
     serde_json::to_writer(&mut stream, &request).context("failed to encode persistent command")?;
@@ -120,5 +128,7 @@ pub(super) fn send_command(
         exit_code: response.exit_code,
         stdout: response.stdout,
         stderr: response.stderr,
+        helper_pid: None,
+        process_group: response.process_group,
     })
 }

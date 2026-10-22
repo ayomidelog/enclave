@@ -57,6 +57,7 @@ pub(super) fn handle_persistent_command(
                 exit_code: code,
                 stdout: crate::workspace::session::output_to_string(stdout),
                 stderr: crate::workspace::session::output_to_string(stderr),
+                process_group: Some(child.as_raw()),
             };
             serde_json::to_writer(&mut stream, &response)
                 .context("failed to write persistent command response")?;

@@ -29,7 +29,20 @@ pub(crate) fn run_workspace_command(args: WorkspaceCommandInternalArgs) -> Resul
     let child = unsafe { fork() }.context("failed to fork after namespace entry")?;
     match child {
         ForkResult::Parent { child } => {
+            // The detached helper is the group leader. A TERM sent to the group
+            // must reach the command and its descendants, but the leader has to
+            // survive the graceful phase so the daemon can still address the
+            // group for the later SIGKILL. The child is forked before this is
+            // changed, so the command keeps the default TERM disposition.
+            if args.hold_process_group {
+                unsafe {
+                    libc::signal(libc::SIGTERM, libc::SIG_IGN);
+                }
+            }
             let code = wait_pid_exit_code(child)?;
+            if args.hold_process_group {
+                wait_for_group_descendants();
+            }
             std::process::exit(code);
         }
         ForkResult::Child => {
@@ -46,6 +59,50 @@ pub(crate) fn run_workspace_command(args: WorkspaceCommandInternalArgs) -> Resul
             unreachable!("workspace command child should exec or exit with an error");
         }
     }
+}
+
+/// Wait until the command's process group has no live member except this
+/// helper. This is the detached-job supervisor: the helper stays alive as the
+/// group leader, so the recorded pid/start-time identity remains valid for the
+/// lifetime of work the command started.
+fn wait_for_group_descendants() {
+    let pgid = unsafe { libc::getpgrp() };
+    let self_pid = std::process::id();
+    loop {
+        if !has_other_group_member(pgid, self_pid) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn has_other_group_member(pgid: libc::pid_t, self_pid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            return false;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            return false;
+        };
+        if pid == self_pid {
+            return false;
+        }
+        let Ok(raw) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some(rest) = raw.rsplit_once(") ").map(|(_, rest)| rest) else {
+            return false;
+        };
+        let mut fields = rest.split_whitespace();
+        let state = fields.next();
+        let group = fields
+            .nth(1)
+            .and_then(|value| value.parse::<libc::pid_t>().ok());
+        group == Some(pgid) && !matches!(state, Some("Z" | "X" | "x"))
+    })
 }
 
 pub(crate) fn run_workspace_command_child(

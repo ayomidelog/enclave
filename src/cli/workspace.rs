@@ -148,8 +148,58 @@ pub struct WorkspaceExecArgs {
     /// recorded in the daemon log.
     #[arg(long)]
     pub no_scrub: bool,
+    /// Run the command as a tracked background job.
+    #[arg(long)]
+    pub background: bool,
+    /// Keep the workspace alive while a background job runs.
+    #[arg(long, requires = "background")]
+    pub keep_running: bool,
+    /// Stop a background job after this many seconds.
+    #[arg(long, value_name = "SECONDS", requires = "background")]
+    pub ttl_secs: Option<u64>,
     #[arg(required = true, trailing_var_arg = true, value_parser = parse_non_empty_arg)]
     pub command: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct WorkspaceJobArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox_id: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace_id: String,
+    #[arg(long)]
+    pub job: Option<String>,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("policy")
+        .args([
+            "keep_running",
+            "no_keep_running",
+            "idle_stop_after_secs",
+            "destroy_after_secs",
+        ])
+        .required(true)
+        .multiple(true)
+))]
+pub struct WorkspaceKeepArgs {
+    #[arg(value_parser = parse_entity_name)]
+    pub sandbox: String,
+    #[arg(value_parser = parse_entity_name)]
+    pub workspace: String,
+    /// Pin the workspace against idle stops and capacity eviction.
+    #[arg(long, conflicts_with = "no_keep_running")]
+    pub keep_running: bool,
+    /// Remove the keep-running pin instead of setting it.
+    #[arg(long, conflicts_with = "keep_running")]
+    pub no_keep_running: bool,
+    /// Idle-stop window in seconds. Zero disables idle stopping for this workspace.
+    #[arg(long, value_name = "SECONDS")]
+    pub idle_stop_after_secs: Option<u64>,
+    /// Destroy-after window in seconds. Zero keeps the stopped workspace.
+    #[arg(long, value_name = "SECONDS")]
+    pub destroy_after_secs: Option<u64>,
 }
 
 /// Stop the command a workspace is currently running.

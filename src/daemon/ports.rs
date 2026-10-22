@@ -37,6 +37,7 @@ fn sandboxes_holding_ports(registry: &Registry) -> Vec<String> {
 pub(super) fn reconcile_published_ports(
     state_dir: &Path,
     port_publisher: &crate::network::publish::PortPublisher,
+    services: &crate::daemon::services::DaemonServices,
 ) -> Result<()> {
     let running_sandboxes =
         with_registry(state_dir, |registry| Ok(sandboxes_holding_ports(registry)))?;
@@ -84,6 +85,11 @@ pub(super) fn reconcile_published_ports(
             runtime_pid,
             workspace_ip,
             &workspace.published_ports,
+        )?;
+        services.activity.refresh_jobs_for_workspace(
+            state_dir,
+            &workspace.sandbox_id,
+            &workspace.id,
         )?;
     }
     Ok(())

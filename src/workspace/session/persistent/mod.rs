@@ -162,7 +162,7 @@ fn run_on_helper(
     let busy_path =
         crate::workspace::cancel_file_path(std::path::Path::new(&workspace.workspace_path));
     let _ = publish_busy_marker(&busy_path, helper.child.id());
-    let result = send_command(
+    let mut result = send_command(
         &mut helper,
         runtime_pid,
         runtime_starttime_ticks,
@@ -170,6 +170,9 @@ fn run_on_helper(
         cwd,
         command,
     );
+    if let Ok(output) = result.as_mut() {
+        output.helper_pid = Some(helper.child.id());
+    }
     let _ = fs::remove_file(&busy_path);
     if let Err(error) = &result {
         if format!("{error:#}").contains(transport::HELPER_TIMEOUT_PREFIX) {
@@ -210,7 +213,8 @@ fn publish_busy_marker(path: &std::path::Path, helper_pid: u32) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     let temp = path.with_extension("tmp");
-    fs::write(&temp, format!("{helper_pid}\n"))?;
+    let starttime = crate::workspace::session::process_starttime_ticks(helper_pid)?;
+    fs::write(&temp, format!("{helper_pid} {starttime}\n"))?;
     fs::rename(&temp, path)?;
     Ok(())
 }

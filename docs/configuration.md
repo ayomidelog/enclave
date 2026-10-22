@@ -26,6 +26,18 @@ suite = "bookworm"
 mirror = "http://deb.debian.org/debian"
 bootstrap_method = "debootstrap"
 wait_secs = 5
+
+# Workspace lifecycle policy
+idle_stop_after_secs = 900
+destroy_after_secs = 86400
+max_running_workspaces = 8
+default_workspace_cpu_percent = 50
+default_workspace_max_processes = 512
+sweep_interval_secs = 30
+sweep_enabled = true
+evict_idle = true
+task_count_threshold = 1024
+detached_process_threshold = 32
 ```
 
 ## Options
@@ -44,6 +56,16 @@ Since Enclave requires root privileges, the defaults below are the values used w
 | `mirror` | `http://deb.debian.org/debian` | Default Debian mirror URL. |
 | `bootstrap_method` | `debootstrap` | Default bootstrap method for sandbox creation (`debootstrap` or `cached_rootfs`). |
 | `wait_secs` | `5` | Seconds to wait for the daemon to start during `daemon start`. |
+| `idle_stop_after_secs` | unset | Default idle window. A running workspace with no active command, live port connection, or real request during this window is stopped. `0` disables idle stops. |
+| `destroy_after_secs` | unset | Default retention after a workspace stops. A stopped workspace older than this is destroyed; its files are kept when unset or `0`. |
+| `default_workspace_cpu_percent` | unset | CPU share inherited by a workspace that does not declare `cpu_percent`. |
+| `default_workspace_max_processes` | unset | Process cap inherited by a workspace that does not declare `max_procs`. |
+| `max_running_workspaces` | unset | Daemon-wide cap on running workspace runtimes. A sandbox may set its own cap. |
+| `sweep_interval_secs` | `30` | How often the daemon evaluates idle and retention policy. |
+| `sweep_enabled` | `true` | Whether the daemon runs the lifecycle sweep. |
+| `evict_idle` | `true` | Whether the sweep stops idle workspaces. When false, `doctor` still reports them. |
+| `task_count_threshold` | `1024` | Workspace task count at which `doctor` warns. Tasks include threads. |
+| `detached_process_threshold` | `32` | Number of tracked detached processes at which `doctor` warns. |
 
 ## CLI Flag Overrides
 

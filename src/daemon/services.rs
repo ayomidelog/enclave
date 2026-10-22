@@ -19,4 +19,6 @@ pub(crate) struct DaemonServices {
     /// Lifecycle operations in flight, so shutdown can report what it
     /// interrupted instead of exiting silently.
     pub(crate) active_operations: Arc<ActiveOperations>,
+    pub(crate) activity: Arc<crate::workspace::ActivityService>,
+    pub(crate) policy: Arc<super::policy::IdlePolicy>,
 }

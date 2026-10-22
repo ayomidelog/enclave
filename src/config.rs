@@ -17,6 +17,24 @@ pub struct FileConfig {
     pub mirror: Option<String>,
     pub wait_secs: Option<u64>,
     pub bootstrap_method: Option<String>,
+    /// Stop an idle workspace after this many seconds. Zero disables idle stops.
+    pub idle_stop_after_secs: Option<u64>,
+    /// Destroy a stopped workspace after this many seconds. Zero keeps it.
+    pub destroy_after_secs: Option<u64>,
+    /// Default CPU share for a workspace that does not declare one.
+    pub default_workspace_cpu_percent: Option<f64>,
+    /// Default process cap for a workspace that does not declare one.
+    pub default_workspace_max_processes: Option<u64>,
+    pub task_count_threshold: Option<u64>,
+    pub detached_process_threshold: Option<u64>,
+    /// Most workspace runtimes that may be running across the daemon.
+    pub max_running_workspaces: Option<usize>,
+    /// How often the daemon checks idle and destroy policy.
+    pub sweep_interval_secs: Option<u64>,
+    /// Whether the activity sweep runs.
+    pub sweep_enabled: Option<bool>,
+    /// Whether idle policy is enforced or only reported by doctor.
+    pub evict_idle: Option<bool>,
 }
 
 pub fn load_config(explicit_path: Option<&Path>) -> Result<FileConfig> {
@@ -73,6 +91,21 @@ fn validate_file_config(config: &FileConfig) -> Result<()> {
         .as_deref()
         .unwrap_or(crate::sandbox::DEFAULT_DEBIAN_MIRROR);
     crate::sandbox::validate_debootstrap_inputs(suite, mirror)?;
+    if let Some(cpu_percent) = config.default_workspace_cpu_percent {
+        crate::resource_limits::validate_cpu_percent(cpu_percent)?;
+    }
+    if config.default_workspace_max_processes == Some(0) {
+        anyhow::bail!("default_workspace_max_processes must be greater than 0");
+    }
+    if config.task_count_threshold == Some(0) {
+        anyhow::bail!("task_count_threshold must be greater than 0");
+    }
+    if config.max_running_workspaces == Some(0) {
+        anyhow::bail!("max_running_workspaces must be greater than 0");
+    }
+    if config.sweep_interval_secs == Some(0) {
+        anyhow::bail!("sweep_interval_secs must be greater than 0");
+    }
     Ok(())
 }
 

@@ -29,6 +29,8 @@ struct PersistentCommandResponse {
     exit_code: i32,
     stdout: String,
     stderr: String,
+    #[serde(default)]
+    process_group: Option<i32>,
 }
 
 pub(crate) fn run_workspace_session_persistent_helper(

@@ -184,6 +184,11 @@ pub struct WorkspaceCommandInternalArgs {
     pub sandbox_id: String,
     #[arg(long)]
     pub workspace_id: String,
+    /// Keep this helper, the process-group leader, alive until every other
+    /// process in its group exits. Detached jobs use this so the recorded group
+    /// identity remains valid while descendants are still running.
+    #[arg(long, default_value_t = false)]
+    pub hold_process_group: bool,
     #[arg(long, default_value = "")]
     pub cgroup_path: String,
     #[arg(long)]

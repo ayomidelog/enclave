@@ -49,6 +49,16 @@ pub(crate) fn run_daemon_command(socket: &Path, command: DaemonCommands) -> Resu
                 debootstrap_binary: args.debootstrap_binary,
                 workspace_apparmor_profile: args.workspace_apparmor_profile,
                 workspace_selinux_label: args.workspace_selinux_label,
+                idle_stop_after_secs: args.idle_stop_after_secs,
+                destroy_after_secs: args.destroy_after_secs,
+                default_workspace_cpu_percent: args.default_workspace_cpu_percent,
+                default_workspace_max_processes: args.default_workspace_max_processes,
+                task_count_threshold: args.task_count_threshold,
+                detached_process_threshold: args.detached_process_threshold,
+                max_running_workspaces: args.max_running_workspaces,
+                sweep_interval_secs: args.sweep_interval_secs,
+                sweep_enabled: args.sweep_enabled,
+                evict_idle: args.evict_idle,
             })
         }
         DaemonCommands::Start(args) => start::start_daemon(socket, args),

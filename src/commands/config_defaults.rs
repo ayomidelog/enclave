@@ -30,10 +30,12 @@ pub(crate) fn apply_config_defaults(cli: &mut Cli, matches: &ArgMatches, file_co
             DaemonCommands::Run(args) => {
                 let run_matches = nested_subcommand_matches(matches, &["daemon", "run"]);
                 apply_daemon_common_defaults(args, run_matches, file_config);
+                apply_sweep_defaults(args, run_matches, file_config);
             }
             DaemonCommands::Start(args) => {
                 let start_matches = nested_subcommand_matches(matches, &["daemon", "start"]);
                 apply_daemon_common_defaults(args, start_matches, file_config);
+                apply_sweep_defaults(args, start_matches, file_config);
                 if arg_uses_default_opt(start_matches, "wait_secs") {
                     if let Some(wait_secs) = file_config.wait_secs {
                         args.wait_secs = wait_secs;
@@ -128,6 +130,102 @@ fn apply_daemon_common_defaults(
             *args.workspace_selinux_label_mut() = Some(label.clone());
         }
     }
+    if arg_is_unset_opt(matches, "idle_stop_after_secs") {
+        args.idle_stop_after_secs_mut()
+            .clone_from(&file_config.idle_stop_after_secs);
+    }
+    if arg_is_unset_opt(matches, "destroy_after_secs") {
+        args.destroy_after_secs_mut()
+            .clone_from(&file_config.destroy_after_secs);
+    }
+    if arg_is_unset_opt(matches, "default_workspace_cpu_percent") {
+        args.default_workspace_cpu_percent_mut()
+            .clone_from(&file_config.default_workspace_cpu_percent);
+    }
+    if arg_is_unset_opt(matches, "default_workspace_max_processes") {
+        args.default_workspace_max_processes_mut()
+            .clone_from(&file_config.default_workspace_max_processes);
+    }
+    if arg_is_unset_opt(matches, "max_running_workspaces") {
+        args.max_running_workspaces_mut()
+            .clone_from(&file_config.max_running_workspaces);
+    }
+}
+
+fn apply_sweep_defaults(
+    args: &mut impl SweepDefaults,
+    matches: Option<&ArgMatches>,
+    file_config: &FileConfig,
+) {
+    if arg_uses_default_opt(matches, "sweep_interval_secs") {
+        if let Some(seconds) = file_config.sweep_interval_secs {
+            *args.sweep_interval_secs_mut() = seconds;
+        }
+    }
+    if arg_uses_default_opt(matches, "sweep_enabled") {
+        if let Some(enabled) = file_config.sweep_enabled {
+            *args.sweep_enabled_mut() = enabled;
+        }
+    }
+    if arg_uses_default_opt(matches, "evict_idle") {
+        if let Some(enabled) = file_config.evict_idle {
+            *args.evict_idle_mut() = enabled;
+        }
+    }
+    if arg_uses_default_opt(matches, "task_count_threshold") {
+        if let Some(value) = file_config.task_count_threshold {
+            *args.task_count_threshold_mut() = value;
+        }
+    }
+    if arg_uses_default_opt(matches, "detached_process_threshold") {
+        if let Some(value) = file_config.detached_process_threshold {
+            *args.detached_process_threshold_mut() = value;
+        }
+    }
+}
+
+trait SweepDefaults {
+    fn sweep_interval_secs_mut(&mut self) -> &mut u64;
+    fn sweep_enabled_mut(&mut self) -> &mut bool;
+    fn evict_idle_mut(&mut self) -> &mut bool;
+    fn task_count_threshold_mut(&mut self) -> &mut u64;
+    fn detached_process_threshold_mut(&mut self) -> &mut u64;
+}
+
+impl SweepDefaults for crate::cli::RunArgs {
+    fn sweep_interval_secs_mut(&mut self) -> &mut u64 {
+        &mut self.sweep_interval_secs
+    }
+    fn sweep_enabled_mut(&mut self) -> &mut bool {
+        &mut self.sweep_enabled
+    }
+    fn evict_idle_mut(&mut self) -> &mut bool {
+        &mut self.evict_idle
+    }
+    fn task_count_threshold_mut(&mut self) -> &mut u64 {
+        &mut self.task_count_threshold
+    }
+    fn detached_process_threshold_mut(&mut self) -> &mut u64 {
+        &mut self.detached_process_threshold
+    }
+}
+
+impl SweepDefaults for crate::cli::StartArgs {
+    fn sweep_interval_secs_mut(&mut self) -> &mut u64 {
+        &mut self.sweep_interval_secs
+    }
+    fn sweep_enabled_mut(&mut self) -> &mut bool {
+        &mut self.sweep_enabled
+    }
+    fn evict_idle_mut(&mut self) -> &mut bool {
+        &mut self.evict_idle
+    }
+    fn task_count_threshold_mut(&mut self) -> &mut u64 {
+        &mut self.task_count_threshold
+    }
+    fn detached_process_threshold_mut(&mut self) -> &mut u64 {
+        &mut self.detached_process_threshold
+    }
 }
 
 /// The daemon flags shared by `daemon run` and `daemon start`.
@@ -141,6 +239,11 @@ trait DaemonDefaults {
     fn debootstrap_binary_mut(&mut self) -> &mut String;
     fn workspace_apparmor_profile_mut(&mut self) -> &mut Option<String>;
     fn workspace_selinux_label_mut(&mut self) -> &mut Option<String>;
+    fn idle_stop_after_secs_mut(&mut self) -> &mut Option<u64>;
+    fn destroy_after_secs_mut(&mut self) -> &mut Option<u64>;
+    fn default_workspace_cpu_percent_mut(&mut self) -> &mut Option<f64>;
+    fn default_workspace_max_processes_mut(&mut self) -> &mut Option<u64>;
+    fn max_running_workspaces_mut(&mut self) -> &mut Option<usize>;
 }
 
 /// The single path the rootfs commands share.
@@ -164,6 +267,21 @@ impl DaemonDefaults for crate::cli::RunArgs {
     fn workspace_selinux_label_mut(&mut self) -> &mut Option<String> {
         &mut self.workspace_selinux_label
     }
+    fn idle_stop_after_secs_mut(&mut self) -> &mut Option<u64> {
+        &mut self.idle_stop_after_secs
+    }
+    fn destroy_after_secs_mut(&mut self) -> &mut Option<u64> {
+        &mut self.destroy_after_secs
+    }
+    fn default_workspace_cpu_percent_mut(&mut self) -> &mut Option<f64> {
+        &mut self.default_workspace_cpu_percent
+    }
+    fn default_workspace_max_processes_mut(&mut self) -> &mut Option<u64> {
+        &mut self.default_workspace_max_processes
+    }
+    fn max_running_workspaces_mut(&mut self) -> &mut Option<usize> {
+        &mut self.max_running_workspaces
+    }
 }
 
 impl DaemonDefaults for crate::cli::StartArgs {
@@ -181,6 +299,21 @@ impl DaemonDefaults for crate::cli::StartArgs {
     }
     fn workspace_selinux_label_mut(&mut self) -> &mut Option<String> {
         &mut self.workspace_selinux_label
+    }
+    fn idle_stop_after_secs_mut(&mut self) -> &mut Option<u64> {
+        &mut self.idle_stop_after_secs
+    }
+    fn destroy_after_secs_mut(&mut self) -> &mut Option<u64> {
+        &mut self.destroy_after_secs
+    }
+    fn default_workspace_cpu_percent_mut(&mut self) -> &mut Option<f64> {
+        &mut self.default_workspace_cpu_percent
+    }
+    fn default_workspace_max_processes_mut(&mut self) -> &mut Option<u64> {
+        &mut self.default_workspace_max_processes
+    }
+    fn max_running_workspaces_mut(&mut self) -> &mut Option<usize> {
+        &mut self.max_running_workspaces
     }
 }
 

@@ -57,23 +57,19 @@ pub(in crate::commands::workspace) fn print_workspace_stats(status: &WorkspaceSt
         format_optional_bytes(status.block_read_bytes),
         format_optional_bytes(status.block_write_bytes)
     );
+    println!("process_count: {}", status.process_count);
     println!(
-        "pids: {} / {}",
-        status.pids_current.map_or_else(
-            || status.active_process_count.to_string(),
-            |v| v.to_string()
-        ),
+        "task_count: {}",
+        status
+            .task_count
+            .map_or_else(|| "unavailable".to_string(), |v| v.to_string())
+    );
+    println!(
+        "task_limit: {}",
         status
             .pids_limit
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string())
     );
-    println!(
-        "threads: {}",
-        status
-            .threads
-            .map_or_else(|| "unavailable".to_string(), |v| v.to_string())
-    );
-    println!("active_process_count: {}", status.active_process_count);
 }
 
 pub(crate) fn print_workspace_stats_table(stats: &[WorkspaceStatsReport]) -> Result<()> {
@@ -140,23 +136,28 @@ pub(crate) fn print_workspace_stats_table(stats: &[WorkspaceStatsReport]) -> Res
         },
         "BLOCK I/O".len(),
     );
-    let pids_width = column_width(
+    let process_width = column_width(
+        stats,
+        |s| s.process_count.to_string().len(),
+        "PROCESSES".len(),
+    );
+    let task_width = column_width(
         stats,
         |s| {
             format!(
                 "{} / {}",
-                s.pids_current
-                    .map_or_else(|| s.active_process_count.to_string(), |v| v.to_string()),
+                s.task_count
+                    .map_or_else(|| "n/a".to_string(), |v| v.to_string()),
                 s.pids_limit
                     .map_or_else(|| "∞".to_string(), |v| v.to_string())
             )
             .len()
         },
-        "PIDS".len(),
+        "TASKS".len(),
     );
 
     println!(
-        "{:<sandbox_width$} {:<workspace_width$} {:>cpu_width$} {:>mem_width$} {:>mem_pct_width$} {:>net_width$} {:>block_width$} {:>pids_width$}",
+        "{:<sandbox_width$} {:<workspace_width$} {:>cpu_width$} {:>mem_width$} {:>mem_pct_width$} {:>net_width$} {:>block_width$} {:>process_width$} {:>task_width$}",
         "SANDBOX",
         "WORKSPACE",
         "CPU %",
@@ -164,11 +165,12 @@ pub(crate) fn print_workspace_stats_table(stats: &[WorkspaceStatsReport]) -> Res
         "MEM %",
         "NET I/O",
         "BLOCK I/O",
-        "PIDS"
+        "PROCESSES",
+        "TASKS"
     );
     for stat in stats {
         println!(
-            "{:<sandbox_width$} {:<workspace_width$} {:>cpu_width$} {:>mem_width$} {:>mem_pct_width$} {:>net_width$} {:>block_width$} {:>pids_width$}",
+            "{:<sandbox_width$} {:<workspace_width$} {:>cpu_width$} {:>mem_width$} {:>mem_pct_width$} {:>net_width$} {:>block_width$} {:>process_width$} {:>task_width$}",
             stat.sandbox_id,
             stat.name,
             stat.cpu_percent
@@ -192,10 +194,11 @@ pub(crate) fn print_workspace_stats_table(stats: &[WorkspaceStatsReport]) -> Res
                 format_optional_bytes(stat.block_read_bytes),
                 format_optional_bytes(stat.block_write_bytes)
             ),
+            stat.process_count,
             format!(
                 "{} / {}",
-                stat.pids_current
-                    .map_or_else(|| stat.active_process_count.to_string(), |v| v.to_string()),
+                stat.task_count
+                    .map_or_else(|| "n/a".to_string(), |v| v.to_string()),
                 stat.pids_limit
                     .map_or_else(|| "∞".to_string(), |v| v.to_string())
             ),

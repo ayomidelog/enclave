@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Add durable workspace activity timestamps, an idle-stop and retention sweeper, and
+  an explicit `keep_running` pin. Status and stats remain read-only and do not extend
+  a workspace's idle window.
+- Add foreground and background job records with PID/start-time identity, process
+  groups, status, exit codes, TTLs, and keep-running policy. `workspace exec
+  --background`, `workspace jobs`, and `workspace keep` expose the model.
+- TTL cancellation escalates from SIGTERM to SIGKILL through the configured
+  runtime deadlines. A failed foreground command is recorded as failed, and
+  `workspace keep` changes only the pin or window explicitly named.
+- Add per-sandbox and daemon-wide running-workspace capacity limits, with capacity
+  reserved atomically when a start commits. Add configurable default workspace CPU
+  and process limits.
+- Report PID-namespace `process_count` separately from cgroup `task_count`, and add
+  `ps --processes` rows with PID, PPID, command, age, CPU, RSS, thread count, and
+  tracked detached-job identity.
+- Add doctor checks for idle workspaces, task-count pressure, and detached processes;
+  `doctor --repair` can stop idle workspaces through the verified stop path. Workspace
+  mounts remain private and are released only when that workspace stops.
+
 ## 2.3.2 - 2026-10-15
 
 ### Added

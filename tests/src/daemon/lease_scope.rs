@@ -32,6 +32,9 @@ fn read_only_and_per_command_requests_take_no_lease() {
         Action::WorkspaceLogs,
         Action::WorkspaceRuntime,
         Action::WorkspaceExec,
+        Action::WorkspaceCommandBegin,
+        Action::WorkspaceCommandEnd,
+        Action::WorkspaceJobsList,
         Action::WorkspaceCp,
         Action::WorkspacePortList,
         Action::WorkspaceSnapshotList,
@@ -119,6 +122,8 @@ fn long_running_transfers_do_not_take_a_lifecycle_lease() {
     for action in [
         Action::WorkspaceCp,
         Action::WorkspaceExec,
+        Action::WorkspaceCommandBegin,
+        Action::WorkspaceCommandEnd,
         Action::WorkspaceRuntime,
         Action::WorkspaceLogs,
     ] {

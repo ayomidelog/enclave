@@ -27,6 +27,94 @@ fn workspace_exec_default_cwd_is_home() {
 }
 
 #[test]
+fn workspace_exec_background_flags_parse() {
+    let cli = Cli::try_parse_from([
+        "enclave",
+        "workspace",
+        "exec",
+        "box",
+        "api",
+        "--background",
+        "--ttl-secs",
+        "30",
+        "--keep-running",
+        "--",
+        "sleep",
+        "60",
+    ])
+    .expect("background job flags should parse");
+    let Commands::Workspace {
+        command: WorkspaceCommands::Exec(args),
+    } = cli.command
+    else {
+        panic!("expected workspace exec");
+    };
+    assert!(args.background);
+    assert!(args.keep_running);
+    assert_eq!(args.ttl_secs, Some(30));
+}
+
+#[test]
+fn background_job_policy_requires_background_mode() {
+    for flag in ["--keep-running", "--ttl-secs"] {
+        let mut args = vec!["enclave", "workspace", "exec", "box", "api", flag];
+        if flag == "--ttl-secs" {
+            args.push("30");
+        }
+        args.extend(["--", "sleep", "60"]);
+        assert!(
+            Cli::try_parse_from(args).is_err(),
+            "{flag} must require --background"
+        );
+    }
+}
+
+#[test]
+fn workspace_keep_requires_an_explicit_change() {
+    let parsed = Cli::try_parse_from(["enclave", "workspace", "keep", "box", "api"]);
+    assert!(
+        parsed.is_err(),
+        "keep must not silently change the pin or windows"
+    );
+
+    let parsed = Cli::try_parse_from([
+        "enclave",
+        "workspace",
+        "keep",
+        "box",
+        "api",
+        "--keep-running",
+        "--no-keep-running",
+    ]);
+    assert!(parsed.is_err(), "a pin cannot be both set and cleared");
+}
+
+#[test]
+fn workspace_keep_parses_independent_pin_and_window_changes() {
+    let cli = Cli::parse_from([
+        "enclave",
+        "workspace",
+        "keep",
+        "box",
+        "api",
+        "--idle-stop-after-secs",
+        "120",
+        "--destroy-after-secs",
+        "3600",
+    ]);
+    let Commands::Workspace {
+        command: WorkspaceCommands::Keep(args),
+    } = cli.command
+    else {
+        panic!("expected workspace keep");
+    };
+    assert!(!args.keep_running);
+    assert!(!args.no_keep_running);
+    assert_eq!(args.idle_stop_after_secs, Some(120));
+    assert_eq!(args.destroy_after_secs, Some(3600));
+}
+
+#[test]
 fn workspace_exec_rejects_empty_command_argument() {
     let parsed = Cli::try_parse_from(["enclave", "workspace", "exec", "sb", "ws", ""]);
     assert!(parsed.is_err());

@@ -78,6 +78,7 @@ pub(crate) fn mark_workspace_stopped(
         .get_mut(workspace_id)
         .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
     workspace.status = WorkspaceStatus::Stopped;
+    crate::workspace::mark_stopped(workspace);
     workspace.runtime_pid = None;
     workspace.runtime_starttime_ticks = None;
     workspace.assigned_ip = None;

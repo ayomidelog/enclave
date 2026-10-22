@@ -50,6 +50,9 @@ pub struct CreateArgs {
     /// Total disk budget for the sandbox's workspaces in MiB.
     #[arg(long, value_name = "MIB")]
     pub disk_mb: Option<u64>,
+    /// Maximum number of workspace runtimes this sandbox may run at once.
+    #[arg(long, value_name = "COUNT")]
+    pub max_running_workspaces: Option<usize>,
 }
 
 #[derive(Args, Debug)]
@@ -70,7 +73,15 @@ pub struct DestroyArgs {
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("target")
-        .args(["memory_mb", "disk_mb", "max_procs", "no_memory_limit", "no_disk_budget"])
+        .args([
+            "memory_mb",
+            "disk_mb",
+            "max_procs",
+            "max_running_workspaces",
+            "no_memory_limit",
+            "no_disk_budget",
+            "no_max_running_workspaces",
+        ])
         .required(true)
         .multiple(true)
 ))]
@@ -86,12 +97,18 @@ pub struct SandboxResizeArgs {
     /// Maximum aggregate processes in the sandbox. Omit to leave it alone.
     #[arg(long, value_name = "COUNT")]
     pub max_procs: Option<u64>,
+    /// Maximum running workspaces. Omit to leave it alone.
+    #[arg(long, value_name = "COUNT")]
+    pub max_running_workspaces: Option<usize>,
     /// Remove the sandbox memory limit.
     #[arg(long)]
     pub no_memory_limit: bool,
     /// Remove the sandbox disk budget, so its workspaces may allocate any size.
     #[arg(long)]
     pub no_disk_budget: bool,
+    /// Remove the sandbox's running-workspace cap.
+    #[arg(long)]
+    pub no_max_running_workspaces: bool,
 }
 
 #[derive(Args, Debug)]
@@ -175,4 +192,7 @@ pub(super) fn parse_shell_path(s: &str) -> Result<String, String> {
 pub struct PsArgs {
     #[arg(long, visible_alias = "project")]
     pub local: bool,
+    /// Include every process in each workspace, not just the workspace rows.
+    #[arg(long)]
+    pub processes: bool,
 }

@@ -13,6 +13,17 @@ use nix::sched::{setns, CloneFlags};
 
 use crate::workspace::{validate_published_ports, PublishedPortSpec, PublishedPortStatus};
 
+/// Called when a published-port client connects, so the daemon can record the
+/// workspace activity that is not represented by an Enclave command request.
+pub(crate) type ActivityCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
+
+/// The workspace a published port serves and how to report its activity.
+pub(crate) struct PublishedPortActivity {
+    pub(crate) sandbox_id: String,
+    pub(crate) workspace_id: String,
+    pub(crate) callback: Option<ActivityCallback>,
+}
+
 mod connection;
 mod limiter;
 mod proxy;

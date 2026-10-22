@@ -210,6 +210,26 @@ fn sandbox_create_parses_limit_flags() {
 }
 
 #[test]
+fn sandbox_create_parses_running_workspace_cap() {
+    let cli = Cli::try_parse_from(["enclave", "create", "box", "--max-running-workspaces", "4"])
+        .expect("running-workspace cap should parse");
+    let Commands::Create(args) = cli.command else {
+        panic!("expected create");
+    };
+    assert_eq!(args.max_running_workspaces, Some(4));
+}
+
+#[test]
+fn sandbox_resize_can_remove_the_running_workspace_cap() {
+    let cli = Cli::try_parse_from(["enclave", "resize", "box", "--no-max-running-workspaces"])
+        .expect("removing the running-workspace cap should parse");
+    let Commands::Resize(args) = cli.command else {
+        panic!("expected resize");
+    };
+    assert!(args.no_max_running_workspaces);
+}
+
+#[test]
 fn rootfs_export_parses_suite_and_output() {
     let cli = Cli::parse_from([
         "enclave",

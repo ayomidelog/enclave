@@ -39,6 +39,7 @@ fn column_width_uses_max_item() {
             status: "running".to_string(),
             uptime: None,
             pid: None,
+            processes: Vec::new(),
         },
         ProcessEntry {
             sandbox: "much-longer-sandbox-name".to_string(),
@@ -46,6 +47,7 @@ fn column_width_uses_max_item() {
             status: "stopped".to_string(),
             uptime: None,
             pid: None,
+            processes: Vec::new(),
         },
     ];
     assert_eq!(

@@ -139,6 +139,7 @@ pub(crate) fn reconcile_workspace_runtime_state(
             workspace.id
         );
         workspace.status = WorkspaceStatus::Stopped;
+        crate::workspace::mark_stopped(workspace);
         workspace.runtime_pid = None;
         workspace.runtime_starttime_ticks = None;
         workspace.assigned_ip = None;
@@ -169,6 +170,13 @@ pub(crate) fn reconcile_workspace_runtime_state(
         {
             return Ok(false);
         }
+        // This record was already `Stopped`, but its cleanup had not finished.
+        // Completing that cleanup is the point at which the retention window
+        // starts; leaving the old timestamp (or none) would either destroy the
+        // files immediately or keep them forever.
+        if workspace.last_stopped_at.is_none() {
+            crate::workspace::mark_stopped(workspace);
+        }
         workspace.runtime_pid = None;
         workspace.runtime_starttime_ticks = None;
         workspace.assigned_ip = None;
@@ -191,6 +199,7 @@ pub(crate) fn reconcile_workspace_runtime_state(
             return Ok(false);
         }
         workspace.status = WorkspaceStatus::Stopped;
+        crate::workspace::mark_stopped(workspace);
         workspace.runtime_pid = None;
         workspace.runtime_starttime_ticks = None;
         workspace.assigned_ip = None;

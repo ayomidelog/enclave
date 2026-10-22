@@ -12,6 +12,7 @@ mod args;
 mod credentials;
 mod detached;
 
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
 
@@ -40,11 +41,16 @@ pub struct WorkspaceExecOptions {
     /// On by default: the workspace is entitled to its token, and the output of
     /// a command travels further than the workspace does.
     pub scrub: bool,
+    /// How long this command keeps its workspace alive without another request.
+    pub ttl_secs: Option<u64>,
 }
 
 impl Default for WorkspaceExecOptions {
     fn default() -> Self {
-        Self { scrub: true }
+        Self {
+            scrub: true,
+            ttl_secs: None,
+        }
     }
 }
 
@@ -117,9 +123,65 @@ pub fn exec_workspace_command_with_options(
     // was actually given, which is what the scrubber and the audit act on.
     let injected = credentials::refresh(state_dir, &workspace, runtime_pid)?;
 
-    let output = crate::workspace::with_workspace_storage_mounted(&workspace, || {
+    let mut job = crate::workspace::JobRecord::new(
+        &workspace.sandbox_id,
+        &workspace.id,
+        crate::workspace::JobMode::Foreground,
+        command,
+    );
+    job.ttl_secs = options.ttl_secs;
+    // The job identity is the helper process, not the workspace runtime. The
+    // runtime outlives the command, so recording it would make an ended job look
+    // alive for as long as the workspace stayed up.
+    crate::workspace::jobs::persist(state_dir, &job)?;
+    crate::workspace::touch_activity(
+        state_dir,
+        &workspace.sandbox_id,
+        &workspace.id,
+        crate::workspace::ActivityKind::Process,
+    )?;
+
+    let output = match crate::workspace::with_workspace_storage_mounted(&workspace, || {
         session::execute_persistent_command(&workspace, &effective_cwd, command)
-    })?;
+    }) {
+        Ok(output) => output,
+        Err(error) => {
+            // A command that fails before the helper can return an exit status
+            // is still a finished job. Leaving the durable record `running`
+            // would make the next sweep and `workspace jobs` lie about work that
+            // no longer exists.
+            job.status = crate::workspace::JobStatus::Failed;
+            job.error = Some(format!("{error:#}"));
+            job.finished_at = Some(crate::workspace::activity_now());
+            crate::workspace::jobs::persist(state_dir, &job)?;
+            let _ = crate::workspace::touch_activity(
+                state_dir,
+                &workspace.sandbox_id,
+                &workspace.id,
+                crate::workspace::ActivityKind::Process,
+            );
+            return Err(error);
+        }
+    };
+    job.pid = output.helper_pid;
+    job.starttime_ticks = output
+        .helper_pid
+        .and_then(|pid| session::process_starttime_ticks(pid).ok());
+    job.process_group = output.process_group;
+    job.status = if output.exit_code == 0 {
+        crate::workspace::JobStatus::Exited
+    } else {
+        crate::workspace::JobStatus::Failed
+    };
+    job.exit_code = Some(output.exit_code);
+    job.finished_at = Some(crate::workspace::activity_now());
+    crate::workspace::jobs::persist(state_dir, &job)?;
+    crate::workspace::touch_activity(
+        state_dir,
+        &workspace.sandbox_id,
+        &workspace.id,
+        crate::workspace::ActivityKind::Process,
+    )?;
 
     let exit_code = output.exit_code;
     let mut stdout = output.stdout;
@@ -156,11 +218,13 @@ pub fn exec_workspace_command_with_options(
     }
 
     Ok(WorkspaceExecResult {
+        job_id: Some(job.id),
         exit_code,
         stdout,
         stderr,
         mount_ns,
         pid_ns,
+        background_job_id: None,
     })
 }
 
@@ -171,6 +235,35 @@ pub(crate) fn spawn_workspace_command(
     stdin: Stdio,
     stdout: Stdio,
     stderr: Stdio,
+) -> Result<Child> {
+    spawn_workspace_command_with_group(workspace, cwd, command, stdin, stdout, stderr, false)
+}
+
+/// Spawn a command helper and make it the leader of a new process group.
+///
+/// A detached job needs a process-group identity the daemon can signal. The
+/// helper is the process the daemon owns; putting it in a new group before exec
+/// means its command descendants inherit that group even though the command runs
+/// in a different PID namespace.
+pub(crate) fn spawn_workspace_command_in_group(
+    workspace: &WorkspaceMetadata,
+    cwd: &str,
+    command: &[String],
+    stdin: Stdio,
+    stdout: Stdio,
+    stderr: Stdio,
+) -> Result<Child> {
+    spawn_workspace_command_with_group(workspace, cwd, command, stdin, stdout, stderr, true)
+}
+
+fn spawn_workspace_command_with_group(
+    workspace: &WorkspaceMetadata,
+    cwd: &str,
+    command: &[String],
+    stdin: Stdio,
+    stdout: Stdio,
+    stderr: Stdio,
+    new_process_group: bool,
 ) -> Result<Child> {
     if command.is_empty() {
         bail!("workspace command helper requires a command");
@@ -206,19 +299,32 @@ pub(crate) fn spawn_workspace_command(
         crate::workspace::session::duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
     let fds = crate::workspace::session::raw_fds(&namespace_fds);
     crate::perf::record_process_spawn();
-    std::process::Command::new(&current_exe)
-        .args(args::runtime_exec_command_args_with_fds(
-            runtime_pid,
-            runtime_starttime_ticks,
-            workspace.sandbox_id.as_str(),
-            workspace.id.as_str(),
-            cwd,
-            command,
-            fds,
-        ))
-        .stdin(stdin)
-        .stdout(stdout)
-        .stderr(stderr)
+    let mut process = std::process::Command::new(&current_exe);
+    process.args(args::runtime_exec_command_args_with_fds(
+        runtime_pid,
+        runtime_starttime_ticks,
+        workspace,
+        cwd,
+        command,
+        new_process_group,
+        fds,
+    ));
+    process.stdin(stdin).stdout(stdout).stderr(stderr);
+    if new_process_group {
+        // SAFETY: `setpgid` is async-signal-safe, which is the contract for a
+        // closure run between fork and exec. A failure is returned through the
+        // spawn result rather than ignored.
+        unsafe {
+            process.pre_exec(|| {
+                if libc::setpgid(0, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+    }
+    process
         .spawn()
         .context("failed to execute workspace command via internal helper")
 }

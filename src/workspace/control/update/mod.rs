@@ -94,6 +94,24 @@ pub fn update_workspace_definition(
                 changed = true;
             }
         }
+        if let Some(keep_running) = limits_update.keep_running {
+            if workspace.keep_running != keep_running {
+                workspace.keep_running = keep_running;
+                changed = true;
+            }
+        }
+        if let Some(idle_stop_after_secs) = &limits_update.idle_stop_after_secs {
+            if workspace.idle_stop_after_secs != *idle_stop_after_secs {
+                workspace.idle_stop_after_secs = *idle_stop_after_secs;
+                changed = true;
+            }
+        }
+        if let Some(destroy_after_secs) = &limits_update.destroy_after_secs {
+            if workspace.destroy_after_secs != *destroy_after_secs {
+                workspace.destroy_after_secs = *destroy_after_secs;
+                changed = true;
+            }
+        }
         changed |= workspace.limits.apply_update(&limits_update)?;
         crate::workspace::validate_workspace_storage_limits(
             workspace.home_mount_source_path.as_deref(),

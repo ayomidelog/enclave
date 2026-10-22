@@ -11,6 +11,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
     config: &DaemonConfig,
     operation: &str,
     port_publisher: &Arc<PortPublisher>,
+    services: &crate::daemon::services::DaemonServices,
 ) -> Result<Value> {
     let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
@@ -25,6 +26,12 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
                 workspace_selector,
                 config.workspace_apparmor_profile.as_deref(),
                 config.workspace_selinux_label.as_deref(),
+            )?;
+            workspace::touch_activity(
+                &config.state_dir,
+                &metadata.sandbox_id,
+                &metadata.id,
+                workspace::ActivityKind::Request,
             )?;
             let metadata =
                 ensure_workspace_ports_started(&config.state_dir, &metadata, port_publisher)?;
@@ -42,6 +49,20 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
                 sandbox,
                 workspace_selector,
             )?;
+            if let Err(error) = workspace::jobs::cancel_running_for_workspace(
+                &config.state_dir,
+                &metadata.sandbox_id,
+                &metadata.id,
+                "workspace stopped",
+            ) {
+                tracing::warn!(
+                    workspace = %metadata.id,
+                    "failed to mark stopped workspace jobs as cancelled: {error:#}"
+                );
+            }
+            services
+                .activity
+                .prune_terminal_jobs(&metadata.sandbox_id, &metadata.id);
             port_publisher.clear_workspace_ports(&metadata.sandbox_id, &metadata.id);
             // The port publisher lives in the daemon, so its release is verified
             // here and folded into the workspace cleanup certificate.
@@ -136,6 +157,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_target(
         "runtime" => {
             let result =
                 workspace::workspace_runtime_info(&config.state_dir, sandbox, workspace_selector)?;
+            let _ = services;
             Ok(serde_json::to_value(result)?)
         }
         "snapshot_list" => {

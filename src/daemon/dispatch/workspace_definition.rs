@@ -49,6 +49,12 @@ pub(super) fn ensure_workspace_ports_started(
         let _ = workspace::stop_workspace(state_dir, &metadata.sandbox_id, &metadata.id);
         return Err(err);
     }
+    crate::workspace::touch_activity(
+        state_dir,
+        &metadata.sandbox_id,
+        &metadata.id,
+        crate::workspace::ActivityKind::Request,
+    )?;
 
     Ok(metadata.clone())
 }
@@ -124,6 +130,15 @@ pub(super) fn update_workspace_definition_with_runtime(
         return Err(err);
     }
 
+    if published_ports.is_some() {
+        crate::workspace::touch_activity(
+            state_dir,
+            &updated.sandbox_id,
+            &updated.id,
+            crate::workspace::ActivityKind::Request,
+        )?;
+    }
+
     workspace::workspace_metadata(state_dir, &updated.sandbox_id, &updated.id)
 }
 
@@ -153,6 +168,9 @@ pub(super) fn rollback_workspace_definition_update(
             published_ports: Some(previous.published_ports.clone()),
             limits: workspace::WorkspaceLimitsUpdate {
                 clear_tmp_on_restart: Some(previous.clear_tmp_on_restart),
+                keep_running: Some(previous.keep_running),
+                idle_stop_after_secs: Some(previous.idle_stop_after_secs),
+                destroy_after_secs: Some(previous.destroy_after_secs),
                 cpu_seconds: Some(previous.limits.cpu_seconds),
                 cpu_percent: Some(previous.limits.cpu_percent),
                 memory_bytes: Some(previous.limits.memory_bytes),

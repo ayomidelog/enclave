@@ -124,6 +124,9 @@ pub(super) fn parse_workspace_limits_update(
         checked_optional_megabytes(parse_optional_u64_field(params, "disk_mb")?, "disk_mb")?;
     Ok(workspace::WorkspaceLimitsUpdate {
         clear_tmp_on_restart: parse_optional_bool_field(params, "clear_tmp_on_restart")?,
+        keep_running: parse_optional_bool_field(params, "keep_running")?,
+        idle_stop_after_secs: parse_optional_u64_field(params, "idle_stop_after_secs")?,
+        destroy_after_secs: parse_optional_u64_field(params, "destroy_after_secs")?,
         cpu_seconds: parse_optional_u64_field(params, "cpu_seconds")?,
         cpu_percent: parse_optional_f64_field(params, "cpu_percent")?,
         memory_bytes,
@@ -184,8 +187,15 @@ pub(super) fn parse_sandbox_limits_create(params: &Value) -> Result<sandbox::San
         )?,
         max_processes: params.get("max_procs").and_then(Value::as_u64),
         disk_bytes: checked_megabytes(params.get("disk_mb").and_then(Value::as_u64), "disk_mb")?,
+        max_running_workspaces: params
+            .get("max_running_workspaces")
+            .and_then(Value::as_u64)
+            .map(|value| usize::try_from(value).unwrap_or(usize::MAX)),
     };
     limits.validate()?;
+    if limits.max_running_workspaces == Some(0) {
+        return Err(invalid("max_running_workspaces must be greater than 0"));
+    }
     Ok(limits)
 }
 
@@ -201,5 +211,7 @@ pub(super) fn parse_sandbox_limits_update(params: &Value) -> Result<sandbox::San
             parse_optional_u64_field(params, "disk_mb")?,
             "disk_mb",
         )?,
+        max_running_workspaces: parse_optional_u64_field(params, "max_running_workspaces")?
+            .map(|value| value.map(|value| usize::try_from(value).unwrap_or(usize::MAX))),
     })
 }

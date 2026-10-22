@@ -1,4 +1,6 @@
 use super::*;
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
 
 #[test]
 fn hostname_lowercases_name() {
@@ -253,4 +255,159 @@ fn a_process_that_exits_during_inspection_is_not_an_error() {
     }
 
     let _ = child.wait();
+}
+
+/// A group outlives its leader when a descendant stays in it. A cancellation
+/// must still reach that descendant, including through the SIGKILL escalation.
+#[test]
+fn a_surviving_group_is_signalled_after_its_leader_exits() {
+    let marker = std::env::temp_dir().join(format!(
+        "enclave-group-member-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let script = format!(
+        "sh -c 'trap \"\" TERM; exec sleep 30' & echo $! > '{}'; wait",
+        marker.display()
+    );
+    let mut leader = Command::new("sh");
+    leader
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: `setpgid` is async-signal-safe and is the operation needed between
+    // fork and exec to make the shell the group leader.
+    unsafe {
+        leader.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut leader = leader.spawn().expect("spawn group leader");
+    let leader_pid = leader.id();
+    let starttime = process_starttime_ticks(leader_pid).expect("leader start time");
+    let pgid = i32::try_from(leader_pid).expect("leader pid fits in i32");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the descendant pid was not published"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let child_pid = std::fs::read_to_string(&marker)
+        .expect("read descendant pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse descendant pid");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while process_group_id(child_pid).ok() != Some(pgid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the descendant did not inherit the leader's process group"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Remove the leader without touching the descendant. The group is now
+    // addressable only through its surviving members.
+    unsafe {
+        libc::kill(leader_pid as i32, libc::SIGKILL);
+    }
+    let _ = leader.wait();
+    assert!(process_matches(child_pid, None));
+
+    signal_process_group(leader_pid, Some(starttime), pgid, libc::SIGTERM)
+        .expect("signal the surviving group");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        process_matches(child_pid, None),
+        "the descendant ignores SIGTERM and must still be alive"
+    );
+
+    signal_process_group(leader_pid, Some(starttime), pgid, libc::SIGKILL)
+        .expect("kill the surviving group");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while process_matches(child_pid, None) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the descendant survived SIGKILL"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_file(marker);
+}
+
+/// A PID whose start time no longer matches is a different process. Its process
+/// group must not be signalled even if the number is still visible in `/proc`.
+#[test]
+fn a_reused_leader_pid_does_not_expose_an_unrelated_group() {
+    let marker = std::env::temp_dir().join(format!(
+        "enclave-zombie-group-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let script = format!(
+        "(trap '' TERM; while :; do sleep 1; done) & echo $! > '{}'; exit 0",
+        marker.display()
+    );
+    let mut leader = Command::new("sh");
+    leader
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: `setpgid` is async-signal-safe and runs before exec.
+    unsafe {
+        leader.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut leader = leader.spawn().expect("spawn process-group leader");
+    let leader_pid = leader.id();
+    let _starttime = process_starttime_ticks(leader_pid).expect("leader start time");
+    let pgid = i32::try_from(leader_pid).expect("leader pid fits an i32");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while process_starttime_ticks(leader_pid).is_ok() && !process_is_zombie(leader_pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the leader never became a zombie"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(process_is_zombie(leader_pid));
+
+    let child_pid = std::fs::read_to_string(&marker)
+        .expect("read descendant pid")
+        .trim()
+        .parse::<u32>()
+        .expect("parse descendant pid");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while process_group_id(child_pid).ok() != Some(pgid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the descendant did not join the leader's process group"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let error = signal_process_group(leader_pid, Some(0), pgid, libc::SIGKILL)
+        .expect_err("a mismatched leader identity must not be signalled");
+    assert!(error.to_string().contains("changed identity"));
+    assert!(process_matches(child_pid, None));
+    unsafe {
+        libc::kill(child_pid as i32, libc::SIGKILL);
+    }
+    let _ = leader.wait();
+    let _ = std::fs::remove_file(marker);
 }

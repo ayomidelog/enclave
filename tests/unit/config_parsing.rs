@@ -48,6 +48,47 @@ bootstrap_method = "invalid_method"
 }
 
 #[test]
+fn parses_sandbox_and_workspace_activity_policy() {
+    let enclavefile = parse_enclavefile(
+        r#"
+[sandbox]
+name = "devbox"
+max_running_workspaces = 4
+
+[workspace.api]
+name = "api"
+keep_running = true
+idle_stop_after_secs = 120
+destroy_after_secs = 3600
+run_ttl_secs = 30
+run_keep_running = true
+"#,
+    )
+    .expect("activity policy should parse");
+
+    assert_eq!(enclavefile.sandbox.max_running_workspaces, Some(4));
+    let workspace = enclavefile.workspace.get("api").expect("workspace exists");
+    assert!(workspace.keep_running);
+    assert_eq!(workspace.idle_stop_after_secs, Some(120));
+    assert_eq!(workspace.destroy_after_secs, Some(3600));
+    assert_eq!(workspace.run_ttl_secs, Some(30));
+    assert!(workspace.run_keep_running);
+}
+
+#[test]
+fn rejects_a_zero_running_workspace_cap() {
+    let error = parse_enclavefile(
+        r#"
+[sandbox]
+name = "devbox"
+max_running_workspaces = 0
+"#,
+    )
+    .expect_err("zero cannot describe a usable cap");
+    assert!(error.to_string().contains("greater than 0"), "{error}");
+}
+
+#[test]
 fn rejects_unknown_workspace_auth_provider() {
     let result = parse_enclavefile(
         r#"

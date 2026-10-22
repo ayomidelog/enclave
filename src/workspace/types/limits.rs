@@ -18,6 +18,9 @@ pub struct WorkspaceLimits {
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceLimitsUpdate {
     pub clear_tmp_on_restart: Option<bool>,
+    pub keep_running: Option<bool>,
+    pub idle_stop_after_secs: Option<Option<u64>>,
+    pub destroy_after_secs: Option<Option<u64>>,
     pub cpu_seconds: Option<Option<u64>>,
     pub cpu_percent: Option<Option<f64>>,
     pub memory_bytes: Option<Option<u64>>,
@@ -27,9 +30,33 @@ pub struct WorkspaceLimitsUpdate {
 }
 
 impl WorkspaceLimits {
+    /// Fill an omitted CPU share or process cap from the daemon defaults.
+    ///
+    /// The resolved values are stored on the workspace record, so a later start,
+    /// resize, and cgroup write all enforce the same effective limit. Applying a
+    /// default only at cgroup creation would make the record and the running
+    /// runtime disagree.
+    pub fn with_daemon_defaults(self) -> Self {
+        self.apply_defaults(
+            crate::workspace::default_workspace_cpu_percent(),
+            crate::workspace::default_workspace_max_processes(),
+        )
+    }
+
+    /// Apply explicit defaults. Kept separate from the process-wide getters so
+    /// the merge is testable without changing daemon-global state.
+    pub fn apply_defaults(mut self, cpu_percent: Option<f64>, max_processes: Option<u64>) -> Self {
+        self.cpu_percent = self.cpu_percent.or(cpu_percent);
+        self.max_processes = self.max_processes.or(max_processes);
+        self
+    }
+
     pub fn validate(&self) -> Result<()> {
         if let Some(cpu_percent) = self.cpu_percent {
             validate_cpu_percent(cpu_percent)?;
+        }
+        if self.max_processes == Some(0) {
+            anyhow::bail!("max_processes must be greater than 0");
         }
         validate_memory_bytes(self.memory_bytes)?;
         Ok(())
@@ -76,6 +103,9 @@ impl WorkspaceLimits {
 impl WorkspaceLimitsUpdate {
     pub fn is_empty(&self) -> bool {
         self.clear_tmp_on_restart.is_none()
+            && self.keep_running.is_none()
+            && self.idle_stop_after_secs.is_none()
+            && self.destroy_after_secs.is_none()
             && self.cpu_seconds.is_none()
             && self.cpu_percent.is_none()
             && self.memory_bytes.is_none()

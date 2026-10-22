@@ -20,11 +20,11 @@ use serde_json::json;
 
 use crate::cli::{
     SnapshotCommands, WorkspaceCommands, WorkspaceCreateArgs, WorkspaceDestroyArgs,
-    WorkspaceExecArgs, WorkspaceListArgs, WorkspaceLogsArgs, WorkspacePortCommands,
-    WorkspacePortPublishArgs, WorkspacePortUnpublishArgs, WorkspaceRemoveArgs, WorkspaceResizeArgs,
-    WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
-    WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
-    WorkspaceTargetOrLocalArgs, WorkspaceWipeArgs,
+    WorkspaceExecArgs, WorkspaceJobArgs, WorkspaceKeepArgs, WorkspaceListArgs, WorkspaceLogsArgs,
+    WorkspacePortCommands, WorkspacePortPublishArgs, WorkspacePortUnpublishArgs,
+    WorkspaceRemoveArgs, WorkspaceResizeArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs,
+    WorkspaceSnapshotExportArgs, WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs,
+    WorkspaceTargetArgs, WorkspaceTargetOrLocalArgs, WorkspaceWipeArgs,
 };
 use crate::workspace::{
     PublishedPortStatus, WorkspaceListItem, WorkspaceLogsResult, WorkspaceMetadata,
@@ -79,8 +79,46 @@ pub(crate) fn run_workspace_command(socket: &Path, command: WorkspaceCommands) -
         WorkspaceCommands::Exec(args) => run_workspace_exec(&ctx, args),
         WorkspaceCommands::Run(args) => run_workspace_exec(&ctx, args),
         WorkspaceCommands::Cancel(args) => run_workspace_cancel(&ctx, args),
+        WorkspaceCommands::Jobs(args) => run_workspace_jobs(&ctx, args),
+        WorkspaceCommands::Keep(args) => run_workspace_keep(&ctx, args),
         WorkspaceCommands::Port { command } => run_workspace_port_command(&ctx, command),
     }
+}
+
+fn run_workspace_jobs(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceJobArgs) -> Result<()> {
+    let response = send_managed(
+        ctx.socket,
+        "workspace.jobs.list",
+        json!({
+            "sandbox": args.sandbox_id,
+            "workspace": args.workspace_id,
+            "job": args.job,
+        }),
+    )?;
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
+fn run_workspace_keep(ctx: &WorkspaceCommandContext<'_>, args: WorkspaceKeepArgs) -> Result<()> {
+    // Every field in this request is optional. Sending `null` for an omitted
+    // field would mean "clear the override", so only the flags the caller gave
+    // are included. In particular, changing a window must not silently pin or
+    // unpin the workspace, and setting the pin must not erase the windows.
+    let mut request = json!({"sandbox": args.sandbox, "workspace": args.workspace});
+    if args.keep_running {
+        request["keep_running"] = json!(true);
+    } else if args.no_keep_running {
+        request["keep_running"] = json!(false);
+    }
+    if let Some(seconds) = args.idle_stop_after_secs {
+        request["idle_stop_after_secs"] = json!(seconds);
+    }
+    if let Some(seconds) = args.destroy_after_secs {
+        request["destroy_after_secs"] = json!(seconds);
+    }
+    send_managed(ctx.socket, "workspace.update", request)?;
+    println!("updated workspace lifecycle policy");
+    Ok(())
 }
 
 pub(crate) fn run_snapshot_command(socket: &Path, command: SnapshotCommands) -> Result<()> {
