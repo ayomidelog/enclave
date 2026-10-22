@@ -7,6 +7,18 @@
 
 use super::*;
 
+/// The request-line prefix the dispatcher is willing to inspect.
+///
+/// The daemon's request reader accepts 64 KiB, so the peek buffer matches that
+/// bound. A request larger than this is left for the worker to reject.
+const MAX_PEEK_BYTES: usize = 64 * 1024;
+
+/// How long the dispatcher waits for a complete request line before classifying
+/// the bytes it has. Clients send the line in one write, so this only covers a
+/// request split across two writes; it must stay short because it runs on the
+/// accept loop.
+const PEEK_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum RequestOutcome {
     Finished,
@@ -65,43 +77,30 @@ pub(super) enum RequestClass {
     Transfer,
 }
 
+/// What the dispatcher can tell about a request without consuming it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct PeekedRequest {
+    pub(super) class: RequestClass,
+    pub(super) workspace_key: Option<String>,
+}
+
+impl Default for PeekedRequest {
+    fn default() -> Self {
+        Self {
+            class: RequestClass::Control,
+            workspace_key: None,
+        }
+    }
+}
+
 /// Peek at the request line and pick its pool, without consuming the bytes.
 ///
 /// The peek is best-effort: a request whose bytes have not arrived yet is treated
 /// as control, which is the only class that can be answered without a payload
 /// that large. The line is left on the socket for the worker that serves it.
+#[cfg(test)]
 pub(super) fn classify_stream(stream: &UnixStream) -> RequestClass {
-    let mut readiness = libc::pollfd {
-        fd: stream.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let poll_result = unsafe { libc::poll(&mut readiness, 1, 10) };
-    if poll_result <= 0 || readiness.revents & libc::POLLIN == 0 {
-        return RequestClass::Control;
-    }
-    let mut buffer = [0u8; 4096];
-    let size = unsafe {
-        libc::recv(
-            stream.as_raw_fd(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    if size <= 0 {
-        return RequestClass::Control;
-    }
-    let head = String::from_utf8_lossy(&buffer[..size as usize]);
-    if head.contains("\"workspace.cp\"") {
-        return RequestClass::Transfer;
-    }
-    // `workspace.exec` and `sandbox.exec_setup` both run a caller-supplied
-    // program, so neither may occupy a control worker.
-    if head.contains("\"workspace.exec\"") || head.contains("\"sandbox.exec_setup\"") {
-        return RequestClass::Exec;
-    }
-    RequestClass::Control
+    peek_request(stream).class
 }
 
 /// Peek the workspace an exec request targets, without consuming the request.
@@ -111,41 +110,83 @@ pub(super) fn classify_stream(stream: &UnixStream) -> RequestClass {
 /// starve. A request whose body has not arrived yet has no key: it is admitted
 /// normally and takes its chances like any other, because blocking the accept loop
 /// to wait for the body would be worse than the unfairness it avoids.
+#[cfg(test)]
 pub(super) fn peek_workspace_key(stream: &UnixStream) -> Option<String> {
-    let mut buffer = [0u8; 4096];
-    let size = unsafe {
-        libc::recv(
-            stream.as_raw_fd(),
-            buffer.as_mut_ptr().cast(),
-            buffer.len(),
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
+    peek_request(stream).workspace_key
+}
+
+/// Inspect a request without consuming it, classifying from the parsed action.
+///
+/// Matching action names as substrings let a command argument or a parameter
+/// value move an unrelated request into the exec pool, and a request split across
+/// writes could fall back to the control pool while it was really an exec. This
+/// waits briefly for the newline-terminated line and parses it as JSON, so the
+/// decision comes from the `action` field rather than from text anywhere in the
+/// payload.
+pub(super) fn peek_request(stream: &UnixStream) -> PeekedRequest {
+    let Some(line) = peek_request_line(stream) else {
+        return PeekedRequest::default();
     };
-    if size <= 0 {
-        return None;
+    let Ok(request) = serde_json::from_slice::<crate::protocol::Request>(&line) else {
+        return PeekedRequest::default();
+    };
+    let class = match request.action.as_str() {
+        "workspace.cp" => RequestClass::Transfer,
+        // `workspace.exec` and `sandbox.exec_setup` both run a caller-supplied
+        // program, so neither may occupy a control worker.
+        "workspace.exec" | "sandbox.exec_setup" => RequestClass::Exec,
+        _ => RequestClass::Control,
+    };
+    let workspace_key = (class == RequestClass::Exec)
+        .then(|| workspace_key_from_params(&request.params))
+        .flatten();
+    PeekedRequest {
+        class,
+        workspace_key,
     }
-    let head = String::from_utf8_lossy(&buffer[..size as usize]);
-    // The request is a single-line JSON object. Pull the workspace field without
-    // parsing the whole thing: a body may be truncated at the peek boundary.
-    for field in ["\"workspace\"", "\"workspace_id\"", "\"name\""] {
-        let Some(start) = head.find(field) else {
-            continue;
+}
+
+fn workspace_key_from_params(params: &serde_json::Value) -> Option<String> {
+    ["workspace", "workspace_id", "name"]
+        .into_iter()
+        .find_map(|field| params.get(field).and_then(serde_json::Value::as_str))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Return the newline-terminated request line without consuming socket bytes.
+fn peek_request_line(stream: &UnixStream) -> Option<Vec<u8>> {
+    let deadline = std::time::Instant::now() + PEEK_WAIT;
+    let mut buffer = vec![0u8; MAX_PEEK_BYTES];
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let timeout_ms = remaining.as_millis().min(i32::MAX as u128) as libc::c_int;
+        let mut readiness = libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
         };
-        let after = &head[start + field.len()..];
-        let Some(colon) = after.find(':') else {
-            continue;
+        let poll_result = unsafe { libc::poll(&mut readiness, 1, timeout_ms) };
+        if poll_result <= 0 || readiness.revents & libc::POLLIN == 0 {
+            return None;
+        }
+        let size = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                libc::MSG_PEEK | libc::MSG_DONTWAIT,
+            )
         };
-        let rest = after[colon + 1..].trim_start();
-        let Some(rest) = rest.strip_prefix('"') else {
-            continue;
-        };
-        let Some(end) = rest.find('"') else {
-            continue;
-        };
-        let value = &rest[..end];
-        if !value.is_empty() {
-            return Some(value.to_string());
+        if size <= 0 {
+            return None;
+        }
+        let bytes = &buffer[..size as usize];
+        if let Some(end) = bytes.iter().position(|byte| *byte == b'\n') {
+            return Some(bytes[..end].to_vec());
+        }
+        if remaining.is_zero() {
+            return None;
         }
     }
-    None
 }
