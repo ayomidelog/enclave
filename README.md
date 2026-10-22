@@ -227,13 +227,16 @@ published-port operations update a durable timestamp; `status` and `stats` do no
 Idle runtimes are stopped through the normal verified stop path, with their files
 kept until a separate `destroy_after` window expires. Foreground commands and live
 published-port connections prevent an idle stop, while background commands are
-durable jobs with an optional TTL and `keep_running` pin.
+durable jobs with an optional TTL and `keep_running` pin. Sandbox and daemon
+running-workspace caps reject a start at capacity instead of stopping another
+workspace, and only an explicit `keep_running` pin protects one from idle stop.
 
 Use `enclave workspace jobs <sandbox> <workspace>` to inspect tracked commands and
 `enclave ps --processes` for a per-process view with PID, PPID, age, CPU, RSS,
 thread count, and detached-job identity. `enclave workspace stats` reports
 `process_count` (PID-namespace processes) separately from `task_count` (cgroup
-threads/tasks).
+threads/tasks). `enclave workspace cancel <sandbox> <workspace>` stops the current
+command through its verified helper process group.
 
 Managed workspace disk limits cover more than `/home`: when `disk_mb` is configured,
 the workspace uses a quota-backed root OverlayFS layer, so writes under `/opt`,
@@ -386,6 +389,17 @@ could be refused is checked before a running workspace is stopped for it, so a r
 resize leaves it running. A memory limit is enforced by the cgroup and by the session's
 address-space limit, and both are moved together, so a raise is usable without a
 restart. See the [Command Reference](docs/commands.md) for the full surface.
+
+Running-workspace capacity is separate from a resource limit. Set it on the sandbox
+with `--max-running-workspaces`, change it with `enclave resize`, or set a
+daemon-wide cap in `config.toml`. At capacity, a start returns a conflict; Enclave
+does not stop another workspace to make room.
+
+```bash
+sudo enclave create devbox --max-running-workspaces 4
+sudo enclave resize devbox --max-running-workspaces 6
+sudo enclave workspace keep devbox api --keep-running
+```
 
 ## Lifecycle tiers
 

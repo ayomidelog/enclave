@@ -67,6 +67,38 @@ Since Enclave requires root privileges, the defaults below are the values used w
 | `task_count_threshold` | `1024` | Workspace task count at which `doctor` warns. Tasks include threads. |
 | `detached_process_threshold` | `32` | Number of tracked detached processes at which `doctor` warns. |
 
+## Workspace Lifecycle Policy
+
+The lifecycle settings are defaults, not immediate commands. `idle_stop_after_secs`
+controls when the daemon may stop a running workspace; `destroy_after_secs`
+controls when a stopped workspace's files may be deleted. They are separate so a
+workspace can release its runtime and mounts long before its files are eligible
+for removal.
+
+Activity is recorded only by real operations: `start`, `enter`, `exec`, `cp`, and
+traffic through a published port. `status` and `stats` do not extend a workspace's
+idle window. A workspace is not stopped while it has an active command lease, a
+foreground job, a live published-port connection, or an explicit `keep_running`
+pin. An ordinary background job does not pin the workspace unless it was started
+with `keep_running` or the Enclavefile sets `run_keep_running`.
+
+Both windows can be overridden per workspace in the Enclavefile with
+`idle_stop_after_secs` and `destroy_after_secs`, or changed at runtime with
+`workspace keep`. A value of zero disables that action. The sweep runs every
+`sweep_interval_secs`; set `sweep_enabled = false` to disable it, or
+`evict_idle = false` to keep the doctor checks without stopping idle workspaces.
+
+`default_workspace_cpu_percent` and `default_workspace_max_processes` are copied
+into a workspace record when it is created if the workspace omits those limits.
+They are resource limits, not lifecycle policy: changing the configuration does
+not rewrite an existing workspace's declared limits.
+
+The daemon-wide `max_running_workspaces` is independent of a sandbox's own cap.
+Capacity is reserved under the registry lock when a start commits. A request that
+would exceed either cap fails with a structured conflict; it does not stop another
+workspace implicitly. Use `workspace keep --keep-running` for a workspace that
+must survive idle stop and destroy-after retention deletion.
+
 ## CLI Flag Overrides
 
 Some options can also be set via CLI flags, which take precedence over the config file:
@@ -79,7 +111,13 @@ enclave daemon start --debootstrap-binary /usr/sbin/debootstrap
 enclave daemon start --workspace-apparmor-profile enclave-workspace
 enclave daemon start --workspace-selinux-label 'system_u:system_r:container_t:s0'
 enclave daemon start --wait-secs 10
+enclave daemon start --idle-stop-after-secs 900 --destroy-after-secs 86400
+enclave daemon start --max-running-workspaces 8
+enclave daemon start --default-workspace-cpu-percent 50
+enclave daemon start --default-workspace-max-processes 512
 enclave create mybox --bootstrap-method cached_rootfs
+enclave create mybox --max-running-workspaces 4
+enclave workspace keep mybox agent1 --idle-stop-after-secs 1800
 ```
 
 ## State Directory Layout

@@ -97,7 +97,7 @@ enclave rootfs fetch --suite bookworm https://github.com/ayomidelog/enclave/rele
 ## Sandbox
 
 ```bash
-enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs] [--memory-mb N] [--cpu-percent N] [--max-procs N] [--disk-mb N]
+enclave create  <name> [--suite bookworm] [--mirror URL] [--bootstrap-method debootstrap|cached_rootfs] [--memory-mb N] [--cpu-percent N] [--max-procs N] [--disk-mb N] [--max-running-workspaces N]
 enclave start   <sandbox>
 enclave stop    <sandbox>
 enclave pause   <sandbox>
@@ -105,9 +105,9 @@ enclave resume  <sandbox>
 enclave destroy <sandbox>
 enclave list
 enclave stats
-enclave ps
+enclave ps [--processes]
 enclave ps --local    # alias: --project
-enclave resize  <sandbox> [--memory-mb N | --no-memory-limit] [--disk-mb N | --no-disk-budget] [--max-procs N]
+enclave resize  <sandbox> [--memory-mb N | --no-memory-limit] [--disk-mb N | --no-disk-budget] [--max-procs N] [--max-running-workspaces N | --no-max-running-workspaces]
 enclave status  <sandbox>
 enclave remove  <sandbox-id>
 enclave wipe
@@ -115,16 +115,16 @@ enclave wipe
 
 | Command | Description |
 |---------|-------------|
-| `create` | Bootstrap a new sandbox with `debootstrap` or `cached_rootfs`. |
+| `create` | Bootstrap a new sandbox with `debootstrap` or `cached_rootfs`. `--max-running-workspaces N` sets a per-sandbox cap on runtimes that are `starting` or `running`. |
 | `start` | Start a stopped sandbox (mount rootfs). |
 | `stop` | Stop all workspaces in the sandbox, then stop the sandbox. |
 | `pause` | Freeze the sandbox cgroup while preserving workspace processes, namespaces, mounts, and storage for fast resume. |
 | `resume` | Thaw a paused sandbox and best-effort restore its published ports. Port conflicts are reported without stopping workspaces. |
-| `resize` | Change a sandbox's resource limits. Each target is optional and an omitted one is left alone. Memory and process limits are cgroup values and are applied to a running sandbox without restarting it. `--disk-mb` sets the total disk budget the sandbox's workspaces are measured against, since a sandbox rootfs is a shared lower layer rather than an image of its own; a budget below what the workspaces already allocate is refused, naming the total. `--no-memory-limit` and `--no-disk-budget` remove a limit rather than setting one, and are spelled as flags because a size of zero is a mistake rather than a request to remove anything. |
+| `resize` | Change a sandbox's resource limits. Each target is optional and an omitted one is left alone. Memory and process limits are cgroup values and are applied to a running sandbox without restarting it. `--disk-mb` sets the total disk budget the sandbox's workspaces are measured against, since a sandbox rootfs is a shared lower layer rather than an image of its own; a budget below what the workspaces already allocate is refused, naming the total. `--max-running-workspaces` changes the sandbox runtime cap. `--no-memory-limit`, `--no-disk-budget`, and `--no-max-running-workspaces` remove a limit rather than setting one, and are spelled as flags because a size of zero is a mistake rather than a request to remove anything. |
 | `destroy` | Stop and permanently delete a sandbox and all its workspaces. Requires an already-running daemon unless `--start-daemon` is supplied. |
 | `list` | List all sandboxes. |
 | `stats` | Show live stats for all running workspaces across all sandboxes. |
-| `ps` | Show live process status for all running workspaces across all sandboxes. |
+| `ps` | Show live process status for all running workspaces across all sandboxes. `--processes` includes a row for every process in each workspace: PID, PPID, PGID, command, age, CPU sample, RSS, thread count, detached state, and tracked job id. |
 | `ps --local` (`--project`) | Show only workspaces defined by the Enclavefile in the current directory. |
 | `status` | Show detailed status for a sandbox. |
 | `remove` | Remove a sandbox entry from the registry (does not delete files). |
@@ -219,6 +219,7 @@ enclave workspace remove  <sandbox> <workspace>
 enclave workspace wipe
 enclave workspace enter   <sandbox> <workspace> [--cwd /home] [--shell /bin/bash]
 enclave workspace exec    <sandbox> <workspace> [--cwd /home] [--no-scrub] [--background] [--ttl-secs N] [--keep-running] -- <command...>
+enclave workspace cancel  <sandbox> <workspace>
 enclave workspace jobs    <sandbox> <workspace> [--job ID]
 enclave workspace keep    <sandbox> <workspace> (--keep-running | --no-keep-running | --idle-stop-after-secs N | --destroy-after-secs N)
 enclave workspace run     <sandbox> <workspace> [--cwd /home] -- <command...>
@@ -245,6 +246,7 @@ enclave workspace stats   <workspace>
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). The session's output is not captured, so it is not scrubbed of injected token values. |
 | `exec` | Execute a one-shot command inside a workspace. The daemon captures the output and replaces every injected token value with `[REDACTED]`, so a command that prints a credential does not put it in your terminal, your log, or your shell history. `--no-scrub` prints the output exactly as written and warns that it may contain a credential; it also restores the direct streaming path, which is what you want for a command that reads stdin or writes a lot of output. |
+| `cancel` | Stop the command this workspace is running now by signalling the verified persistent-helper process group. It also reaches descendants that inherited the group. Exits successfully when no command was running, and reports whether anything was actually stopped. |
 | `jobs` | List durable foreground and background job records for a workspace. Each record carries the job id, command, mode, start and finish time, PID/start-time identity, process group, status, exit code, TTL, and keep-running policy. |
 | `keep` | Change only the lifecycle fields named on the command line. `--keep-running` pins the workspace, `--no-keep-running` removes the pin, and the idle/destroy window flags update their window without changing the pin. At least one is required. |
 | `run` | Run a command inside a workspace (alias for exec). |
@@ -252,7 +254,7 @@ enclave workspace stats   <workspace>
 | `port unpublish` | Remove a previously declared loopback-only TCP port mapping. |
 | `port list` | Show declared and active published ports for a workspace. |
 | `logs` | Show workspace session logs. `--follow` continuously streams appended log output. |
-| `stats` | Show workspace resource metrics like CPU %, memory usage/limit, memory %, network I/O, block I/O, pids, and threads. |
+| `stats` | Show workspace resource metrics including CPU, memory usage and limit, network I/O, block I/O, `process_count` (processes in the workspace PID namespace), and `task_count` (cgroup tasks, including threads). Without cgroup v2, `task_count` reports the PID-namespace process count as its fallback value. |
 
 `workspace exec` creates a job for every command. A foreground job holds a command
 lease for the whole request, so the idle sweeper cannot stop its workspace. A
@@ -267,8 +269,13 @@ otherwise active or the job has an explicit TTL.
 job identity is the host helper process's pid and start time; a detached helper is
 also the leader of its own process group, which is what the TTL reaper signals.
 
+A foreground command terminates descendants that remain in the helper's process
+group when the direct child exits. Use `--background` to keep work after the
+request returns. `workspace cancel` is the recovery path for a foreground command
+that is still running; it verifies the helper identity before sending `SIGKILL`.
+
 `enclave ps --processes` adds one row per process in each workspace, including
-its PID, PPID, age, CPU sample, RSS, thread count, detached state, job id, and
+its PID, PPID, PGID, age, CPU sample, RSS, thread count, detached state, job id, and
 command. A detached row means the process belongs to a tracked background job;
 ordinary service children are not mislabeled as detached.
 

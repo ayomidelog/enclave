@@ -26,6 +26,15 @@ This roadmap focuses on the next practical steps for making Enclave more useful 
 
 ## Recently completed
 
+- **Workspace lifecycle and capacity management**
+  - Durable activity timestamps, an idle-stop and retention sweeper, explicit
+    `keep_running` pins, and per-sandbox plus daemon-wide running-workspace caps.
+  - Foreground and background command jobs with PID/start-time identity, process
+    groups, status, exit codes, TTLs, cancellation, and descendant cleanup.
+  - Daemon defaults for workspace CPU and process limits, with separate
+    PID-namespace process counts and cgroup task counts.
+  - `doctor` checks for idle workspaces, task-count pressure, and detached
+    processes, with lease-checked idle repair.
 - **Credentials that are not providers**
   - `env_tokens` accepts any well-formed variable name, so a workspace can hold a
     credential Enclave has no provider for. The value comes from the store slot
