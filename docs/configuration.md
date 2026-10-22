@@ -57,7 +57,7 @@ Since Enclave requires root privileges, the defaults below are the values used w
 | `bootstrap_method` | `debootstrap` | Default bootstrap method for sandbox creation (`debootstrap` or `cached_rootfs`). |
 | `wait_secs` | `5` | Seconds to wait for the daemon to start during `daemon start`. |
 | `idle_stop_after_secs` | unset | Default idle window. A running workspace with no active command, live port connection, or real request during this window is stopped. `0` disables idle stops. |
-| `destroy_after_secs` | unset | Default retention after a workspace stops. A stopped workspace older than this is destroyed; its files are kept when unset or `0`. |
+| `destroy_after_secs` | unset | Default retention after a workspace stops. A stopped workspace older than this is destroyed unless it is pinned with `keep_running`; its files are kept when unset or `0`. |
 | `default_workspace_cpu_percent` | unset | CPU share inherited by a workspace that does not declare `cpu_percent`. |
 | `default_workspace_max_processes` | unset | Process cap inherited by a workspace that does not declare `max_procs`. |
 | `max_running_workspaces` | unset | Daemon-wide cap on running workspace runtimes. A sandbox may set its own cap. |

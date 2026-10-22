@@ -55,7 +55,7 @@ pub struct WorkspaceSection {
     pub disk_mb: Option<u64>,
     #[serde(default)]
     pub clear_tmp_on_restart: bool,
-    /// Keep this workspace running through idle sweeps and LRU eviction.
+    /// Keep this workspace through idle sweeps and destroy-after retention.
     #[serde(default)]
     pub keep_running: bool,
     /// Override the daemon's idle-stop window for this workspace.

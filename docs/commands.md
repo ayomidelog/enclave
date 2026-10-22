@@ -207,9 +207,9 @@ Read-only requests such as `workspace status` are not journaled and print no id.
 ## Workspace
 
 ```bash
-enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
+enclave workspace create  <sandbox> <name> [--cpu-seconds N] [--cpu-percent N] [--memory-mb N] [--max-procs N] [--max-open-files N] [--disk-mb N]
 enclave workspace resize  <sandbox> <workspace> [--disk-mb N] [--memory-mb N | --no-memory-limit]
-enclave workspace cp      <sandbox> <workspace> <src> <dst>
+enclave workspace cp      <sandbox> <workspace> <src> <dst> [--progress] [--gzip]
 enclave workspace start   <sandbox> <workspace>
 enclave workspace stop    <sandbox> <workspace>
 enclave workspace destroy <sandbox> <workspace>
@@ -222,7 +222,7 @@ enclave workspace exec    <sandbox> <workspace> [--cwd /home] [--no-scrub] [--ba
 enclave workspace cancel  <sandbox> <workspace>
 enclave workspace jobs    <sandbox> <workspace> [--job ID]
 enclave workspace keep    <sandbox> <workspace> (--keep-running | --no-keep-running | --idle-stop-after-secs N | --destroy-after-secs N)
-enclave workspace run     <sandbox> <workspace> [--cwd /home] -- <command...>
+enclave workspace run     <sandbox> <workspace> [--cwd /home] [--no-scrub] [--background] [--ttl-secs N] [--keep-running] -- <command...>
 enclave workspace port publish   <sandbox> <workspace> <127.0.0.1:HOST_PORT:WORKSPACE_PORT[/tcp]>
 enclave workspace port unpublish <sandbox> <workspace> <127.0.0.1:HOST_PORT[/tcp]>
 enclave workspace port list      <sandbox> <workspace>
@@ -234,7 +234,7 @@ enclave workspace stats   <workspace>
 
 | Command | Description |
 |---------|-------------|
-| `create` | Create a new workspace inside a sandbox with optional resource limits. |
+| `create` | Create a new workspace inside a sandbox with optional CPU, memory, process, open-file, and disk limits. |
 | `resize` | Change a workspace's disk allocation, its memory limit, or both. Each target is an absolute size in MiB and an omitted one is left alone. The disk can be grown or shrunk; shrinking is refused when the filesystem holds more data than the target, and the message names the smallest allocation that would work. A disk change stops and restarts a running workspace; a memory change is applied to the running runtime through its cgroup without interrupting it. Host-backed `workspace_dir`/`path` workspaces have no managed disk to resize. |
 | `cp` | Stream a file or directory between the host and a running workspace. Prefix the workspace side with `ws:/`; the unprefixed side is a host path. Transfers stage data before committing it, reject special files, and do not overwrite an existing destination entry. |
 | `start` | Start a workspace session (namespaces + mounts). |
@@ -245,10 +245,10 @@ enclave workspace stats   <workspace>
 | `remove` | Remove a workspace entry from the registry. |
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). The session's output is not captured, so it is not scrubbed of injected token values. |
-| `exec` | Execute a one-shot command inside a workspace. The daemon captures the output and replaces every injected token value with `[REDACTED]`, so a command that prints a credential does not put it in your terminal, your log, or your shell history. `--no-scrub` prints the output exactly as written and warns that it may contain a credential; it also restores the direct streaming path, which is what you want for a command that reads stdin or writes a lot of output. |
+| `exec` | Execute a one-shot command inside a workspace. The daemon captures the output and replaces every injected token value with `[REDACTED]`, so a command that prints a credential does not put it in your terminal, your log, or your shell history. `--no-scrub` prints the output exactly as written and warns that it may contain a credential; it also restores the direct streaming path, which is what you want for a command that reads stdin or writes a lot of output. `--background` returns immediately and keeps a durable job; `--ttl-secs N` limits its lifetime, and `--keep-running` pins the workspace while it runs. |
 | `cancel` | Stop the command this workspace is running now by signalling the verified persistent-helper process group. It also reaches descendants that inherited the group. Exits successfully when no command was running, and reports whether anything was actually stopped. |
 | `jobs` | List durable foreground and background job records for a workspace. Each record carries the job id, command, mode, start and finish time, PID/start-time identity, process group, status, exit code, TTL, and keep-running policy. |
-| `keep` | Change only the lifecycle fields named on the command line. `--keep-running` pins the workspace, `--no-keep-running` removes the pin, and the idle/destroy window flags update their window without changing the pin. At least one is required. |
+| `keep` | Change only the lifecycle fields named on the command line. `--keep-running` pins the workspace against idle stop and destroy-after retention deletion, `--no-keep-running` removes the pin, and the idle/destroy window flags update their window without changing the pin. At least one is required. |
 | `run` | Run a command inside a workspace (alias for exec). |
 | `port publish` | Persist and activate a loopback-only TCP port mapping for a workspace. |
 | `port unpublish` | Remove a previously declared loopback-only TCP port mapping. |

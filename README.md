@@ -116,6 +116,13 @@ start that used to succeed. The failure names the variable that raises it; the w
 table is in [Runtime details](docs/runtime-details.md). [CHANGELOG.md](CHANGELOG.md)
 lists the rest of what changed.
 
+2.4.0 adds optional workspace activity and lifecycle fields. The registry schema is
+unchanged, and no idle-stop, retention, CPU, or process policy changes unless the
+daemon or workspace configures one, so upgrading does not alter lifecycle behavior
+by itself. A 2.4.0 registry still loads in 2.3.2, but the older binary ignores the
+new fields and drops them when it next writes the registry. Reapply idle, retention,
+and `keep_running` settings after a rollback.
+
 **Rolling back from 2.1.0 loses `owner` bindings.** 2.1.0 adds an optional
 `owner` field to a workspace record, and 2.0.0 ignores a field it does not know
 rather than refusing the record — so a 2.1.0 registry loads in 2.0.0, but the
@@ -229,11 +236,12 @@ kept until a separate `destroy_after` window expires. Foreground commands and li
 published-port connections prevent an idle stop, while background commands are
 durable jobs with an optional TTL and `keep_running` pin. Sandbox and daemon
 running-workspace caps reject a start at capacity instead of stopping another
-workspace, and only an explicit `keep_running` pin protects one from idle stop.
+workspace, and only an explicit `keep_running` pin protects one from idle stop and
+destroy-after retention deletion.
 
 Use `enclave workspace jobs <sandbox> <workspace>` to inspect tracked commands and
-`enclave ps --processes` for a per-process view with PID, PPID, age, CPU, RSS,
-thread count, and detached-job identity. `enclave workspace stats` reports
+`enclave ps --processes` for a per-process view with PID, PPID, PGID, age, CPU,
+RSS, thread count, and detached-job identity. `enclave workspace stats` reports
 `process_count` (PID-namespace processes) separately from `task_count` (cgroup
 threads/tasks). `enclave workspace cancel <sandbox> <workspace>` stops the current
 command through its verified helper process group.

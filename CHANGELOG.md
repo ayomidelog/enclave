@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.4.0 - 2026-10-22
+
+This release adds optional workspace lifecycle fields and daemon actions. The
+registry schema remains version 1, so `2.3.2` can read the record, but it does not
+understand the new fields and drops them when it next writes the registry. A
+rollback therefore requires the idle, retention, and pin settings to be applied
+again.
+
 ### Added
 
 - Durable workspace activity tracking and a daemon lifecycle sweep. `start`,
@@ -21,7 +29,7 @@
   workspace omits those limits. Both the persisted record and cgroup use the
   resolved value.
 - PID-namespace `process_count` reported separately from cgroup `task_count`,
-  which includes threads. `ps --processes` adds PID, PPID, command, age, CPU,
+  which includes threads. `ps --processes` adds PID, PPID, PGID, command, age, CPU,
   RSS, thread count, and tracked detached-job identity for each process.
 - Doctor checks for idle workspaces, task-count pressure, and tracked detached
   processes. `doctor --repair` can stop idle workspaces through the verified
@@ -69,7 +77,7 @@
   bind, and private `/tmp`. Stopping an idle runtime releases those mounts; it
   does not deduplicate them while workspaces are running.
 - The lifecycle sweeper, doctor, and dispatcher share one lock order and the same
-  verified stop path, so idle eviction cannot bypass cleanup checks.
+  verified stop path, so an idle stop cannot bypass cleanup checks.
 - The grouped Cargo dependencies were refreshed within the pinned Rust 1.85
   toolchain. The crate now declares its MSRV and uses the MSRV-aware resolver.
 - The live loaded-host harness excludes the temporary daemon from its workspace

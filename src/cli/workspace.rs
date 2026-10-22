@@ -188,7 +188,7 @@ pub struct WorkspaceKeepArgs {
     pub sandbox: String,
     #[arg(value_parser = parse_entity_name)]
     pub workspace: String,
-    /// Pin the workspace against idle stops and capacity eviction.
+    /// Pin the workspace against idle stops and destroy-after retention deletion.
     #[arg(long, conflicts_with = "no_keep_running")]
     pub keep_running: bool,
     /// Remove the keep-running pin instead of setting it.

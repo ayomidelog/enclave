@@ -122,7 +122,7 @@ record and the cgroup therefore enforce the same effective values.
 Process accounting keeps two different measurements separate: `process_count` is
 the number of processes in the workspace PID namespace, while `task_count` is the
 cgroup task count and includes threads. `ps --processes` exposes per-process PID,
-PPID, command, age, CPU, RSS, thread count, detached state, and tracked job id.
+PPID, PGID, command, age, CPU, RSS, thread count, detached state, and tracked job id.
 
 `doctor` reports workspaces past their idle threshold, task-count threshold, or
 tracked detached-process threshold. `doctor --repair` rechecks an idle candidate

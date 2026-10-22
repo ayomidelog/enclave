@@ -65,7 +65,7 @@ pub struct WorkspaceMetadata {
     pub namespace_refs: NamespaceRefs,
     #[serde(default)]
     pub clear_tmp_on_restart: bool,
-    /// Exempt this workspace from idle stops and least-recently-used eviction.
+    /// Exempt this workspace from idle stops and destroy-after retention deletion.
     #[serde(default)]
     pub keep_running: bool,
     /// Stop an idle runtime after this many seconds. `None` inherits the daemon

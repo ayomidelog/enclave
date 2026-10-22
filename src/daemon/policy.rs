@@ -30,7 +30,7 @@ pub struct IdlePolicy {
     pub sweep_interval: Duration,
     /// Whether the background sweeper is started with the daemon.
     pub sweep_enabled: bool,
-    /// Whether idle and capacity eviction should stop or merely report.
+    /// Whether the sweep should stop idle workspaces or merely report them.
     pub evict_idle: bool,
 }
 
