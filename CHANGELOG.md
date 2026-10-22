@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Classify daemon requests from their parsed action and keep excess exec work in
+  per-workspace queues, so command text cannot move a request between pools and
+  one workspace cannot consume every exec worker.
+- Make persistent helpers process-group leaders with a recorded start-time
+  identity. Cancellation and helper eviction signal only a verified process
+  group, foreground commands terminate descendants left in that group, and
+  detached jobs without a verified identity are treated as dead.
+- Recheck idle workspaces under the lifecycle lease before doctor repair stops
+  them, keeping the dispatcher's global lease and the workspace recheck in one
+  consistent lock order.
+- Refresh the grouped Cargo dependencies within the pinned Rust 1.85 toolchain.
 - Add durable workspace activity timestamps, an idle-stop and retention sweeper, and
   an explicit `keep_running` pin. Status and stats remain read-only and do not extend
   a workspace's idle window.
