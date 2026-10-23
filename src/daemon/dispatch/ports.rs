@@ -30,6 +30,12 @@ pub(super) fn dispatch_workspace_port_publish(
         },
         port_publisher,
     )?;
+    workspace::touch_activity(
+        &config.state_dir,
+        &updated.sandbox_id,
+        &updated.id,
+        workspace::ActivityKind::Request,
+    )?;
     Ok(serde_json::to_value(workspace_port_statuses(
         &updated,
         port_publisher,
@@ -74,6 +80,12 @@ pub(super) fn dispatch_workspace_port_unpublish(
             limits_update: workspace::WorkspaceLimitsUpdate::default(),
         },
         port_publisher,
+    )?;
+    workspace::touch_activity(
+        &config.state_dir,
+        &updated.sandbox_id,
+        &updated.id,
+        workspace::ActivityKind::Request,
     )?;
     Ok(serde_json::to_value(workspace_port_statuses(
         &updated,

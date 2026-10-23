@@ -74,6 +74,12 @@ pub(crate) fn copy_workspace_path_with_connection(
     };
 
     let started = Instant::now();
+    crate::workspace::touch_activity(
+        state_dir,
+        &workspace.sandbox_id,
+        &workspace.id,
+        crate::workspace::ActivityKind::Request,
+    )?;
     let transfer = crate::workspace::with_workspace_storage_mounted(&workspace, || {
         if direction == Direction::HostToWorkspace {
             workspace_path_has_symlink(&workspace, dst, client_stream)?;

@@ -26,9 +26,12 @@ impl WorkspacePublishKey {
 impl ActivePublication {
     pub(super) fn bind(
         spec: PublishedPortSpec,
+        sandbox_id: &str,
+        workspace_id: &str,
         runtime_pid: u32,
         workspace_ip: &str,
         global_connections: Arc<ConnectionLimiter>,
+        activity: Option<ActivityCallback>,
     ) -> Result<Self> {
         let bind_addr = format!("{}:{}", spec.host_ip, spec.host_port);
         let listener =
@@ -50,6 +53,11 @@ impl ActivePublication {
         let accept_live = Arc::clone(&live);
         let thread_name = format!("enclave-port-{}-{}", spec.host_port, spec.workspace_port);
         let workspace_port = spec.workspace_port;
+        let activity = PublishedPortActivity {
+            sandbox_id: sandbox_id.to_string(),
+            workspace_id: workspace_id.to_string(),
+            callback: activity,
+        };
         let accept_thread = thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
@@ -60,6 +68,7 @@ impl ActivePublication {
                     workspace_port,
                     connections,
                     accept_live,
+                    activity,
                 )
             })
             .context("failed to spawn published-port accept thread")?;
@@ -86,6 +95,11 @@ impl ActivePublication {
         if let Some(handle) = self.accept_thread.take() {
             let _ = handle.join();
         }
+    }
+
+    /// Whether at least one proxied connection is still open.
+    pub(super) fn has_live_connections(&self) -> bool {
+        !self.connections.is_empty()
     }
 }
 

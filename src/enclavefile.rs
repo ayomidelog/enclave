@@ -35,6 +35,8 @@ pub struct SandboxSection {
     pub max_procs: Option<u64>,
     /// Total disk budget for the sandbox's workspaces, in MiB.
     pub disk_mb: Option<u64>,
+    /// Maximum number of workspace runtimes this sandbox may run at once.
+    pub max_running_workspaces: Option<usize>,
     #[serde(default)]
     pub setup: Vec<String>,
 }
@@ -53,6 +55,18 @@ pub struct WorkspaceSection {
     pub disk_mb: Option<u64>,
     #[serde(default)]
     pub clear_tmp_on_restart: bool,
+    /// Keep this workspace through idle sweeps and destroy-after retention.
+    #[serde(default)]
+    pub keep_running: bool,
+    /// Override the daemon's idle-stop window for this workspace.
+    pub idle_stop_after_secs: Option<u64>,
+    /// Override the daemon's destroy-after window for this workspace.
+    pub destroy_after_secs: Option<u64>,
+    /// Lifetime of the Enclavefile `run` command, when it is a background job.
+    pub run_ttl_secs: Option<u64>,
+    /// Keep the workspace alive while its `run` command is alive.
+    #[serde(default)]
+    pub run_keep_running: bool,
     #[serde(default)]
     pub auth: Vec<String>,
     /// The auth namespace this workspace's tokens are read from.
@@ -112,6 +126,9 @@ fn validate_enclavefile(enclavefile: &Enclavefile) -> Result<()> {
     if let Some(cpu_percent) = enclavefile.sandbox.cpu_percent {
         validate_cpu_percent(cpu_percent)
             .map_err(|err| anyhow::anyhow!("Enclavefile: sandbox.cpu_percent is invalid: {err}"))?;
+    }
+    if enclavefile.sandbox.max_running_workspaces == Some(0) {
+        bail!("Enclavefile: sandbox.max_running_workspaces must be greater than 0");
     }
     for (key, ws) in &enclavefile.workspace {
         if ws.name.is_empty() {

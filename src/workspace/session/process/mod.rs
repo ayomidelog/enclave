@@ -156,6 +156,156 @@ pub fn process_starttime_ticks(pid: u32) -> Result<u64> {
     Ok(read_stat(pid)?.starttime_ticks)
 }
 
+/// The process-group id a live host process belongs to.
+pub fn process_group_id(pid: u32) -> Result<i32> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .with_context(|| format!("failed to read /proc/{pid}/stat"))?;
+    let rest = raw
+        .rsplit_once(") ")
+        .map(|(_, rest)| rest)
+        .with_context(|| format!("failed to parse /proc/{pid}/stat"))?;
+    rest.split_whitespace()
+        .nth(2)
+        .with_context(|| format!("/proc/{pid}/stat has no process-group field"))?
+        .parse::<i32>()
+        .with_context(|| format!("failed to parse the process-group field of /proc/{pid}/stat"))
+}
+
+/// Signal a process group after proving its leader is the recorded process.
+pub fn signal_process_group(
+    leader_pid: u32,
+    starttime_ticks: Option<u64>,
+    pgid: i32,
+    signal: i32,
+) -> Result<()> {
+    if pgid <= 1 || i32::try_from(leader_pid).ok() != Some(pgid) {
+        bail!("refusing to signal process group {pgid}");
+    }
+    let Some(expected_starttime_ticks) = starttime_ticks else {
+        // A group id is a pid. Signalling it without the start time would let a
+        // recycled pid turn a stale job record into a signal for unrelated work.
+        bail!("refusing to signal process group {pgid}: leader start time is unknown");
+    };
+    if process_matches(leader_pid, Some(expected_starttime_ticks)) {
+        signal_whole_group(pgid, signal)?;
+        return Ok(());
+    }
+
+    // The group can outlive its leader. If the leader pid now names another
+    // process, the group id may have been reused and is no longer ours. A
+    // zombie is the leader we are still waiting to reap, so it is safe to
+    // inspect the remaining members.
+    if let Ok(stat) = read_stat(leader_pid) {
+        if !stat.has_exited() {
+            bail!("refusing to signal process group {pgid}: leader {leader_pid} changed identity");
+        }
+        if stat.starttime_ticks != expected_starttime_ticks {
+            bail!("refusing to signal process group {pgid}: leader {leader_pid} changed identity");
+        }
+    }
+
+    let members = live_process_group_members(pgid)?;
+    if members.is_empty() {
+        return Ok(());
+    }
+    for pid in members {
+        signal_group_member(pid, pgid, signal)?;
+    }
+    Ok(())
+}
+
+fn signal_whole_group(pgid: i32, signal: i32) -> Result<()> {
+    let rc = unsafe { libc::kill(-pgid, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error).with_context(|| format!("failed to signal process group {pgid}"))
+}
+
+/// Live (non-zombie) host processes in one process group.
+///
+/// A process that has exited but has not been reaped still appears in `/proc`.
+/// It cannot run, and counting it as a member would keep a job alive forever.
+fn live_process_group_members(pgid: i32) -> Result<Vec<u32>> {
+    if pgid <= 1 {
+        return Ok(Vec::new());
+    }
+    let entries = fs::read_dir("/proc").context("failed to read /proc")?;
+    let mut members = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = read_stat(pid) else {
+            continue;
+        };
+        if stat.has_exited() || read_process_group(pid) != Some(pgid as u32) {
+            continue;
+        }
+        members.push(pid);
+    }
+    Ok(members)
+}
+
+/// Signal one process only after proving it still belongs to the group.
+///
+/// A pid can be recycled between the `/proc` scan and the signal. A pidfd makes
+/// the identity stable when the kernel supports it; the fallback rechecks the
+/// group and state immediately before signalling. Either way, a process that
+/// left the group or became a zombie is left alone.
+fn signal_group_member(pid: u32, pgid: i32, signal: i32) -> Result<()> {
+    let still_member = read_stat(pid)
+        .is_ok_and(|stat| !stat.has_exited() && read_process_group(pid) == Some(pgid as u32));
+    if !still_member {
+        return Ok(());
+    }
+    if let Some(fd) = crate::pidfd::open_pidfd(pid) {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd,
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        let error = (result != 0).then(io::Error::last_os_error);
+        unsafe { libc::close(fd) };
+        match error {
+            None => return Ok(()),
+            Some(error) if error.raw_os_error() == Some(libc::ESRCH) => return Ok(()),
+            Some(error) if error.raw_os_error() == Some(libc::ENOSYS) => {}
+            Some(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to signal pid {pid} in process group {pgid}"))
+            }
+        }
+    }
+    let rc = unsafe { libc::kill(pid as i32, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(error).with_context(|| format!("failed to signal pid {pid} in process group {pgid}"))
+}
+
+fn read_process_group(pid: u32) -> Option<u32> {
+    let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = raw.rsplit_once(") ").map(|(_, rest)| rest)?;
+    rest.split_whitespace().nth(2)?.parse::<u32>().ok()
+}
+
 pub(crate) fn read_pid_file(path: &Path) -> Result<u32> {
     let raw =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;

@@ -67,7 +67,7 @@ pub fn workspace_status(
             .ok_or_else(|| anyhow!("workspace '{}' not found", workspace_id))?;
 
         let runtime_is_active = workspace_runtime_is_active(workspace);
-        let active_process_count = if runtime_is_active {
+        let process_count = if runtime_is_active {
             if let Some(pid) = workspace.runtime_pid {
                 session::count_processes_in_pid_namespace(pid).unwrap_or(0)
             } else {
@@ -75,6 +75,19 @@ pub fn workspace_status(
             }
         } else {
             0
+        };
+        let task_count = if runtime_is_active {
+            workspace
+                .runtime_pid
+                .and_then(|pid| {
+                    crate::sandbox::cgroup::runtime_cgroup_path(pid)
+                        .ok()
+                        .flatten()
+                })
+                .and_then(|path| crate::sandbox::cgroup::read_cgroup_stats(&path).ok())
+                .and_then(|stats| stats.pids_current)
+        } else {
+            None
         };
         let resource_usage = if runtime_is_active {
             if let Some(pid) = workspace.runtime_pid {
@@ -96,8 +109,15 @@ pub fn workspace_status(
             } else {
                 workspace.status.clone()
             },
-            active_process_count,
+            process_count,
+            task_count,
             resource_usage,
+            last_request_at: workspace.last_request_at.clone(),
+            last_process_activity_at: workspace.last_process_activity_at.clone(),
+            last_stopped_at: workspace.last_stopped_at.clone(),
+            keep_running: workspace.keep_running,
+            idle_stop_after_secs: workspace.idle_stop_after_secs,
+            destroy_after_secs: workspace.destroy_after_secs,
             limits: workspace.limits.clone(),
             sandbox_limits: sandbox.metadata.limits.clone(),
             published_ports: merge_published_port_statuses(

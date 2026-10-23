@@ -26,7 +26,6 @@ struct CommandRequest<'a> {
     workspace_id: &'a str,
     cwd: &'a str,
     command: &'a [String],
-    cancel_file: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -41,6 +40,8 @@ pub(crate) struct PersistentCommandOutput {
     pub(crate) exit_code: i32,
     pub(crate) stdout: String,
     pub(crate) stderr: String,
+    /// The host pid of the helper that supervised the command.
+    pub(crate) helper_pid: Option<u32>,
 }
 
 pub(super) fn send_command(
@@ -79,11 +80,6 @@ pub(super) fn send_command(
         workspace_id: &workspace.id,
         cwd,
         command,
-        // The helper runs inside the workspace's mount namespace, where the host
-        // state directory is not visible at its host path. Publishing the id there
-        // created a stray file in the workspace instead of a file the daemon could
-        // read, so the cancel file is only written when the paths agree.
-        cancel_file: None,
     };
     serde_json::to_writer(&mut stream, &request).context("failed to encode persistent command")?;
     stream
@@ -120,5 +116,6 @@ pub(super) fn send_command(
         exit_code: response.exit_code,
         stdout: response.stdout,
         stderr: response.stderr,
+        helper_pid: None,
     })
 }

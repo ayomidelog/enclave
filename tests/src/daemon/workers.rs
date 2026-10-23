@@ -1,5 +1,5 @@
 use super::request::{run_request, RequestOutcome};
-use super::{classify_stream, peek_workspace_key, RequestClass};
+use super::{classify_stream, peek_workspace_key, ExecQueue, RequestClass, RequestJob};
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 fn classifies_workspace_copy_without_consuming_request() {
     let (mut writer, reader) = UnixStream::pair().unwrap();
     writer
-        .write_all(br#"{"action":"workspace.cp","params":{}}\n"#)
+        .write_all(b"{\"action\":\"workspace.cp\",\"params\":{}}\n")
         .unwrap();
     assert_eq!(classify_stream(&reader), RequestClass::Transfer);
     let mut buffer = [0u8; 128];
@@ -28,9 +28,30 @@ fn classifies_workspace_copy_without_consuming_request() {
 fn classifies_control_request_separately() {
     let (mut writer, reader) = UnixStream::pair().unwrap();
     writer
-        .write_all(br#"{"action":"workspace.list","params":{}}\n"#)
+        .write_all(b"{\"action\":\"workspace.list\",\"params\":{}}\n")
         .unwrap();
     assert_eq!(classify_stream(&reader), RequestClass::Control);
+}
+
+#[test]
+fn a_command_that_mentions_workspace_exec_does_not_change_the_pool() {
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer
+        .write_all(
+            br#"{"action":"workspace.list","params":{"command":["echo workspace.exec"]}}
+"#,
+        )
+        .unwrap();
+    assert_eq!(classify_stream(&reader), RequestClass::Control);
+}
+
+#[test]
+fn a_request_split_across_writes_is_still_classified() {
+    let (mut writer, reader) = UnixStream::pair().unwrap();
+    writer.write_all(b"{\"action\":\"workspace.").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    writer.write_all(b"exec\",\"params\":{}}\n").unwrap();
+    assert_eq!(classify_stream(&reader), RequestClass::Exec);
 }
 
 #[test]
@@ -103,6 +124,36 @@ fn a_request_without_a_workspace_has_no_key() {
         .write_all(b"{\"action\":\"workspace.exec\",\"params\":{}}\n")
         .unwrap();
     assert_eq!(peek_workspace_key(&reader), None);
+}
+
+#[test]
+fn one_workspace_cannot_fill_the_exec_queue() {
+    let queue = ExecQueue::new(1);
+    let (first, _first_peer) = UnixStream::pair().unwrap();
+    let (second, _second_peer) = UnixStream::pair().unwrap();
+    let (third, _third_peer) = UnixStream::pair().unwrap();
+    for (stream, key) in [(first, "busy"), (second, "busy"), (third, "other")] {
+        queue
+            .enqueue(
+                RequestJob {
+                    stream,
+                    workspace_key: Some(key.to_string()),
+                },
+                8,
+            )
+            .ok()
+            .expect("queue a request");
+    }
+
+    let first = queue.next().expect("first request");
+    assert_eq!(first.workspace_key.as_deref(), Some("busy"));
+    let second = queue.next().expect("second request");
+    assert_eq!(second.workspace_key.as_deref(), Some("other"));
+    queue.finish(first.workspace_key.as_deref());
+    let third = queue.next().expect("pending busy request");
+    assert_eq!(third.workspace_key.as_deref(), Some("busy"));
+    queue.finish(third.workspace_key.as_deref());
+    queue.finish(second.workspace_key.as_deref());
 }
 
 #[test]

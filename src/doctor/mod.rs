@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::{ensure_registry, repair_registry, with_registry};
 
+mod activity;
 mod capabilities;
 mod cgroups;
 mod firewall;
@@ -79,6 +80,9 @@ pub struct DoctorRepairReport {
     pub removed_stale_workspace_cgroups: usize,
     #[serde(default)]
     pub removed_stale_firewall_rules: usize,
+    /// Running workspaces repair stopped because their idle policy had expired.
+    #[serde(default)]
+    pub stopped_idle_workspaces: usize,
     pub daemon_state_consistent: bool,
 }
 
@@ -109,6 +113,9 @@ impl DoctorCheck {
 pub struct DaemonState<'a> {
     pub port_publisher: &'a crate::network::publish::PortPublisher,
     pub active_operations: &'a crate::daemon::active_operations::ActiveOperations,
+    pub activity: &'a crate::workspace::ActivityService,
+    pub policy: &'a crate::daemon::policy::IdlePolicy,
+    pub leases: &'a crate::daemon::leases::LifecycleLeases,
 }
 
 /// Run every check, including the ones that need the daemon's own state.
@@ -138,6 +145,45 @@ pub fn run_doctor(state_dir: &Path, daemon: Option<&DaemonState<'_>>) -> Result<
         orphans::check_orphan_runtimes(state_dir),
         journal::check_operation_journal(state_dir, &running),
         capabilities::check_host_capabilities(),
+        activity::check_workspace_activity(
+            state_dir,
+            daemon.and_then(|daemon| daemon.policy.idle_stop_after_secs),
+            |sandbox, workspace| {
+                daemon.is_some_and(|daemon| {
+                    daemon.activity.keeps_workspace_running(sandbox, workspace)
+                })
+            },
+            |sandbox, workspace| {
+                daemon.is_some_and(|daemon| {
+                    daemon
+                        .port_publisher
+                        .has_live_workspace_connections(sandbox, workspace)
+                })
+            },
+            |sandbox, workspace| {
+                daemon.map_or(0, |daemon| {
+                    daemon.activity.active_commands(sandbox, workspace)
+                        + usize::from(
+                            daemon
+                                .activity
+                                .has_active_foreground_job(sandbox, workspace),
+                        )
+                })
+            },
+        ),
+        activity::check_task_counts(
+            state_dir,
+            daemon.map_or(1024, |daemon| daemon.policy.task_count_threshold),
+        ),
+        activity::check_detached_processes(
+            state_dir,
+            daemon.map_or(32, |daemon| daemon.policy.detached_process_threshold),
+            |sandbox, workspace| {
+                daemon.map_or_else(Default::default, |daemon| {
+                    daemon.activity.job_processes(sandbox, workspace)
+                })
+            },
+        ),
     ];
     if let Some(daemon) = daemon {
         checks.push(ports::check_published_ports(
@@ -156,7 +202,18 @@ pub fn run_doctor(state_dir: &Path, daemon: Option<&DaemonState<'_>>) -> Result<
     Ok(DoctorReport { status, checks })
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepairReport> {
+    repair_doctor_with_policy(state_dir, socket_path, None)
+}
+
+/// Repair the host and, when a live daemon is available, enforce idle policy
+/// through the same verified stop path the sweeper uses.
+pub fn repair_doctor_with_policy(
+    state_dir: &Path,
+    socket_path: &Path,
+    daemon: Option<&DaemonState<'_>>,
+) -> Result<DoctorRepairReport> {
     fs::create_dir_all(state_dir.join("sandboxes"))
         .with_context(|| format!("failed to initialize storage at {}", state_dir.display()))?;
     ensure_registry(state_dir)?;
@@ -225,6 +282,93 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
     // forever, and the check that reports it names a problem repair cannot fix.
     let reconciled_runtime_records = crate::sandbox::reconcile_runtime_state(state_dir)?;
 
+    let stopped_idle_workspaces = if let Some(daemon) = daemon {
+        let candidates = crate::workspace::activity_service::idle_candidates(
+            state_dir,
+            daemon.activity,
+            daemon.policy.idle_stop_after_secs,
+            chrono::Utc::now(),
+        )?;
+        let mut stopped = 0usize;
+        for workspace in candidates {
+            let _lease = match daemon
+                .leases
+                .acquire_workspace_only(&workspace.sandbox_id, &workspace.id)
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    tracing::warn!(
+                        workspace = %workspace.id,
+                        "doctor repair could not acquire the workspace lease: {error:#}"
+                    );
+                    continue;
+                }
+            };
+            let current = match crate::workspace::workspace_metadata(
+                state_dir,
+                &workspace.sandbox_id,
+                &workspace.id,
+            ) {
+                Ok(current) => current,
+                Err(_) => continue,
+            };
+            let Some(threshold) =
+                crate::workspace::idle_threshold(&current, daemon.policy.idle_stop_after_secs)
+            else {
+                continue;
+            };
+            if current.status != crate::workspace::WorkspaceStatus::Running
+                || current.keep_running
+                || daemon
+                    .port_publisher
+                    .has_live_workspace_connections(&current.sandbox_id, &current.id)
+                || daemon
+                    .activity
+                    .active_commands(&current.sandbox_id, &current.id)
+                    > 0
+                || daemon
+                    .activity
+                    .has_active_foreground_job(&current.sandbox_id, &current.id)
+                || daemon
+                    .activity
+                    .keeps_workspace_running(&current.sandbox_id, &current.id)
+                || !crate::workspace::is_idle(&current, threshold, chrono::Utc::now(), 0)
+            {
+                continue;
+            }
+            match crate::workspace::stop_workspace_with_certificate(
+                state_dir,
+                &current.sandbox_id,
+                &current.id,
+            ) {
+                Ok((metadata, certificate)) => {
+                    daemon
+                        .activity
+                        .prune_terminal_jobs(&metadata.sandbox_id, &metadata.id);
+                    daemon
+                        .port_publisher
+                        .clear_workspace_ports(&metadata.sandbox_id, &metadata.id);
+                    if certificate.is_complete() {
+                        stopped += 1;
+                    } else {
+                        tracing::warn!(
+                            "doctor repair stopped idle workspace '{}' but cleanup was incomplete: {}",
+                            metadata.id,
+                            certificate.failure_summary()
+                        );
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    "doctor repair could not stop idle workspace '{}': {error:#}",
+                    current.id
+                ),
+            }
+        }
+        stopped
+    } else {
+        0
+    };
+
     let daemon_state_consistent = crate::daemon::state_lock::read_state_lock_record(state_dir)?
         .is_some_and(|record| {
             record.pid == std::process::id()
@@ -248,6 +392,7 @@ pub fn repair_doctor(state_dir: &Path, socket_path: &Path) -> Result<DoctorRepai
         reconciled_runtime_records,
         removed_stale_workspace_cgroups,
         removed_stale_firewall_rules,
+        stopped_idle_workspaces,
         daemon_state_consistent,
     })
 }

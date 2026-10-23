@@ -119,6 +119,13 @@ pub(crate) fn run_status(socket: &Path, sandbox: &str) -> Result<()> {
             .max_processes
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string())
     );
+    println!(
+        "max_running_workspaces: {}",
+        status
+            .limits
+            .max_running_workspaces
+            .map_or_else(|| "unlimited".to_string(), |v| v.to_string())
+    );
     Ok(())
 }
 

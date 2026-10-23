@@ -13,6 +13,7 @@ pub struct PublishedPortOwner {
 pub struct PortPublisher {
     pub(in crate::network::publish) inner: Mutex<PublisherState>,
     pub(super) connections: Arc<ConnectionLimiter>,
+    pub(super) activity: Mutex<Option<ActivityCallback>>,
 }
 impl Default for PortPublisher {
     fn default() -> Self {

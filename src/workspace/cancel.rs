@@ -2,10 +2,11 @@
 //!
 //! A command runs inside the workspace's namespaces under a persistent helper, so
 //! its own pid is meaningless on the host. The helper itself, however, is a host
-//! process, and it holds the workspace's command mutex for exactly as long as the
-//! command runs. Killing the helper therefore stops the command and frees the
-//! workspace; the next command starts a fresh helper. The daemon records the
-//! helper's pid while a command is in flight, and this module signals it.
+//! process, and it is the leader of a process group that every command it forks
+//! inherits. Signalling that group therefore stops the command and its descendants
+//! without guessing at a pid inside the workspace. The next command starts a fresh
+//! helper. The daemon records the helper's pid and start time while a command is
+//! in flight, and this module verifies that identity before signalling the group.
 //!
 //! This is what makes `run_command_stop` mean something. Without it the caller
 //! could only kill its own local CLI process, while the command kept running,
@@ -61,37 +62,82 @@ pub fn cancel_workspace_command(workspace_path: &Path) -> Result<CancelOutcome> 
             return Err(error).with_context(|| format!("failed to read {}", path.display()))
         }
     };
-    let helper_pid: i32 = raw
-        .trim()
+    let mut identity = raw.split_whitespace();
+    let helper_pid: i32 = identity
+        .next()
+        .context("missing helper pid")?
         .parse()
         .with_context(|| format!("invalid helper pid in {}", path.display()))?;
+    let helper_starttime = identity
+        .next()
+        .context("missing helper start time")?
+        .parse::<u64>()
+        .with_context(|| format!("invalid helper start time in {}", path.display()))?;
     if helper_pid <= 1 {
         bail!("refusing to signal pid {helper_pid}");
+    }
+    if crate::workspace::session::process_starttime_ticks(helper_pid as u32)
+        .is_ok_and(|actual| actual != helper_starttime)
+    {
+        bail!("refusing to signal pid {helper_pid}: it changed identity");
+    }
+    let helper_alive =
+        crate::workspace::session::process_matches(helper_pid as u32, Some(helper_starttime));
+    if helper_alive {
+        let group = crate::workspace::session::process_group_id(helper_pid as u32)
+            .with_context(|| format!("failed to inspect helper {helper_pid} process group"))?;
+        if group != helper_pid {
+            bail!(
+                "refusing to cancel helper {helper_pid}: it is not the leader of its process group"
+            );
+        }
     }
 
     // SIGKILL rather than SIGTERM: the helper is not the user's program and has no
     // cleanup worth waiting for, while the command it serves may ignore SIGTERM.
-    // The workspace's storage is released when the helper dies, which is what makes
-    // the next command start cleanly.
-    let result = unsafe { libc::kill(helper_pid, libc::SIGKILL) };
-    if result != 0 {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
+    // The helper leads the command's process group, so this reaches descendants
+    // that inherited the group as well as the helper itself.
+    if let Err(error) = crate::workspace::session::signal_process_group(
+        helper_pid as u32,
+        Some(helper_starttime),
+        helper_pid,
+        libc::SIGKILL,
+    ) {
+        if !helper_alive
+            && !crate::workspace::process_group_has_members(helper_pid, Some(helper_starttime))
+        {
             let _ = std::fs::remove_file(&path);
             return Ok(CancelOutcome {
                 cancelled: false,
                 already_finished: true,
             });
         }
-        return Err(error).with_context(|| format!("failed to signal helper {helper_pid}"));
+        return Err(error).with_context(|| format!("failed to signal helper group {helper_pid}"));
+    }
+    if !helper_alive
+        && !crate::workspace::process_group_has_members(helper_pid, Some(helper_starttime))
+    {
+        let _ = std::fs::remove_file(&path);
+        return Ok(CancelOutcome {
+            cancelled: false,
+            already_finished: true,
+        });
+    }
+    if !crate::workspace::process_group_has_members(helper_pid, Some(helper_starttime)) {
+        let _ = std::fs::remove_file(&path);
+        return Ok(CancelOutcome {
+            cancelled: true,
+            already_finished: false,
+        });
     }
 
-    // Wait for the helper to disappear so the caller's next command does not race a
-    // command that is still winding down. The daemon removes the marker once the
-    // request it is serving returns, which is the signal that the workspace is free.
+    // Wait for the whole group to disappear. The daemon removes the marker when the
+    // request returns, but that request can be delayed by bookkeeping; the process
+    // group is the thing that actually has to be gone before the next command runs.
     let deadline = Instant::now() + CANCEL_CONFIRM_TIMEOUT;
     while Instant::now() < deadline {
-        if !path.exists() {
+        if !crate::workspace::process_group_has_members(helper_pid, Some(helper_starttime)) {
+            remove_marker_if_unchanged(&path, &raw);
             return Ok(CancelOutcome {
                 cancelled: true,
                 already_finished: false,
@@ -100,11 +146,19 @@ pub fn cancel_workspace_command(workspace_path: &Path) -> Result<CancelOutcome> 
         std::thread::sleep(CANCEL_CONFIRM_POLL);
     }
 
-    // The signal was delivered, so the cancel itself succeeded. The file lingering
-    // means the helper has not reaped the command yet; report the cancel rather
-    // than pretending it failed.
-    Ok(CancelOutcome {
-        cancelled: true,
-        already_finished: false,
-    })
+    bail!(
+        "command process group {} survived SIGKILL for {}s",
+        helper_pid,
+        CANCEL_CONFIRM_TIMEOUT.as_secs()
+    )
+}
+
+/// Remove the busy marker only if it still names the command we cancelled.
+///
+/// A new command can publish a new marker as soon as the old group is gone, so an
+/// unconditional removal here could erase the new command's cancellation handle.
+fn remove_marker_if_unchanged(path: &Path, expected: &str) {
+    if std::fs::read_to_string(path).is_ok_and(|current| current == expected) {
+        let _ = std::fs::remove_file(path);
+    }
 }

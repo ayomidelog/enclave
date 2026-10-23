@@ -95,6 +95,9 @@ fn reconcile_clears_dead_runtime_and_namespace_references() {
         sandbox_id: "sandbox-id".to_string(),
         name: "workspace".to_string(),
         created_at: "2026-08-06T00:00:00Z".to_string(),
+        last_request_at: None,
+        last_process_activity_at: None,
+        last_stopped_at: None,
         workspace_path: workspace_dir.to_string_lossy().to_string(),
         filesystem_path: workspace_dir.join("fs").to_string_lossy().to_string(),
         filesystem_mount_target: "/home".to_string(),
@@ -123,6 +126,9 @@ fn reconcile_clears_dead_runtime_and_namespace_references() {
                 .to_string_lossy()
                 .to_string(),
         },
+        keep_running: false,
+        idle_stop_after_secs: None,
+        destroy_after_secs: None,
         clear_tmp_on_restart: false,
         limits: WorkspaceLimits::default(),
         assigned_ip: Some("10.88.0.99".to_string()),
@@ -142,6 +148,34 @@ fn reconcile_clears_dead_runtime_and_namespace_references() {
     assert!(!workspace_dir.join("ns").join("pid.ref").exists());
 
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn reconcile_records_when_an_orphaned_runtime_is_stopped() {
+    let dir = std::env::temp_dir().join(format!(
+        "enclave-reconcile-stopped-at-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let sandbox = reconcile_sandbox(&dir);
+    let (mut workspace, workspace_dir) =
+        transitional_workspace(&dir, WorkspaceStatus::Stopped, None);
+    fs::create_dir_all(workspace_dir.join("runtime")).unwrap();
+    workspace.namespace_refs = Default::default();
+    // A stopped record that still names an address owns host resources that a
+    // reconcile must release. That path is what marks the stop timestamp.
+    workspace.assigned_ip = Some("not-an-enclave-address".to_string());
+
+    let changed = reconcile_workspace_runtime_state(&sandbox, &mut workspace)
+        .expect("reconcile the stopped record");
+    assert!(changed);
+    assert!(
+        workspace.last_stopped_at.is_some(),
+        "a reconciled stop must start the destroy-after clock"
+    );
+    let _ = fs::remove_dir_all(dir);
 }
 
 #[test]

@@ -58,6 +58,7 @@ fn runtime_info(cgroup_path: Option<&str>) -> WorkspaceRuntimeInfo {
         runtime_starttime_ticks: 99,
         sandbox_rootfs_path: "/tmp/rootfs".to_string(),
         cgroup_path: cgroup_path.map(str::to_string),
+        command_lease: None,
     }
 }
 

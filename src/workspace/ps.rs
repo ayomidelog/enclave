@@ -13,6 +13,8 @@ pub struct ProcessEntry {
     pub status: String,
     pub uptime: Option<u64>,
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub processes: Vec<super::WorkspaceProcess>,
 }
 
 pub fn list_process_status(state_dir: &std::path::Path) -> Result<Vec<ProcessEntry>> {
@@ -41,6 +43,30 @@ pub fn list_process_status(state_dir: &std::path::Path) -> Result<Vec<ProcessEnt
             status,
             uptime,
             pid,
+            processes: pid
+                .and_then(|pid| {
+                    let jobs = with_registry(state_dir, |registry| {
+                        Ok(registry
+                            .sandboxes
+                            .values()
+                            .flat_map(|sandbox| sandbox.workspaces.values())
+                            .find(|workspace| workspace.runtime_pid == Some(pid))
+                            .map(|workspace| (workspace.sandbox_id.clone(), workspace.id.clone())))
+                    })
+                    .ok()
+                    .flatten();
+                    let job_pids =
+                        jobs.map_or_else(Default::default, |(sandbox_id, workspace_id)| {
+                            super::activity_service::job_processes_from_disk(
+                                state_dir,
+                                &sandbox_id,
+                                &workspace_id,
+                            )
+                            .unwrap_or_default()
+                        });
+                    super::list_workspace_processes(pid, &job_pids).ok()
+                })
+                .unwrap_or_default(),
         }
     })
     .into_iter()

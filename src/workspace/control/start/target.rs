@@ -6,6 +6,63 @@
 
 use super::*;
 
+/// Fail early when a start would exceed a capacity limit.
+///
+/// The authoritative reservation is still made under the registry lock in
+/// `mark_workspace_starting`. This pass exists only so a caller gets a conflict
+/// before expensive storage and network preparation when the answer is already
+/// known.
+fn reject_obvious_capacity_conflict(
+    registry: &crate::registry::Registry,
+    sandbox_id: &str,
+    workspace_id: &str,
+) -> Result<()> {
+    let sandbox = registry
+        .sandboxes
+        .get(sandbox_id)
+        .ok_or_else(|| anyhow!("sandbox '{}' not found", sandbox_id))?;
+    let occupies_slot = |workspace: &&WorkspaceMetadata| {
+        workspace.id != workspace_id
+            && matches!(
+                workspace.status,
+                WorkspaceStatus::Starting | WorkspaceStatus::Running
+            )
+    };
+    if sandbox
+        .metadata
+        .limits
+        .max_running_workspaces
+        .is_some_and(|limit| sandbox.workspaces.values().filter(occupies_slot).count() >= limit)
+    {
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::Conflict,
+            format!(
+                "sandbox '{}' is at its running-workspace limit ({}); stop a workspace or raise max_running_workspaces",
+                sandbox.metadata.id,
+                sandbox.metadata.limits.max_running_workspaces.unwrap_or(0)
+            ),
+        ));
+    }
+    if crate::workspace::daemon_max_running_workspaces().is_some_and(|limit| {
+        registry
+            .sandboxes
+            .values()
+            .flat_map(|sandbox| sandbox.workspaces.values())
+            .filter(occupies_slot)
+            .count()
+            >= limit
+    }) {
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::Conflict,
+            format!(
+                "the daemon is at its running-workspace limit ({}); stop a workspace or raise max_running_workspaces",
+                crate::workspace::daemon_max_running_workspaces().unwrap_or(0)
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn resolve_start_target(
     state_dir: &std::path::Path,
     sandbox_selector: &str,
@@ -42,6 +99,9 @@ pub(super) fn resolve_start_target(
                 workspace_id,
                 workspace_snapshot.status
             );
+        }
+        if workspace_snapshot.status != WorkspaceStatus::Running {
+            reject_obvious_capacity_conflict(registry, &sandbox_id, &workspace_id)?;
         }
         workspace_snapshot.sandbox_rootfs_path = effective_rootfs_path(&sandbox.metadata);
         Ok((

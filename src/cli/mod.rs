@@ -29,9 +29,9 @@ pub use session::{
 };
 pub use workspace::{
     WorkspaceCancelArgs, WorkspaceCpArgs, WorkspaceCreateArgs, WorkspaceDestroyArgs,
-    WorkspaceEnterArgs, WorkspaceExecArgs, WorkspaceListArgs, WorkspaceLogsArgs,
-    WorkspacePortPublishArgs, WorkspacePortUnpublishArgs, WorkspaceRemoveArgs, WorkspaceResizeArgs,
-    WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
+    WorkspaceEnterArgs, WorkspaceExecArgs, WorkspaceJobArgs, WorkspaceKeepArgs, WorkspaceListArgs,
+    WorkspaceLogsArgs, WorkspacePortPublishArgs, WorkspacePortUnpublishArgs, WorkspaceRemoveArgs,
+    WorkspaceResizeArgs, WorkspaceRestoreArgs, WorkspaceSnapshotArgs, WorkspaceSnapshotExportArgs,
     WorkspaceSnapshotGcArgs, WorkspaceSnapshotImportArgs, WorkspaceTargetArgs,
     WorkspaceTargetOrLocalArgs, WorkspaceWipeArgs,
 };
@@ -172,6 +172,10 @@ pub enum WorkspaceCommands {
     Run(WorkspaceExecArgs),
     /// Stop the command this workspace is running right now.
     Cancel(WorkspaceCancelArgs),
+    /// List tracked foreground and background jobs.
+    Jobs(WorkspaceJobArgs),
+    /// Change a workspace's keep-running pin or idle/retention windows.
+    Keep(WorkspaceKeepArgs),
     Port {
         #[command(subcommand)]
         command: WorkspacePortCommands,

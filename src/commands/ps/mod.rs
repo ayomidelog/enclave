@@ -17,7 +17,11 @@ pub(crate) fn run_ps(socket: &Path, args: PsArgs) -> Result<()> {
     if args.local {
         entries = filter_local_project_entries(entries)?;
     }
-    display::print_process_table(&entries);
+    if args.processes {
+        display::print_process_table_with_processes(&entries);
+    } else {
+        display::print_process_table(&entries);
+    }
     Ok(())
 }
 

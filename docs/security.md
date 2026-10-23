@@ -85,6 +85,9 @@ Workspace runtime tracks both the PID and the process start-time ticks (`/proc/<
 
 - Before sending signals (SIGTERM, SIGKILL), the daemon verifies the PID still belongs to the expected process by comparing start-time ticks.
 - If the PID has been reused by a different process, the signal is not sent.
+- Persistent command helpers record both their host PID and start time. A tracked job also records the helper's process group, so cancellation and TTL cleanup can reach inherited descendants without trusting a stale PID alone.
+- Process-group signals verify the leader's identity before using the group. A missing identity is treated as dead rather than as permission to signal whatever now owns the number.
+- Foreground command cleanup terminates descendants left in the helper's process group after the direct child exits. Work that should survive the request must use explicit background mode and has its own durable job record.
 
 ## Filesystem Hardening
 

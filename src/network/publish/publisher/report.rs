@@ -66,4 +66,19 @@ impl PortPublisher {
         });
         statuses
     }
+
+    /// Whether any proxied connection for a workspace is still live.
+    ///
+    /// A published service is real workspace activity even when the client that
+    /// connected is not an Enclave command. The idle sweeper asks this so it does
+    /// not stop a workspace serving an active request.
+    pub fn has_live_workspace_connections(&self, sandbox_id: &str, workspace_id: &str) -> bool {
+        let key = WorkspacePublishKey::new(sandbox_id, workspace_id);
+        let state = self.state();
+        state.active.get(&key).is_some_and(|publications| {
+            publications
+                .iter()
+                .any(ActivePublication::has_live_connections)
+        })
+    }
 }

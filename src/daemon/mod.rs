@@ -15,7 +15,8 @@
 
 pub(crate) mod active_operations;
 mod dispatch;
-mod leases;
+pub(crate) mod leases;
+pub(crate) mod policy;
 mod ports;
 mod rate_limiter;
 mod request;
@@ -23,6 +24,7 @@ mod services;
 mod shutdown;
 mod socket;
 pub(crate) mod state_lock;
+mod sweeper;
 mod workers;
 
 use std::fs;
@@ -36,7 +38,6 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::policy;
 use crate::sandbox;
 
 use rate_limiter::RateLimiter;
@@ -62,9 +63,24 @@ pub struct DaemonConfig {
     pub debootstrap_binary: String,
     pub workspace_apparmor_profile: Option<String>,
     pub workspace_selinux_label: Option<String>,
+    pub idle_stop_after_secs: Option<u64>,
+    pub destroy_after_secs: Option<u64>,
+    pub default_workspace_cpu_percent: Option<f64>,
+    pub default_workspace_max_processes: Option<u64>,
+    pub task_count_threshold: u64,
+    pub detached_process_threshold: u64,
+    pub max_running_workspaces: Option<usize>,
+    pub sweep_interval_secs: u64,
+    pub sweep_enabled: bool,
+    pub evict_idle: bool,
 }
 
 pub fn run_daemon(config: DaemonConfig) -> Result<()> {
+    crate::workspace::configure_default_limits(
+        config.default_workspace_cpu_percent,
+        config.default_workspace_max_processes,
+    );
+    crate::workspace::configure_max_running_workspaces(config.max_running_workspaces);
     shutdown::install_signal_handlers()?;
     let _state_lock = state_lock::acquire_state_lock(&config.state_dir, &config.socket_path)?;
     sandbox::init_storage(&config.state_dir)?;
@@ -74,6 +90,9 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     // back. Every later `init_storage` call is a create, which must leave a
     // concurrent start alone.
     crate::sandbox::reconcile_runtime_state(&config.state_dir)?;
+    if let Err(error) = crate::workspace::activity_service::reconcile_jobs(&config.state_dir) {
+        tracing::warn!("failed to reconcile job records at startup: {error:#}");
+    }
     // Every open journal record at this point belongs to a previous daemon: the
     // state lock above proved no other daemon is running, and this one has not
     // served a request yet. The reconciliation above resolved the targets it
@@ -109,7 +128,7 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         ),
         Err(error) => tracing::warn!("failed to trim the operation journal: {error:#}"),
     }
-    policy::ensure_policy(&config.state_dir)?;
+    crate::policy::ensure_policy(&config.state_dir)?;
     socket::prepare_runtime_paths(&config.socket_path, &config.pid_file)?;
     let services = services::DaemonServices {
         rate_limiter: Arc::new(RateLimiter::with_global_limit(
@@ -120,8 +139,42 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
         port_publisher: Arc::new(crate::network::publish::PortPublisher::new()),
         leases: Arc::new(leases::LifecycleLeases::default()),
         active_operations: Arc::new(active_operations::ActiveOperations::default()),
+        activity: Arc::new(crate::workspace::ActivityService::new()),
+        policy: Arc::new(policy::IdlePolicy {
+            idle_stop_after_secs: config.idle_stop_after_secs,
+            destroy_after_secs: config.destroy_after_secs,
+            default_workspace_cpu_percent: config.default_workspace_cpu_percent,
+            default_workspace_max_processes: config.default_workspace_max_processes,
+            task_count_threshold: config.task_count_threshold,
+            detached_process_threshold: config.detached_process_threshold,
+            max_running_workspaces: config.max_running_workspaces,
+            sweep_interval: Duration::from_secs(config.sweep_interval_secs.max(1)),
+            sweep_enabled: config.sweep_enabled,
+            evict_idle: config.evict_idle,
+        }),
     };
-    ports::reconcile_published_ports(&config.state_dir, &services.port_publisher)?;
+    if let Err(error) = services.activity.load_live_jobs(&config.state_dir) {
+        tracing::warn!("failed to load durable job records at startup: {error:#}");
+    }
+    let state_dir_for_ports = config.state_dir.clone();
+    services
+        .port_publisher
+        .set_activity_callback(Arc::new(move |sandbox_id, workspace_id| {
+            if let Err(error) = crate::workspace::touch_activity_registry_only(
+                &state_dir_for_ports,
+                sandbox_id,
+                workspace_id,
+                crate::workspace::ActivityKind::Request,
+            ) {
+                tracing::warn!(
+                    sandbox = %sandbox_id,
+                    workspace = %workspace_id,
+                    "failed to record published-port activity: {error:#}"
+                );
+            }
+        }));
+    services.policy.validate()?;
+    ports::reconcile_published_ports(&config.state_dir, &services.port_publisher, &services)?;
 
     let listener = UnixListener::bind(&config.socket_path)
         .with_context(|| format!("failed to bind socket {}", config.socket_path.display()))?;
@@ -135,6 +188,15 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     // Created before the accept loop and before any worker can request a shutdown,
     // so the pipe the signal handler writes to always exists by the time it runs.
     let shutdown_wait = shutdown::install_shutdown_wait()?;
+    let sweeper = if services.policy.sweep_enabled {
+        Some(sweeper::spawn(
+            config.clone(),
+            services.clone(),
+            Arc::clone(&shutdown),
+        ))
+    } else {
+        None
+    };
     let workers = match serve(listener, &config, &shutdown, &services, &shutdown_wait) {
         Ok(workers) => workers,
         Err(err) => {
@@ -150,6 +212,9 @@ pub fn run_daemon(config: DaemonConfig) -> Result<()> {
     };
 
     finish_shutdown(&services, Some(workers));
+    if let Some(sweeper) = sweeper {
+        let _ = sweeper.join();
+    }
 
     drop(services);
     crate::network::cleanup_host_networking();

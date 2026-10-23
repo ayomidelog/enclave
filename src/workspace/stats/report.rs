@@ -28,7 +28,7 @@ pub(super) fn build_workspace_stats(
     // Every read below is best effort: a process that exited between the
     // registry read and this call is a normal race, and the report still has to
     // be produced for the workspaces that are still running.
-    let active_process_count = pid
+    let process_count = pid
         .and_then(|runtime_pid| session::count_processes_in_pid_namespace(runtime_pid).ok())
         .unwrap_or(0);
     let proc_status: Option<ProcStatusMetrics> =
@@ -65,10 +65,15 @@ pub(super) fn build_workspace_stats(
         (Some(usage), Some(limit)) if limit > 0 => Some((usage as f64 / limit as f64) * 100.0),
         _ => None,
     };
-    let pids_current = cgroup_stats
+    let task_count = cgroup_stats
         .as_ref()
         .and_then(|stats| stats.pids_current)
-        .or_else(|| u64::try_from(active_process_count).ok());
+        .or_else(|| {
+            // Without a cgroup, the PID-namespace process count is the best
+            // available task figure. It is still labeled as tasks because the
+            // stats report never presents it as a distinct process count.
+            u64::try_from(process_count).ok()
+        });
     let pids_limit = cgroup_stats
         .as_ref()
         .and_then(|stats| parse_limit_value(stats.pids_max.as_deref()))
@@ -87,7 +92,8 @@ pub(super) fn build_workspace_stats(
             WorkspaceStatus::Stopped
         },
         pid,
-        active_process_count,
+        process_count,
+        task_count,
         threads: proc_status.as_ref().and_then(|status| status.threads),
         cpu_percent,
         cpu_limit_percent: workspace.limits.cpu_percent,
@@ -100,7 +106,7 @@ pub(super) fn build_workspace_stats(
         net_tx_bytes: net_stats.as_ref().map(|stats| stats.tx_bytes),
         block_read_bytes: io_stats.as_ref().map(|stats| stats.read_bytes),
         block_write_bytes: io_stats.as_ref().map(|stats| stats.write_bytes),
-        pids_current,
+        pids_current: task_count,
         pids_limit,
     })
 }

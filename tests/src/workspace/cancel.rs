@@ -1,4 +1,5 @@
 use crate::workspace::{cancel_file_path, cancel_workspace_command};
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 
 struct TempWorkspace {
@@ -42,13 +43,29 @@ fn cancelling_signals_the_published_helper_and_reports_it() {
     // itself: it is a host process, and it holds the workspace's command mutex for
     // exactly as long as the command runs.
     let workspace = TempWorkspace::new();
-    let mut child = std::process::Command::new("/bin/sleep")
-        .arg("30")
-        .spawn()
-        .expect("spawn child");
+    let mut command = std::process::Command::new("/bin/sleep");
+    command.arg("30");
+    // The persistent helper is a process-group leader, so its published pid is
+    // also the group id that contains the command.
+    // SAFETY: `setpgid` is async-signal-safe and runs before exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut child = command.spawn().expect("spawn child");
     let helper_pid = child.id() as i32;
-    std::fs::write(cancel_file_path(&workspace.root), format!("{helper_pid}\n"))
-        .expect("publish cancel file");
+    let starttime = crate::workspace::session::process_starttime_ticks(helper_pid as u32)
+        .expect("helper start time");
+    std::fs::write(
+        cancel_file_path(&workspace.root),
+        format!("{helper_pid} {starttime}\n"),
+    )
+    .expect("publish cancel file");
 
     let outcome = cancel_workspace_command(&workspace.root).expect("cancel");
     assert!(
@@ -62,11 +79,63 @@ fn cancelling_signals_the_published_helper_and_reports_it() {
 }
 
 #[test]
+fn cancelling_reaches_the_command_descendant_too() {
+    let workspace = TempWorkspace::new();
+    let child_pid_path = workspace.root.join("runtime/descendant.pid");
+    let script = format!("sleep 30 & echo $! > '{}'; wait", child_pid_path.display());
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c", &script]);
+    // SAFETY: `setpgid` is async-signal-safe and runs before exec.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let mut helper = command.spawn().expect("spawn helper-like parent");
+    let helper_pid = helper.id();
+    let starttime =
+        crate::workspace::session::process_starttime_ticks(helper_pid).expect("helper start time");
+    std::fs::write(
+        cancel_file_path(&workspace.root),
+        format!("{helper_pid} {starttime}\n"),
+    )
+    .expect("publish cancel file");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !child_pid_path.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "descendant did not start"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let child_pid: u32 = std::fs::read_to_string(&child_pid_path)
+        .expect("read descendant pid")
+        .trim()
+        .parse()
+        .expect("parse descendant pid");
+
+    cancel_workspace_command(&workspace.root).expect("cancel command group");
+    let _ = helper.wait();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while crate::workspace::session_process_matches(child_pid, None) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the command descendant survived cancellation"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn a_cancel_file_naming_an_exited_helper_is_treated_as_finished() {
     let workspace = TempWorkspace::new();
     // A group id that cannot exist: the command finished between publishing and
     // cancelling, which is the race a cancel has to tolerate.
-    std::fs::write(cancel_file_path(&workspace.root), "2147483646\n").expect("write");
+    std::fs::write(cancel_file_path(&workspace.root), "2147483646 1\n").expect("write");
     let outcome = cancel_workspace_command(&workspace.root).expect("cancel");
     assert!(!outcome.cancelled);
     assert!(outcome.already_finished);
@@ -83,6 +152,6 @@ fn a_malformed_cancel_file_is_an_error_not_a_signal() {
 #[test]
 fn a_cancel_file_naming_init_is_refused() {
     let workspace = TempWorkspace::new();
-    std::fs::write(cancel_file_path(&workspace.root), "1\n").expect("write");
+    std::fs::write(cancel_file_path(&workspace.root), "1 1\n").expect("write");
     assert!(cancel_workspace_command(&workspace.root).is_err());
 }

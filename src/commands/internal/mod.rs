@@ -40,7 +40,7 @@ pub(crate) use file_receive::run_workspace_file_receive;
 pub(crate) use persistent::run_workspace_session_persistent_helper;
 
 // Shared between the submodules above.
-pub(crate) use command::run_workspace_command_child;
+pub(crate) use command::{run_workspace_command_child, terminate_group_descendants};
 pub(crate) use namespaces::{
     attach_helper_to_workspace_cgroup, enter_workspace_namespaces, enter_workspace_root,
     wait_pid_exit_code, NamespaceHandles,

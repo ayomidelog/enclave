@@ -3,6 +3,35 @@
 use super::*;
 
 #[test]
+fn a_published_port_connection_records_workspace_activity() {
+    let service = TcpListener::bind("127.0.0.1:0").expect("bind the workspace service");
+    let service_port = service.local_addr().expect("service addr").port();
+    let accepted = thread::spawn(move || {
+        let (_stream, _) = service.accept().expect("accept the proxied connection");
+    });
+
+    let publisher = PortPublisher::new();
+    let (activity_tx, activity_rx) = std::sync::mpsc::channel();
+    publisher.set_activity_callback(Arc::new(move |sandbox_id, workspace_id| {
+        let _ = activity_tx.send((sandbox_id.to_string(), workspace_id.to_string()));
+    }));
+    let host_port = free_host_port();
+    publish_loopback_port(&publisher, host_port, service_port);
+
+    let _client = TcpStream::connect(("127.0.0.1", host_port)).expect("connect to the port");
+    let observed = activity_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a published-port connection must report activity");
+    assert_eq!(
+        observed,
+        ("sb-publish".to_string(), "ws-publish".to_string())
+    );
+
+    publisher.clear_workspace_ports("sb-publish", "ws-publish");
+    accepted.join().expect("join the service acceptor");
+}
+
+#[test]
 fn an_idle_connection_costs_no_cpu() {
     let _serial = serialize_heavy_connection_test();
     // A connection with nothing to carry must not wake its thread. Reaping the

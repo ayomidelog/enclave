@@ -43,13 +43,30 @@ pub(super) fn dispatch_daemon_doctor(
     let daemon = crate::doctor::DaemonState {
         port_publisher,
         active_operations: services.active_operations.as_ref(),
+        activity: services.activity.as_ref(),
+        policy: services.policy.as_ref(),
+        leases: services.leases.as_ref(),
     };
     let report = crate::doctor::run_doctor(&config.state_dir, Some(&daemon))?;
     Ok(serde_json::to_value(report)?)
 }
 
-pub(super) fn dispatch_daemon_doctor_repair(config: &DaemonConfig) -> Result<Value> {
-    let report = crate::doctor::repair_doctor(&config.state_dir, &config.socket_path)?;
+pub(super) fn dispatch_daemon_doctor_repair(
+    config: &DaemonConfig,
+    services: &crate::daemon::services::DaemonServices,
+) -> Result<Value> {
+    let daemon = crate::doctor::DaemonState {
+        port_publisher: &services.port_publisher,
+        active_operations: services.active_operations.as_ref(),
+        activity: services.activity.as_ref(),
+        policy: services.policy.as_ref(),
+        leases: services.leases.as_ref(),
+    };
+    let report = crate::doctor::repair_doctor_with_policy(
+        &config.state_dir,
+        &config.socket_path,
+        Some(&daemon),
+    )?;
     Ok(serde_json::to_value(report)?)
 }
 

@@ -32,6 +32,7 @@ didn't exist. So I built it.
 | | Enclave | Docker |
 |---|---|---|
 | **Rootfs sharing** | All workspaces share one sandbox rootfs | Each container has its own layered rootfs |
+| **Idle lifecycle** | Tracks activity, command leases, jobs, and retention per workspace | Containers remain until explicitly removed |
 | **Environment source** | `debootstrap` or prebuilt rootfs | OCI images pulled from registries |
 | **Runtime** | Single daemon → direct `unshare`/`nsenter` | dockerd → containerd → runc |
 | **Configuration** | Single `Enclavefile` (TOML) | `Dockerfile` + `docker-compose.yml` |
@@ -114,6 +115,13 @@ sudo cp -a /root/.local/state/enclave /root/.local/state/enclave.1.x.bak
 start that used to succeed. The failure names the variable that raises it; the whole
 table is in [Runtime details](docs/runtime-details.md). [CHANGELOG.md](CHANGELOG.md)
 lists the rest of what changed.
+
+2.4.0 adds optional workspace activity and lifecycle fields. The registry schema is
+unchanged, and no idle-stop, retention, CPU, or process policy changes unless the
+daemon or workspace configures one, so upgrading does not alter lifecycle behavior
+by itself. A 2.4.0 registry still loads in 2.3.2, but the older binary ignores the
+new fields and drops them when it next writes the registry. Reapply idle, retention,
+and `keep_running` settings after a rollback.
 
 **Rolling back from 2.1.0 loses `owner` bindings.** 2.1.0 adds an optional
 `owner` field to a workspace record, and 2.0.0 ignores a field it does not know
@@ -220,6 +228,23 @@ features.
 Workspace runtimes are hardened with user-namespace isolation, capability dropping,
 read-only `/proc/sys` and `/sys` remounts, seccomp deny rules, and optional
 AppArmor/SELinux hooks.
+
+The daemon also tracks lifecycle activity. Real `start`, `enter`, `exec`, `cp`, and
+published-port operations update a durable timestamp; `status` and `stats` do not.
+Idle runtimes are stopped through the normal verified stop path, with their files
+kept until a separate `destroy_after` window expires. Foreground commands and live
+published-port connections prevent an idle stop, while background commands are
+durable jobs with an optional TTL and `keep_running` pin. Sandbox and daemon
+running-workspace caps reject a start at capacity instead of stopping another
+workspace, and only an explicit `keep_running` pin protects one from idle stop and
+destroy-after retention deletion.
+
+Use `enclave workspace jobs <sandbox> <workspace>` to inspect tracked commands and
+`enclave ps --processes` for a per-process view with PID, PPID, PGID, age, CPU,
+RSS, thread count, and detached-job identity. `enclave workspace stats` reports
+`process_count` (PID-namespace processes) separately from `task_count` (cgroup
+threads/tasks). `enclave workspace cancel <sandbox> <workspace>` stops the current
+command through its verified helper process group.
 
 Managed workspace disk limits cover more than `/home`: when `disk_mb` is configured,
 the workspace uses a quota-backed root OverlayFS layer, so writes under `/opt`,
@@ -372,6 +397,17 @@ could be refused is checked before a running workspace is stopped for it, so a r
 resize leaves it running. A memory limit is enforced by the cgroup and by the session's
 address-space limit, and both are moved together, so a raise is usable without a
 restart. See the [Command Reference](docs/commands.md) for the full surface.
+
+Running-workspace capacity is separate from a resource limit. Set it on the sandbox
+with `--max-running-workspaces`, change it with `enclave resize`, or set a
+daemon-wide cap in `config.toml`. At capacity, a start returns a conflict; Enclave
+does not stop another workspace to make room.
+
+```bash
+sudo enclave create devbox --max-running-workspaces 4
+sudo enclave resize devbox --max-running-workspaces 6
+sudo enclave workspace keep devbox api --keep-running
+```
 
 ## Lifecycle tiers
 

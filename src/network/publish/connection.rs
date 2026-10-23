@@ -93,6 +93,11 @@ impl ConnectionSet {
         self.live().retain(|connection| connection.id != id);
     }
 
+    /// Whether this port is serving at least one live connection.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.live().is_empty()
+    }
+
     /// End every connection that has moved no bytes for `idle_timeout`.
     pub(crate) fn shutdown_idle(&self, idle_timeout: Duration) {
         for connection in self.live().iter() {

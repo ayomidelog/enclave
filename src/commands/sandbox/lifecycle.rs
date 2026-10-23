@@ -60,8 +60,10 @@ pub(crate) fn run_resize(socket: &Path, args: SandboxResizeArgs) -> Result<()> {
         memory_mb,
         disk_mb,
         max_procs,
+        max_running_workspaces,
         no_memory_limit,
         no_disk_budget,
+        no_max_running_workspaces,
     } = args;
     tracing::info!("resizing sandbox '{}'...", sandbox);
     // Only the limits the operator named are sent. A field carrying `null` means
@@ -85,6 +87,17 @@ pub(crate) fn run_resize(socket: &Path, args: SandboxResizeArgs) -> Result<()> {
     if let Some(max_procs) = max_procs {
         params.insert("max_procs".to_string(), json!(max_procs));
     }
+    if no_max_running_workspaces {
+        params.insert(
+            "max_running_workspaces".to_string(),
+            serde_json::Value::Null,
+        );
+    } else if let Some(max_running_workspaces) = max_running_workspaces {
+        params.insert(
+            "max_running_workspaces".to_string(),
+            json!(max_running_workspaces),
+        );
+    }
     let response = send_managed(socket, "sandbox.resize", serde_json::Value::Object(params))?;
     let report: SandboxResizeReport = serde_json::from_value(response)?;
     println!("resized sandbox '{}'", report.sandbox.id);
@@ -96,6 +109,20 @@ pub(crate) fn run_resize(socket: &Path, args: SandboxResizeArgs) -> Result<()> {
         report.previous_max_processes,
         limits.max_processes,
     );
+    match (
+        report.previous_max_running_workspaces,
+        limits.max_running_workspaces,
+    ) {
+        (previous, current) if previous == current => println!(
+            "  max running workspaces: {} (unchanged)",
+            current.map_or_else(|| "unlimited".to_string(), |value| value.to_string())
+        ),
+        (previous, current) => println!(
+            "  max running workspaces: {} -> {}",
+            previous.map_or_else(|| "unlimited".to_string(), |value| value.to_string()),
+            current.map_or_else(|| "unlimited".to_string(), |value| value.to_string())
+        ),
+    }
     print_operation_id();
     Ok(())
 }

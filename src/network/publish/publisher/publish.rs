@@ -15,6 +15,7 @@ impl PortPublisher {
         Self {
             inner: Mutex::new(PublisherState::default()),
             connections: Arc::new(ConnectionLimiter::new(MAX_PUBLISHED_CONNECTIONS)),
+            activity: Mutex::new(None),
         }
     }
 
@@ -29,6 +30,16 @@ impl PortPublisher {
     /// again.
     pub(super) fn state(&self) -> std::sync::MutexGuard<'_, PublisherState> {
         self.inner.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Record activity for a workspace when a published-port client connects.
+    /// The callback is installed once by the daemon after its activity service
+    /// exists; publishers created by tests keep working without one.
+    pub(crate) fn set_activity_callback(&self, callback: ActivityCallback) {
+        *self
+            .activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(callback);
     }
 
     pub fn apply_workspace_ports_strict(
@@ -90,13 +101,21 @@ impl PortPublisher {
 
         let mut active = Vec::new();
         let mut failures = Vec::new();
+        let activity = self
+            .activity
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
 
         for spec in specs {
             match ActivePublication::bind(
                 spec.clone(),
+                sandbox_id,
+                workspace_id,
                 runtime_pid,
                 workspace_ip,
                 Arc::clone(&self.connections),
+                activity.clone(),
             ) {
                 Ok(publication) => active.push(publication),
                 Err(err) => match mode {

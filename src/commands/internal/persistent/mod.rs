@@ -17,11 +17,6 @@ struct PersistentCommandRequest {
     workspace_id: String,
     cwd: String,
     command: Vec<String>,
-    /// Where to record this command's process-group id, so a cancel can find it
-    /// while the command is still running. Absent means the caller does not want
-    /// the command to be cancellable.
-    #[serde(default)]
-    cancel_file: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

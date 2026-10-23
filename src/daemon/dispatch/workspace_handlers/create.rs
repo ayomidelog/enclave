@@ -32,6 +32,12 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_create(
         .transpose()?
         .flatten()
         .unwrap_or(false);
+    let keep_running = params
+        .get("keep_running")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let idle_stop_after_secs = params.get("idle_stop_after_secs").and_then(Value::as_u64);
+    let destroy_after_secs = params.get("destroy_after_secs").and_then(Value::as_u64);
     let metadata = workspace::create_workspace_with_options(
         &config.state_dir,
         sandbox_id,
@@ -44,6 +50,9 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_create(
             env_tokens,
             published_ports,
             clear_tmp_on_restart,
+            keep_running,
+            idle_stop_after_secs,
+            destroy_after_secs,
         },
     )?;
     let started = workspace::start_workspace_with_security(

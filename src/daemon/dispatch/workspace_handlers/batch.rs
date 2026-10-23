@@ -10,6 +10,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many(
     params: &Value,
     config: &DaemonConfig,
     port_publisher: &Arc<PortPublisher>,
+    services: &crate::daemon::services::DaemonServices,
 ) -> Result<Value> {
     let specs = params
         .get("workspaces")
@@ -34,7 +35,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many(
         crate::parallel::parallelism(),
     );
     let results = crate::parallel::map_bounded(specs, workers, |spec| {
-        dispatch_workspace_start_many_item(&spec, config, port_publisher)
+        dispatch_workspace_start_many_item(&spec, config, port_publisher, services)
     });
 
     let mut output = Vec::with_capacity(results.len());
@@ -57,6 +58,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many_item(
     spec: &Value,
     config: &DaemonConfig,
     port_publisher: &Arc<PortPublisher>,
+    services: &crate::daemon::services::DaemonServices,
 ) -> Result<Value> {
     let started = match dispatch_workspace_create(spec, config, port_publisher) {
         Ok(result) => result,
@@ -76,16 +78,23 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many_item(
                 config,
                 "start",
                 port_publisher,
+                services,
             )?
         }
     };
 
     if let Some(run_command) = spec.get("run").and_then(Value::as_str) {
         let metadata: workspace::WorkspaceMetadata = serde_json::from_value(started.clone())?;
-        workspace::spawn_workspace_command_detached(
+        let job = workspace::spawn_workspace_command_detached(
+            &config.state_dir,
             &metadata,
             "/home",
             &["sh".to_string(), "-c".to_string(), run_command.to_string()],
+            spec.get("run_ttl_secs").and_then(Value::as_u64),
+            spec.get("run_keep_running")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            Arc::clone(&services.activity),
         )
         .with_context(|| {
             format!(
@@ -93,6 +102,13 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_start_many_item(
                 metadata.name
             )
         })?;
+        workspace::touch_activity(
+            &config.state_dir,
+            &metadata.sandbox_id,
+            &metadata.id,
+            workspace::ActivityKind::Process,
+        )?;
+        services.activity.update_job(job);
     }
     Ok(started)
 }
@@ -119,6 +135,9 @@ pub(in crate::daemon::dispatch) fn existing_workspace_update(
         "memory_mb",
         "max_procs",
         "max_open_files",
+        "keep_running",
+        "idle_stop_after_secs",
+        "destroy_after_secs",
         "path",
     ] {
         if object.get(key).is_some_and(Value::is_null) {

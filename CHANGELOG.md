@@ -2,6 +2,87 @@
 
 ## Unreleased
 
+## 2.4.0 - 2026-10-22
+
+This release adds optional workspace lifecycle fields and daemon actions. The
+registry schema remains version 1, so `2.3.2` can read the record, but it does not
+understand the new fields and drops them when it next writes the registry. A
+rollback therefore requires the idle, retention, and pin settings to be applied
+again.
+
+### Added
+
+- Durable workspace activity tracking and a daemon lifecycle sweep. `start`,
+  `enter`, `exec`, `cp`, and published-port traffic record activity; status and
+  stats reads do not. An unleased, unpinned workspace is stopped after
+  `idle_stop_after_secs`, and its files are kept until the independent
+  `destroy_after_secs` window expires.
+- Foreground and background command jobs with job ids, command lines, modes,
+  start and finish times, PID/start-time identity, process groups, status, exit
+  codes, TTLs, and keep-running policy. `workspace exec --background`,
+  `workspace jobs`, `workspace keep`, and `workspace cancel` expose them.
+- Per-sandbox and daemon-wide running-workspace caps. Capacity is reserved under
+  the registry lock when a start commits; reaching a cap returns a conflict
+  instead of silently stopping another workspace. `keep_running` explicitly pins
+  a workspace against idle stop and destroy-after retention deletion.
+- Daemon defaults for workspace CPU share and process count, applied when a
+  workspace omits those limits. Both the persisted record and cgroup use the
+  resolved value.
+- PID-namespace `process_count` reported separately from cgroup `task_count`,
+  which includes threads. `ps --processes` adds PID, PPID, PGID, command, age, CPU,
+  RSS, thread count, and tracked detached-job identity for each process.
+- Doctor checks for idle workspaces, task-count pressure, and tracked detached
+  processes. `doctor --repair` can stop idle workspaces through the verified
+  stop path after rechecking the current record under the workspace lease.
+- A separate daemon exec worker pool and per-workspace admission. Requests are
+  classified from their parsed JSON action, a split request line is reassembled,
+  and excess commands wait in their own workspace queue rather than consuming
+  every worker or bypassing the share.
+- Command cancellation that signals the verified helper process group. Persistent
+  helpers record their host PID and start time, foreground commands reap
+  descendants they leave behind, and TTL or stop cleanup escalates from SIGTERM
+  to SIGKILL through the configured runtime deadlines.
+- A lifecycle-aware loaded-host benchmark check that verifies private `/tmp`,
+  published ports, cgroup throttling, restart under load, and complete teardown.
+
+### Fixed
+
+- A long-running `workspace exec` no longer occupies a control worker, so six
+  commands cannot make `ping` and lifecycle requests time out while the daemon is
+  healthy. A full exec queue is rejected with `rate_limited` without blocking the
+  accept loop, and the queue absorbs a simultaneous command burst before it
+  rejects work.
+- A command that leaves a descendant holding stdout or stderr no longer wedges
+  its persistent helper indefinitely. Output draining stops at the direct child's
+  exit, and a helper that fails to answer within
+  `ENCLAVE_HELPER_RESPONSE_TIMEOUT_SECS` is killed and evicted from the cache.
+- Cancellation and job cleanup verify PID start time before signalling, including
+  process-group leaders and members. A stale or recycled PID is never signalled,
+  and a detached job without a verified identity is treated as dead.
+- A foreground command that exits no longer leaves its background descendants
+  running in the workspace. The explicit `--background` mode is the way to keep
+  work after the command returns.
+- The command drain no longer busy-spins on `poll` after both output pipes close.
+- A missing source in `workspace cp` now reports the missing path instead of
+  saying the resulting empty archive lacked the expected entry, and tar's real
+  failure takes precedence over the derived archive-shape error.
+- Doctor idle repair rechecks status, pin, ports, command leases, foreground jobs,
+  and idle eligibility under the lifecycle lease, so a workspace that became
+  active after the candidate scan is not stopped.
+- Exec worker slots are released on every outcome, including a panicked request.
+
+### Changed
+
+- Workspace mounts remain private: each workspace keeps its own overlay, home
+  bind, and private `/tmp`. Stopping an idle runtime releases those mounts; it
+  does not deduplicate them while workspaces are running.
+- The lifecycle sweeper, doctor, and dispatcher share one lock order and the same
+  verified stop path, so an idle stop cannot bypass cleanup checks.
+- The grouped Cargo dependencies were refreshed within the pinned Rust 1.85
+  toolchain. The crate now declares its MSRV and uses the MSRV-aware resolver.
+- The live loaded-host harness excludes the temporary daemon from its workspace
+  runtime leak count, so successful teardown is not reported as a leaked runtime.
+
 ## 2.3.2 - 2026-10-15
 
 ### Added

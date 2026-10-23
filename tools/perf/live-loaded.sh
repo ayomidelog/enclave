@@ -423,6 +423,12 @@ for proc in /proc/[0-9]*; do
   proc_exe=$(readlink "$proc/exe" 2>/dev/null || true)
   [[ "$proc_exe" == "$binary" ]] || continue
   proc_cmd=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)
+  # The temporary daemon also runs this binary and carries the state directory
+  # on its command line, but it is not a workspace runtime. It is stopped by the
+  # cleanup trap after this assertion.
+  case "$proc_cmd" in
+    *" daemon run "*) continue ;;
+  esac
   case "$proc_cmd" in
     *"$state_dir"*) runtimes_left=$((runtimes_left + 1)) ;;
   esac

@@ -11,8 +11,15 @@ fn status_with_disk(disk_bytes: Option<u64>) -> WorkspaceStatusReport {
         created_at: "2026-01-01T00:00:00Z".to_string(),
         allocated_path: "/state/sandboxes/sb/workspaces/ws-1".to_string(),
         status: crate::workspace::WorkspaceStatus::Running,
-        active_process_count: 1,
+        process_count: 1,
+        task_count: None,
         resource_usage: None,
+        last_request_at: None,
+        last_process_activity_at: None,
+        last_stopped_at: None,
+        keep_running: false,
+        idle_stop_after_secs: None,
+        destroy_after_secs: None,
         limits: WorkspaceLimits {
             disk_bytes,
             ..WorkspaceLimits::default()

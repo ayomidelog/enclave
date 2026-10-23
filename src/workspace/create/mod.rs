@@ -71,6 +71,9 @@ pub struct WorkspaceCreateOptions {
     pub env_tokens: Vec<String>,
     pub published_ports: Vec<PublishedPortSpec>,
     pub clear_tmp_on_restart: bool,
+    pub keep_running: bool,
+    pub idle_stop_after_secs: Option<u64>,
+    pub destroy_after_secs: Option<u64>,
 }
 
 pub fn create_workspace(
@@ -98,14 +101,21 @@ pub fn create_workspace_with_options(
 ) -> Result<WorkspaceMetadata> {
     validate_name(name)?;
     let WorkspaceCreateOptions {
-        limits,
+        mut limits,
         home_mount_source,
         auth_providers,
         owner,
         env_tokens,
         published_ports,
         clear_tmp_on_restart,
+        keep_running,
+        idle_stop_after_secs,
+        destroy_after_secs,
     } = options;
+    limits = limits.with_daemon_defaults();
+    // The daemon defaults are part of the effective definition, not a fallback
+    // applied only by the cgroup writer. Validate the merged limits before any
+    // storage or runtime is created so a bad default fails a create cleanly.
     limits.validate()?;
     let auth_providers = normalize_auth_providers(auth_providers)?;
     let owner = normalize_owner(owner)?;
@@ -229,6 +239,9 @@ pub fn create_workspace_with_options(
             sandbox_id: sandbox.id.clone(),
             name: name.to_string(),
             created_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+            last_request_at: Some(crate::workspace::activity_now()),
+            last_process_activity_at: None,
+            last_stopped_at: None,
             workspace_path: workspace_dir.to_string_lossy().to_string(),
             filesystem_path: filesystem_dir.to_string_lossy().to_string(),
             filesystem_mount_target: "/home".to_string(),
@@ -251,6 +264,9 @@ pub fn create_workspace_with_options(
             },
             limits: limits.clone(),
             clear_tmp_on_restart,
+            keep_running,
+            idle_stop_after_secs,
+            destroy_after_secs,
             assigned_ip: None,
         };
 

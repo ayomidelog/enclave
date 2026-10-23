@@ -17,6 +17,7 @@ Enclave keeps durable state under its configured `state_dir` and uses a small nu
 ├── daemon.lock                  # Exclusive daemon owner record while the daemon runs
 ├── policy.json                  # Authorization rules
 ├── policy.lock                  # Advisory file lock
+├── jobs/                        # Durable command job records
 └── sandboxes/
     ├── rootfs-cache/
     │   ├── <suite>/             # Suite-specific cached rootfs
@@ -148,6 +149,8 @@ device is left behind.
 ## Runtime and snapshot data
 
 - `workspaces/<workspace-id>/runtime/` stores runtime metadata such as PID, logs, and readiness markers. Persistent `workspace exec` diagnostics are appended to `session-helper.log`; the helper socket itself uses a short private path under `/run/enclave` and is removed when the runtime identity is invalidated.
+- `jobs/<job-id>.json` stores one durable record per command job, shared across sandboxes and filtered by sandbox and workspace id when listed. A record includes its job id, sandbox and workspace ids, command line, foreground/background mode, start and finish times, helper PID and start-time identity, process group, status, exit code, TTL, and keep-running policy. The daemon reconciles records against process identity on startup and before sweeping; terminal records remain available to `workspace jobs`.
+- Workspace metadata records `last_request_at`, `last_process_activity_at`, and `last_stopped_at` alongside the runtime identity. Status and stats reads do not update activity. Idle stop uses the first two, while destroy-after measures the age of `last_stopped_at`.
 - `workspaces/<workspace-id>/ns/` stores mount and PID namespace references while a runtime is active. Enclave validates these references with the recorded runtime PID and start time before treating a workspace as active.
 - `daemon.lock` is held exclusively while the daemon owns the state directory. Its JSON record identifies the daemon PID, socket, binary version, binary path, and start time; the file is removed when the owning daemon exits normally.
 - `workspaces/<workspace-id>/snapshots/` stores copy-based workspace snapshots.

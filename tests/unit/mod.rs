@@ -8,5 +8,7 @@ mod policy_engine;
 mod port_publishing;
 mod registry_ops;
 mod sandbox_types;
+mod workspace_activity;
 mod workspace_host_dir;
+mod workspace_jobs;
 mod workspace_ports;

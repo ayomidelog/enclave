@@ -53,6 +53,9 @@ Enclave is intentionally scoped to local Linux development workflows. These are 
 
 ## Storage and lifecycle
 
+- **Idle stop and destroy are separate, and both are opt-in at the daemon level**: a running workspace is stopped only when the daemon has an idle window and the sweep is enabled; its files are then kept until a separately configured retention window expires. `keep_running` protects a workspace from idle stop and destroy-after retention deletion. An ordinary background job does not pin its workspace unless it was started with `keep_running` or the Enclavefile sets `run_keep_running`.
+- **Capacity is enforced by refusing a start**: sandbox and daemon running-workspace caps count `starting` and `running` workspaces. At capacity a start returns a conflict; Enclave does not stop another workspace to make room.
+- **Cancellation and foreground descendants are bounded by process groups**: `workspace cancel` signals a verified helper process group, and a foreground command reaps descendants that remain in that group. A process that creates a new session or process group is outside those guarantees and must be managed explicitly with the background-job model.
 - **Copy-based snapshots**: snapshots are full directory copies. Use `enclave workspace snapshot-gc` to enforce retention and reclaim disk space.
 - **Modern mount support required**: workspace `/home` mounts now rely on idmapped bind mounts. Hosts must provide a kernel and `mount` implementation with `X-mount.idmap` support.
 - **Mixed-ownership host trees are less predictable**: host-backed `workspace_dir` mounts work best when the project tree has a consistent owner/group at the root. Files owned by unrelated host IDs may appear as overflow IDs inside the workspace.

@@ -9,6 +9,7 @@ pub(crate) fn run_accept_loop(
     workspace_port: u16,
     connections: ConnectionBudget,
     live: Arc<ConnectionSet>,
+    activity: PublishedPortActivity,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         // Wait for a connection instead of polling. Sleeping on `WouldBlock`
@@ -22,6 +23,13 @@ pub(crate) fn run_accept_loop(
         live.shutdown_idle(CONNECTION_IDLE_TIMEOUT);
         match listener.accept() {
             Ok((stream, _)) => {
+                // A connection to a published service is real workspace activity
+                // even when it did not arrive through the Enclave control socket.
+                // The live-connection check keeps the workspace pinned for the
+                // duration; this records when that activity began.
+                if let Some(callback) = activity.callback.as_ref() {
+                    callback(&activity.sandbox_id, &activity.workspace_id);
+                }
                 let Some(permit) = connections.try_acquire() else {
                     tracing::debug!(
                         "published port connection limit reached for workspace pid {} port {}; rejecting connection",

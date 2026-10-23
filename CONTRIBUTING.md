@@ -274,7 +274,9 @@ path, and its scripts build their own daemon and state directory so they never
 touch a running sandbox. `live-lifecycle.sh` measures the stop-and-start tier,
 `live-pause.sh` the pause-and-resume tier, `live-quota.sh` a workspace whose
 storage is an ext4 image, `live-ports.sh` the published-port lifecycle, and
-`live-loaded.sh` a sandbox whose workspaces are all busy at once. They are
+`live-loaded.sh` a sandbox whose workspaces are all busy at once. The loaded run
+also verifies per-workspace `/tmp`, cgroup throttling, restart under load, and
+that no runtime or interface survives teardown. They are
 separate runs because a change to one tier is not a change to another.
 
 The gate in CI is `tools/perf/check-thresholds.sh`. It is a floor rather than a

@@ -1,4 +1,5 @@
 use super::*;
+use crate::workspace::{detached_count, WorkspaceProcess};
 
 #[test]
 fn format_uptime_minutes_only() {
@@ -30,10 +31,51 @@ fn process_entry_serializes_to_json() {
         status: "running".to_string(),
         uptime: Some(8040),
         pid: Some(84921),
+        processes: Vec::new(),
     };
     let json = serde_json::to_string(&entry).expect("serialize");
     assert!(json.contains("devbox"));
     assert!(json.contains("84921"));
+}
+
+#[test]
+fn process_rows_expose_identity_and_tracked_job() {
+    let process = WorkspaceProcess {
+        pid: 42,
+        ppid: 1,
+        process_group: 42,
+        command: "sleep 60".to_string(),
+        age_secs: Some(30),
+        cpu_percent: Some(2.5),
+        rss_bytes: Some(8 * 1024 * 1024),
+        threads: Some(1),
+        detached: true,
+        job_id: Some("job-1".to_string()),
+    };
+    let json = serde_json::to_value(&process).expect("serialize");
+    assert_eq!(json["pid"], 42);
+    assert_eq!(json["ppid"], 1);
+    assert_eq!(json["process_group"], 42);
+    assert_eq!(json["threads"], 1);
+    assert_eq!(json["detached"], true);
+    assert_eq!(json["job_id"], "job-1");
+}
+
+#[test]
+fn a_process_outside_a_tracked_group_is_not_detached() {
+    let process = WorkspaceProcess {
+        pid: 43,
+        ppid: 1,
+        process_group: 43,
+        command: "service".to_string(),
+        age_secs: Some(5),
+        cpu_percent: None,
+        rss_bytes: None,
+        threads: Some(4),
+        detached: false,
+        job_id: None,
+    };
+    assert_eq!(detached_count(&[process], 1), 0);
 }
 
 #[test]
@@ -44,6 +86,7 @@ fn process_entry_stopped_has_no_pid_or_uptime() {
         status: "stopped".to_string(),
         uptime: None,
         pid: None,
+        processes: Vec::new(),
     };
     let json = serde_json::to_value(&entry).expect("serialize");
     assert!(json["pid"].is_null());

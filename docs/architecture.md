@@ -17,9 +17,12 @@ graph LR
 - **CLI** serializes commands as JSON requests: `{ "action": "...", "params": { ... } }`
 - **Daemon** processes them and responds: `{ "ok": bool, "result"?: ..., "error"?: "...", "code"?: "...", "operation_id": "..." }`
 - Every failure carries a stable machine-readable `code` beside the human `error` message, so a client can tell a missing sandbox from a conflict, an unsupported host, a timeout, or a cleanup that could not release every resource without matching on wording. The code is attached where the failure is raised and carried through the error chain; a failure nobody categorized is `internal`. Successful responses omit it.
-- The daemon uses separate bounded control and transfer worker queues so long-running `workspace.cp` requests cannot consume every control worker.
-- Worker counts are bounded and benchmark-configurable with `ENCLAVE_CONTROL_WORKERS` and `ENCLAVE_TRANSFER_WORKERS`; default production values remain 6 and 2.
+- The daemon uses separate bounded control, transfer, and exec worker pools so lifecycle calls, large copies, and caller-supplied commands cannot starve one another. The default pool sizes are 6 control, 2 transfer, and 16 exec workers, configurable with `ENCLAVE_CONTROL_WORKERS`, `ENCLAVE_TRANSFER_WORKERS`, and `ENCLAVE_EXEC_WORKERS`.
+- A request is classified by parsing its JSON `action`, not by matching text in the payload. The dispatcher waits briefly for a complete line when a client splits a write, then leaves the bytes on the socket for the worker that serves it.
+- The exec pool admits at most two in-flight requests per workspace and queues excess work behind that workspace's private pending queue. The global exec queue is bounded at 512; when it is full the client receives a structured `rate_limited` response without blocking the accept loop.
 - For interactive `workspace enter`, the CLI launches an internal helper that joins the runtime namespaces directly, and its stdout/stderr remain outside the daemon JSON control response. `workspace exec` runs through the daemon instead, which uses a persistent per-runtime helper: validated namespace descriptors and a pidfd are inherited once, while each command is authenticated and revalidated over a private Unix socket. The captured output is returned in the response so the daemon can scrub injected token values from it first; `--no-scrub` takes the direct path and streams instead.
+- A persistent helper is the leader of its own process group and records its host PID and start time. Cancellation verifies both before signalling the group, so a recycled PID is never signalled. Foreground commands reap descendants left in that group when the direct child exits; only `workspace exec --background` creates a job intended to outlive the request.
+- Every command creates a durable foreground or background job record. The record carries its job id, command, mode, process identity, process group, status, exit code, TTL, and keep-running policy. A background job is returned immediately and remains tracked after the CLI exits.
 - Repeated daemon-managed namespace operations reuse an identity-checked descriptor cache keyed by runtime PID and start time. Cached descriptors are duplicated only for the helper process and invalidated when namespace identities change.
 - Workspace creation and Enclavefile startup use bounded fan-out for independent work, while registry commits and run-command ordering remain deterministic.
 - Enclavefile workspace startup uses one bounded `workspace.start_many` daemon request and returns structured per-workspace results; partial success is explicit so callers can report failed items without losing successful starts.
@@ -62,6 +65,7 @@ graph TB
 - **Workspace filesystem** is mounted into `/home` as an idmapped bind mount inside the sandbox root.
 - **Optional host workspace path** can be configured per workspace in the Enclavefile (`workspace_dir = "./project"` or legacy `path = "./project"` / `"/absolute/host/path"`). Relative paths are resolved from the Enclavefile directory. When set, that host directory is mounted at `/home` through an idmapped bind mount instead of the default Enclave-managed workspace directory.
 - **Optional loopback port publishing** is daemon-managed. Declared workspace ports are bound on `127.0.0.1` and proxied to the workspace IP only while the workspace is running.
+- Published-port connections are bounded per port and across the daemon, and a connection that moves no bytes is closed after ten minutes. A live connection is activity for its workspace, so it prevents an idle stop until the connection ends.
 - **Resource limits** (CPU time, memory, max processes, open files) are enforced per workspace using POSIX `setrlimit`/`prlimit`.
 - **Runtime hardening** remounts `/proc/sys` and `/sys` read-only, drops capabilities, and applies a seccomp deny list after bootstrap.
 
@@ -88,6 +92,46 @@ flowchart LR
 - Setup commands run during sandbox creation and are re-run on later `enclave up` / `enclave restart` calls so Enclavefile changes can be applied to an existing sandbox.
 - Re-running `enclave up` when the sandbox exists skips sandbox creation, re-applies setup commands, and starts workspaces.
 - `--rebuild` forces sandbox recreation and reruns setup from scratch.
+
+## Workspace Lifecycle Policy
+
+The daemon records `last_request_at`, `last_process_activity_at`, and
+`last_stopped_at` on each workspace. Real `start`, `enter`, `exec`, `cp`, and
+published-port activity updates the request timestamp; status and stats reads do
+not. The daemon's background sweeper runs every 30 seconds by default and stops a
+running workspace through the normal verified stop path when it has no command
+lease, no live published-port connection, no active foreground job, no explicit
+`keep_running` pin, and no activity inside its idle window.
+
+Stopping preserves the workspace files and records `last_stopped_at`. A separate
+`destroy_after` window can then destroy the stopped workspace. Both windows can be
+set daemon-wide, overridden per workspace in the Enclavefile, or changed with
+`workspace keep`; a value of zero disables that action.
+
+Capacity is checked under the registry lock when a workspace moves to `starting`,
+so two parallel starts cannot both claim the same slot. A sandbox cap and a
+daemon-wide cap are independent. At capacity a start fails with a structured
+conflict; it does not stop another workspace implicitly. Only an explicit
+`keep_running` pin protects a workspace from idle stop and destroy-after
+retention deletion.
+
+Daemon defaults for workspace CPU share and process count are merged into the
+workspace record when it is created, before storage or runtime setup. The stored
+record and the cgroup therefore enforce the same effective values.
+
+Process accounting keeps two different measurements separate: `process_count` is
+the number of processes in the workspace PID namespace, while `task_count` is the
+cgroup task count and includes threads. `ps --processes` exposes per-process PID,
+PPID, PGID, command, age, CPU, RSS, thread count, detached state, and tracked job id.
+
+`doctor` reports workspaces past their idle threshold, task-count threshold, or
+tracked detached-process threshold. `doctor --repair` rechecks an idle candidate
+under the workspace lifecycle lease before stopping it through the same verified
+path the sweeper uses.
+
+Each running workspace keeps its own overlay, home bind, and private `/tmp`.
+Those mounts are released only when that workspace stops; they are not deduplicated
+while workspaces are running.
 
 ## Lifecycle State And Recovery
 
@@ -198,7 +242,8 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 | `src/client.rs` | Unix socket JSON client |
 | `src/daemon/mod.rs` | Daemon main loop, shutdown, and connection handling |
 | `src/daemon/dispatch/` | Action routing and parameter extraction |
-| `src/daemon/workers/` | Bounded control and transfer worker pools with separate quality-of-service queues |
+| `src/daemon/workers/` | Bounded control, transfer, and exec worker pools, including per-workspace exec admission and JSON request classification |
+| `src/daemon/sweeper.rs` | Idle-stop, retention, TTL, and job reconciliation background policy |
 | `src/daemon/leases.rs` | Per-sandbox lifecycle serialization |
 | `src/daemon/active_operations.rs` | The lifecycle operations in flight, named for shutdown reporting |
 | `src/daemon/state_lock.rs` | Exclusive state-directory daemon ownership lock and metadata record |
@@ -208,6 +253,10 @@ For the on-disk layout of the state directory, rootfs cache, workspace overlay d
 | `src/policy/` | Policy engine (allow/deny rules, UID matching) |
 | `src/sandbox/` | Sandbox lifecycle, rootfs bootstrap and cache, and the sandbox cgroup |
 | `src/workspace/` | Workspace lifecycle, sessions, storage, snapshots, cleanup certificates, and process status |
+| `src/workspace/activity.rs` | Durable workspace activity timestamps and idle/destroy policy helpers |
+| `src/workspace/activity_service.rs` | Command leases, live job tracking, TTL reaping, and idle candidates |
+| `src/workspace/jobs.rs` | Durable foreground and background job records and terminal transitions |
+| `src/workspace/processes.rs` | Workspace PID-namespace process discovery and process-group identity checks |
 | `src/workspace/control/` | The workspace lifecycle state machine: start, stop, destroy, resize, and reconcile |
 | `src/workspace/certificate/` | The verified host-state record a stop and destroy produce |
 | `src/workspace/inventory/` | The resources a workspace owns, captured before cleanup and compared after |

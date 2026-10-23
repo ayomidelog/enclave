@@ -47,27 +47,33 @@ pub(crate) fn runtime_exec_command_args(
         workspace_id,
         effective_cwd,
         command,
-        None,
+        RuntimeExecArgsOptions {
+            hold_process_group: false,
+            fds: None,
+        },
     )
 }
 
 pub(crate) fn runtime_exec_command_args_with_fds(
     runtime_pid: u32,
     runtime_starttime_ticks: u64,
-    sandbox_id: &str,
-    workspace_id: &str,
+    workspace: &crate::workspace::types::WorkspaceMetadata,
     effective_cwd: &str,
     command: &[String],
+    hold_process_group: bool,
     fds: [std::os::fd::RawFd; 6],
 ) -> Vec<String> {
     runtime_exec_command_args_base(
         runtime_pid,
         runtime_starttime_ticks,
-        sandbox_id,
-        workspace_id,
+        &workspace.sandbox_id,
+        &workspace.id,
         effective_cwd,
         command,
-        Some(fds),
+        RuntimeExecArgsOptions {
+            hold_process_group,
+            fds: Some(fds),
+        },
     )
 }
 
@@ -78,7 +84,7 @@ fn runtime_exec_command_args_base(
     workspace_id: &str,
     effective_cwd: &str,
     command: &[String],
-    fds: Option<[std::os::fd::RawFd; 6]>,
+    options: RuntimeExecArgsOptions,
 ) -> Vec<String> {
     let mut args = vec![
         "internal".to_string(),
@@ -98,12 +104,20 @@ fn runtime_exec_command_args_base(
             .to_string_lossy()
             .into_owned(),
     ];
-    if let Some(fds) = fds {
+    if options.hold_process_group {
+        args.push("--hold-process-group".to_string());
+    }
+    if let Some(fds) = options.fds {
         append_namespace_fd_args(&mut args, fds);
     }
     args.push("--".to_string());
     args.extend(command.iter().cloned());
     args
+}
+
+struct RuntimeExecArgsOptions {
+    hold_process_group: bool,
+    fds: Option<[std::os::fd::RawFd; 6]>,
 }
 
 fn append_namespace_fd_args(args: &mut Vec<String>, fds: [std::os::fd::RawFd; 6]) {

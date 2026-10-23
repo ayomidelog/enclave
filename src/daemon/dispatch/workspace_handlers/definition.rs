@@ -39,6 +39,8 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_update(
         .transpose()?;
     let published_ports = parse_published_ports(params, "ports")?;
     let limits = parse_workspace_limits_update(params)?;
+    // The daemon defaults apply only when the workspace has no declared limit.
+    // An explicit resize or update remains authoritative.
     update_workspace_definition_with_runtime(
         &config.state_dir,
         WorkspaceDefinitionUpdateRequest {

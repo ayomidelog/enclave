@@ -66,7 +66,41 @@ pub(in crate::commands::workspace) fn print_workspace_status(status: &WorkspaceS
     println!("created_at: {}", status.created_at);
     println!("allocated_path: {}", status.allocated_path);
     println!("status: {}", workspace_status_label(&status.status));
-    println!("active_process_count: {}", status.active_process_count);
+    println!("process_count: {}", status.process_count);
+    println!(
+        "task_count: {}",
+        status
+            .task_count
+            .map_or_else(|| "unavailable".to_string(), |value| value.to_string())
+    );
+    println!(
+        "last_request_at: {}",
+        status.last_request_at.as_deref().unwrap_or("never")
+    );
+    println!(
+        "last_process_activity_at: {}",
+        status
+            .last_process_activity_at
+            .as_deref()
+            .unwrap_or("never")
+    );
+    println!(
+        "last_stopped_at: {}",
+        status.last_stopped_at.as_deref().unwrap_or("never")
+    );
+    println!("keep_running: {}", status.keep_running);
+    println!(
+        "idle_stop_after_secs: {}",
+        status
+            .idle_stop_after_secs
+            .map_or_else(|| "daemon default".to_string(), |value| value.to_string())
+    );
+    println!(
+        "destroy_after_secs: {}",
+        status
+            .destroy_after_secs
+            .map_or_else(|| "daemon default".to_string(), |value| value.to_string())
+    );
     // Which storage tier this workspace is on, because it is the thing that decides
     // what a start and a stop cost: the directory tier mounts a bind and the quota
     // tier mounts a loop-backed image and its overlay, which is the difference between
@@ -139,7 +173,7 @@ fn print_workspace_limits(label: &str, limits: &crate::workspace::WorkspaceLimit
 
 fn print_sandbox_limits(label: &str, limits: &crate::sandbox::SandboxLimits) {
     println!(
-        "{label}: cpu_percent={}, memory_bytes={}, max_processes={}",
+        "{label}: cpu_percent={}, memory_bytes={}, max_processes={}, max_running_workspaces={}",
         limits
             .cpu_percent
             .map(crate::resource_limits::format_cpu_percent)
@@ -149,6 +183,9 @@ fn print_sandbox_limits(label: &str, limits: &crate::sandbox::SandboxLimits) {
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
         limits
             .max_processes
+            .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
+        limits
+            .max_running_workspaces
             .map_or_else(|| "unlimited".to_string(), |v| v.to_string()),
     );
 }
