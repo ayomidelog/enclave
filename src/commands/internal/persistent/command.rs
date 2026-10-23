@@ -5,6 +5,7 @@
 //! that fills would block the child.
 
 use super::*;
+use crate::commands::internal::terminate_group_descendants;
 
 pub(super) fn handle_persistent_command(
     args: &WorkspaceSessionPersistentHelperArgs,
@@ -17,12 +18,7 @@ pub(super) fn handle_persistent_command(
         .context("failed to read persistent command request")?;
     let request: PersistentCommandRequest =
         serde_json::from_str(&line).context("invalid persistent command request")?;
-    if request.auth_token != args.auth_token
-        || request.runtime_pid != args.runtime_pid
-        || request.runtime_starttime_ticks != args.runtime_starttime_ticks
-        || request.sandbox_id != args.sandbox_id
-        || request.workspace_id != args.workspace_id
-    {
+    if !request.matches(args) {
         bail!("persistent command identity validation failed");
     }
     if request.command.is_empty() || request.command.len() > 256 {
@@ -39,10 +35,31 @@ pub(super) fn handle_persistent_command(
         ForkResult::Parent { child } => {
             drop(stdout_writer);
             drop(stderr_writer);
-            let (code, stdout, stderr) = drain_command_pipes(stdout_reader, stderr_reader, child)?;
+            let (code, stdout, stderr, output_drain) =
+                drain_command_pipes(stdout_reader, stderr_reader, child)?;
             // A foreground command must not leave background work behind; the
             // explicit background mode is the only way to keep a descendant.
-            terminate_group_descendants();
+            let cleanup = terminate_group_descendants();
+            if cleanup.found > 0 {
+                let escalation = if cleanup.escalated {
+                    "after SIGKILL escalation"
+                } else {
+                    "after SIGTERM"
+                };
+                eprintln!(
+                    "enclave: foreground command left {} descendant(s); {} remained {}, {} still present",
+                    cleanup.found,
+                    cleanup.found.saturating_sub(cleanup.remaining),
+                    escalation,
+                    cleanup.remaining
+                );
+            }
+            if output_drain.timed_out {
+                eprintln!(
+                    "enclave: stopped draining output {}ms after the command exited; a descendant still held a pipe open",
+                    output_drain.grace.as_millis()
+                );
+            }
             let response = PersistentCommandResponse {
                 exit_code: code,
                 stdout: crate::workspace::session::output_to_string(stdout),
@@ -73,11 +90,20 @@ pub(super) fn handle_persistent_command(
     }
 }
 
+/// What happened while finishing the pipes after the direct child exited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputDrain {
+    /// At least one pipe was still open when the bounded drain ended.
+    pub(crate) timed_out: bool,
+    /// How long the post-exit drain was allowed to run.
+    pub(crate) grace: std::time::Duration,
+}
+
 pub(crate) fn drain_command_pipes(
     stdout_reader: File,
     stderr_reader: File,
     child: Pid,
-) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+) -> Result<(i32, Vec<u8>, Vec<u8>, OutputDrain)> {
     set_nonblocking(stdout_reader.as_raw_fd())?;
     set_nonblocking(stderr_reader.as_raw_fd())?;
     let mut stdout_reader = Some(stdout_reader);
@@ -160,9 +186,18 @@ pub(crate) fn drain_command_pipes(
     // The direct child is gone, so everything it wrote is already in the pipe
     // buffer. Drain that, give a descendant a brief moment to flush anything still
     // in flight, and return instead of blocking on an EOF that may never come.
-    drain_after_exit(&mut stdout_reader, &mut stdout)?;
-    drain_after_exit(&mut stderr_reader, &mut stderr)?;
-    Ok((child_status.unwrap_or(1), stdout, stderr))
+    let grace = crate::deadlines::runtime_term_grace().get();
+    let stdout_closed = drain_after_exit(&mut stdout_reader, &mut stdout, grace)?;
+    let stderr_closed = drain_after_exit(&mut stderr_reader, &mut stderr, grace)?;
+    Ok((
+        child_status.unwrap_or(1),
+        stdout,
+        stderr,
+        OutputDrain {
+            timed_out: !stdout_closed || !stderr_closed,
+            grace,
+        },
+    ))
 }
 
 /// Drain what a pipe still holds after the command exited, then stop.
@@ -171,11 +206,15 @@ pub(crate) fn drain_command_pipes(
 /// is in the buffer, and only a descendant that inherited the pipe could still be
 /// writing. Truncating that descendant's later output is the correct trade - the
 /// alternative is never returning at all.
-fn drain_after_exit(reader: &mut Option<File>, output: &mut Vec<u8>) -> Result<()> {
+fn drain_after_exit(
+    reader: &mut Option<File>,
+    output: &mut Vec<u8>,
+    grace: std::time::Duration,
+) -> Result<bool> {
     let Some(file) = reader.as_ref() else {
-        return Ok(());
+        return Ok(true);
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    let deadline = std::time::Instant::now() + grace;
     loop {
         let mut descriptor = libc::pollfd {
             fd: file.as_raw_fd(),
@@ -184,7 +223,7 @@ fn drain_after_exit(reader: &mut Option<File>, output: &mut Vec<u8>) -> Result<(
         };
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
-            return Ok(());
+            return Ok(false);
         }
         let timeout_ms = remaining.as_millis().min(100) as libc::c_int;
         let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
@@ -200,7 +239,7 @@ fn drain_after_exit(reader: &mut Option<File>, output: &mut Vec<u8>) -> Result<(
         }
         // `drain_pipe` reads until the pipe is empty or closed.
         if drain_pipe(file, output)? {
-            return Ok(());
+            return Ok(true);
         }
     }
 }

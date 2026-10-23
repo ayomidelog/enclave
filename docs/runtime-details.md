@@ -183,7 +183,7 @@ rather than after the deadline.
 | `ENCLAVE_CLEANUP_WORKERS` | available parallelism, capped at 4 | Concurrency for a batch workspace teardown. |
 | `ENCLAVE_CONTROL_WORKERS` | 6 | Daemon workers serving lifecycle and read requests. |
 | `ENCLAVE_TRANSFER_WORKERS` | 2 | Daemon workers serving transfers. |
-| `ENCLAVE_EXEC_WORKERS` | 16 | Daemon workers serving caller-supplied commands. A workspace may occupy at most two of these at once; excess requests wait in its own queue. |
+| `ENCLAVE_EXEC_WORKERS` | 16 | Daemon workers serving caller-supplied commands. A workspace may occupy at most one of these at once; excess requests wait in its own queue because the persistent helper serializes commands for one workspace. |
 | `ENCLAVE_SHUTDOWN_GRACE_SECS` | 30 | How long shutdown waits for running lifecycle operations before reporting them incomplete. Accepted in the range 1 to 600. |
 | `ENCLAVE_HOST_COMMAND_TIMEOUT_SECS` | 30 | Deadline for a host command that does not set its own. Accepted in the range 1 to 3600. |
 | `ENCLAVE_SESSION_READY_MS` | 5000 | How long a launched runtime gets to publish its pid and ready files. Accepted in the range 1 to 120000. |
@@ -192,7 +192,7 @@ rather than after the deadline.
 | `ENCLAVE_RUNTIME_KILL_GRACE_MS` | 500 | How long a killed runtime gets to disappear before the stop reports failure. Accepted in the range 1 to 30000. |
 | `ENCLAVE_LOOP_DETACH_MS` | 2000 | How long a workspace image's loop device gets to detach after its mount is released. Accepted in the range 1 to 60000. |
 | `ENCLAVE_HELPER_START_MS` | 5000 | How long the persistent command helper gets to accept a connection. Accepted in the range 1 to 60000. |
-| `ENCLAVE_HELPER_RESPONSE_TIMEOUT_SECS` | 1800 | How long the daemon waits for a persistent helper to answer one command. On timeout the helper and its verified process group are killed and the cache entry is evicted. Accepted in the range 1 to 86400. |
+| `ENCLAVE_HELPER_RESPONSE_TIMEOUT_SECS` | 3600 | How long the daemon waits for a persistent helper to answer one command. A foreground exec's client timeout is derived from this value plus a short response margin, and a client disconnect cancels the command. On timeout the helper and its verified process group are killed and the cache entry is evicted. Accepted in the range 1 to 86400. |
 
 Every lifecycle wait is bounded and each bound has a hard ceiling, so a value
 past the ceiling is clamped rather than honoured. A value that does not parse,

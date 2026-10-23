@@ -51,9 +51,21 @@ fn persistent_helpers_for(workspace_id: &str) -> Vec<u32> {
     pids
 }
 
-/// The helper socket for a running workspace, which is keyed by its runtime.
-fn helper_socket(runtime_pid: u32, starttime_ticks: u64) -> PathBuf {
-    Path::new("/run/enclave").join(format!("session-{runtime_pid}-{starttime_ticks}.sock"))
+/// The live helper socket for a running workspace's runtime.
+///
+/// Helper sockets carry a per-start suffix so two starts can never unlink one
+/// another's listener; the runtime pid is the stable part to discover by.
+fn helper_socket(runtime_pid: u32) -> PathBuf {
+    let prefix = format!("session-{runtime_pid}-");
+    fs::read_dir("/run/enclave")
+        .expect("read helper socket directory")
+        .flatten()
+        .find_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            (name.starts_with(&prefix) && name.ends_with(".sock"))
+                .then(|| Path::new("/run/enclave").join(name))
+        })
+        .unwrap_or_else(|| Path::new("/run/enclave").join(format!("{prefix}<missing>.sock")))
 }
 
 /// A workspace's runtime and everything it started must be gone after a stop, and
@@ -89,7 +101,6 @@ fn a_stop_reaps_the_persistent_helper_and_its_socket() {
     let workspace = create_workspace(&state, &sandbox.id, "dev", limits).expect("create workspace");
     let started = start_workspace(&state, &sandbox.id, &workspace.id).expect("start workspace");
     let runtime_pid = started.runtime_pid.expect("runtime pid");
-    let starttime_ticks = started.runtime_starttime_ticks.expect("runtime start time");
 
     // The first exec starts the helper, which then stays up to serve later ones.
     let ran = exec_workspace_command(
@@ -109,7 +120,7 @@ fn a_stop_reaps_the_persistent_helper_and_its_socket() {
         "an exec should leave exactly one persistent helper serving {}; found {helpers:?}",
         workspace.id
     );
-    let socket = helper_socket(runtime_pid, starttime_ticks);
+    let socket = helper_socket(runtime_pid);
     assert!(
         socket.exists(),
         "the helper socket {} was never created",

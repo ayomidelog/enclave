@@ -4,7 +4,7 @@ use std::fs::{self, OpenOptions};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -27,15 +27,10 @@ pub(super) fn start_helper(
         .with_context(|| format!("failed to create {}", socket_dir.display()))?;
     fs::set_permissions(socket_dir, fs::Permissions::from_mode(0o700))
         .with_context(|| format!("failed to secure {}", socket_dir.display()))?;
-    let socket = socket_dir.join(format!(
-        "session-{}-{}.sock",
-        runtime_pid, runtime_starttime_ticks
-    ));
-    if let Err(error) = fs::remove_file(&socket) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error).with_context(|| format!("failed to remove {}", socket.display()));
-        }
-    }
+    // A per-start random suffix makes the socket path unique to this helper.
+    // A deterministic path let a second starter unlink a listener the first had
+    // just bound, orphaning that helper on an unlinked socket.
+    let socket = helper_socket_path(runtime_pid, runtime_starttime_ticks);
     let auth_token = Uuid::new_v4().to_string();
     let fds = duplicate_for_child(runtime_pid, runtime_starttime_ticks)?;
     let raw_fds = raw_fds(&fds);
@@ -167,6 +162,31 @@ pub(super) fn start_helper(
         helper_log.display(),
         log_tail
     )
+}
+
+/// A socket path unique to one helper start.
+///
+/// The random suffix is what makes concurrent starts safe: a second start must
+/// never unlink the listener a first helper has already bound. The runtime pid
+/// and start time remain the discovery prefix used by diagnostics and tests.
+pub(super) fn helper_socket_path(runtime_pid: u32, runtime_starttime_ticks: u64) -> PathBuf {
+    helper_socket_path_with_id(runtime_pid, runtime_starttime_ticks, Uuid::new_v4())
+}
+
+fn helper_socket_path_with_id(runtime_pid: u32, runtime_starttime_ticks: u64, id: Uuid) -> PathBuf {
+    Path::new("/run/enclave").join(format!(
+        "session-{}-{}-{}.sock",
+        runtime_pid, runtime_starttime_ticks, id
+    ))
+}
+
+#[cfg(test)]
+pub(super) fn helper_socket_path_for_test(
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    id: Uuid,
+) -> PathBuf {
+    helper_socket_path_with_id(runtime_pid, runtime_starttime_ticks, id)
 }
 
 fn open_process_pidfd(pid: u32) -> Option<i32> {

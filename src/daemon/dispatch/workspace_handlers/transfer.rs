@@ -75,6 +75,7 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_exec(
     params: &Value,
     config: &DaemonConfig,
     services: &crate::daemon::services::DaemonServices,
+    client_stream: Option<&UnixStream>,
 ) -> Result<Value> {
     let sandbox = require_param_str(params, &["sandbox", "sandbox_id"])?;
     let workspace_selector = require_param_str(params, &["workspace", "workspace_id", "name"])?;
@@ -83,21 +84,35 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_exec(
     // Scrubbing is on unless the caller turns it off, so a caller that says
     // nothing gets the safe behaviour.
     let scrub = params.get("scrub").and_then(Value::as_bool).unwrap_or(true);
-
-    let metadata = workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
-    let _lease =
-        services
-            .activity
-            .begin_request(&config.state_dir, &metadata.sandbox_id, &metadata.id)?;
+    let ttl_secs = params.get("ttl_secs").and_then(Value::as_u64);
     let background = params
         .get("background")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+
+    let metadata = workspace::workspace_metadata(&config.state_dir, sandbox, workspace_selector)?;
+    let client_stream = match client_stream {
+        Some(stream) if !background => Some(stream.try_clone().with_context(|| {
+            format!(
+                "failed to watch the client connection for workspace {} in sandbox {}",
+                metadata.id, metadata.sandbox_id
+            )
+        })?),
+        _ => None,
+    };
+    let _lease = if background {
+        services
+            .activity
+            .acquire(&metadata.sandbox_id, &metadata.id)
+    } else {
+        services
+            .activity
+            .begin_request(&config.state_dir, &metadata.sandbox_id, &metadata.id)?
+    };
     let keep_running = params
         .get("keep_running")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let ttl_secs = params.get("ttl_secs").and_then(Value::as_u64);
     if background {
         let job = workspace::spawn_workspace_command_detached(
             &config.state_dir,
@@ -126,7 +141,11 @@ pub(in crate::daemon::dispatch) fn dispatch_workspace_exec(
         workspace_selector,
         cwd,
         &command,
-        workspace::WorkspaceExecOptions { scrub, ttl_secs },
+        workspace::WorkspaceExecOptions {
+            scrub,
+            ttl_secs,
+            client_stream,
+        },
     )?;
     if let Some(job_id) = result.job_id.as_deref() {
         if let Ok(job) = workspace::jobs::load(&config.state_dir, job_id) {

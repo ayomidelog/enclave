@@ -19,6 +19,21 @@ struct PersistentCommandRequest {
     command: Vec<String>,
 }
 
+impl PersistentCommandRequest {
+    /// Whether this request names the helper it was sent to.
+    ///
+    /// Identity mismatch is a failed helper session, not a user-visible command
+    /// failure. The helper closes the connection so the daemon can evict it and
+    /// start a fresh one rather than leave a corpse in the cache.
+    fn matches(&self, args: &WorkspaceSessionPersistentHelperArgs) -> bool {
+        self.auth_token == args.auth_token
+            && self.runtime_pid == args.runtime_pid
+            && self.runtime_starttime_ticks == args.runtime_starttime_ticks
+            && self.sandbox_id == args.sandbox_id
+            && self.workspace_id == args.workspace_id
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct PersistentCommandResponse {
     exit_code: i32,
@@ -96,6 +111,11 @@ pub(crate) fn run_workspace_session_persistent_helper(
         };
         if let Err(error) = handle_persistent_command(&args, &namespaces.root_dir, stream) {
             eprintln!("enclave: persistent command rejected: {error:#}");
+            // A helper that cannot complete a command session is no longer a
+            // usable cache entry. Exit so the daemon's next command observes the
+            // closed connection and starts a fresh helper instead of reusing a
+            // process whose command state is unknown.
+            return Err(error).context("persistent helper command session failed");
         }
     }
 }

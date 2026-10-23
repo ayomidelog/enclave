@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 2.4.1 - 2026-10-23
+
+### Fixed
+
+- Foreground `workspace exec` now keeps its client connection open for the
+  daemon's helper-response deadline plus a response margin, instead of giving up
+  after five minutes while the daemon continued running the command. A client
+  disconnect is observed by the daemon and cancels the command through the
+  verified helper process group. The daemon's default helper-response deadline
+  is now 3600 seconds.
+- A persistent helper that closes its connection without a result is now typed,
+  killed, and evicted just like a helper timeout. The next command starts a fresh
+  helper instead of first failing against a cached corpse.
+- Concurrent first commands for one workspace start helpers on unique socket
+  paths. A losing starter is killed rather than left as an unaddressable orphan
+  holding the workspace's namespaces and cgroup.
+- Exec admission now allows one in-flight request per workspace, matching the
+  persistent helper's one-command-at-a-time serialization. Excess requests wait
+  in the workspace's private queue without occupying another exec worker, and a
+  queued client that disconnects no longer counts against the queue capacity.
+- Failed daemon requests include the sandbox and workspace target in their logs,
+  so a burst of command failures can be attributed to the affected workspace.
+- Foreground descendant cleanup now waits for observed process-group exit,
+  escalates to `SIGKILL` only for survivors, and reports cleanup and output-drain
+  outcomes instead of relying on fixed 200/250 ms sleeps. Output-drain and
+  termination grace use the configured runtime deadlines.
+
 ## 2.4.0 - 2026-10-22
 
 This release adds optional workspace lifecycle fields and daemon actions. The

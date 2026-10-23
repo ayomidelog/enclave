@@ -29,7 +29,21 @@ const JSON_ESCAPE_WORST_CASE: usize = 6;
 /// what the daemon may send, so a `workspace exec` that printed more failed with
 /// "daemon response exceeded maximum size".
 const MAX_RESPONSE_BYTES: usize = 2 * MAX_HELPER_OUTPUT_BYTES * JSON_ESCAPE_WORST_CASE + 64 * 1024;
-const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long the CLI waits for a daemon response before giving up.
+///
+/// This is not a command deadline. `workspace exec` may legitimately run for
+/// longer, and a local deadline here used to abandon the request while the daemon
+/// kept working. The daemon now notices the disconnect and cancels the command;
+/// this bound only stops a client waiting forever on a daemon that is gone.
+pub(crate) const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Extra time the client allows after the daemon's own helper deadline.
+///
+/// The daemon needs to kill and evict a helper that hits its deadline, then write
+/// the structured failure. If the client used the same instant, it could close
+/// the connection while that response was in flight and turn a clear timeout into
+/// a disconnect.
+const DAEMON_RESPONSE_MARGIN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 struct ResponsePayload {
@@ -123,7 +137,7 @@ pub fn is_daemon_unreachable(err: &anyhow::Error) -> bool {
 pub fn send_request(socket_path: &Path, action: &str, params: Value) -> Result<Value> {
     let _total = crate::perf::Timer::new("cli.total");
     let _connect = crate::perf::Timer::new("cli.connect");
-    let mut stream = connect_daemon(socket_path)?;
+    let mut stream = connect_daemon(socket_path, request_read_timeout(action, &params))?;
     drop(_connect);
     let _write = crate::perf::Timer::new("cli.request_write");
     write_request(&mut stream, action, params)?;
@@ -134,7 +148,27 @@ pub fn send_request(socket_path: &Path, action: &str, params: Value) -> Result<V
     parse_response_payload(&line)
 }
 
-fn connect_daemon(socket_path: &Path) -> Result<UnixStream> {
+/// How long this request may wait for a response after it is written.
+///
+/// A foreground `workspace exec` runs for as long as its command does, bounded by
+/// the daemon's helper deadline. The client has to outlive that deadline so the
+/// daemon can return the timeout instead of seeing a disconnect. Background exec
+/// returns a job id immediately, so it keeps the ordinary transport bound.
+fn request_read_timeout(action: &str, params: &Value) -> Duration {
+    let background = params
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if action == "workspace.exec" && !background {
+        crate::deadlines::helper_response()
+            .get()
+            .saturating_add(DAEMON_RESPONSE_MARGIN)
+    } else {
+        CLIENT_IO_TIMEOUT
+    }
+}
+
+fn connect_daemon(socket_path: &Path, read_timeout: Duration) -> Result<UnixStream> {
     if !socket_path.exists() {
         return Err(anyhow::Error::new(DaemonUnreachable::SocketMissing(
             socket_path.to_path_buf(),
@@ -148,7 +182,7 @@ fn connect_daemon(socket_path: &Path) -> Result<UnixStream> {
         })
     })?;
     stream
-        .set_read_timeout(Some(CLIENT_IO_TIMEOUT))
+        .set_read_timeout(Some(read_timeout))
         .context("failed to set daemon read timeout")?;
     stream
         .set_write_timeout(Some(CLIENT_IO_TIMEOUT))

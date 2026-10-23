@@ -14,6 +14,7 @@ mod transport;
 
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -57,6 +58,7 @@ struct HelperCommand<'a> {
     runtime_starttime_ticks: u64,
     cwd: &'a str,
     command: &'a [String],
+    client_stream: Option<&'a UnixStream>,
     key: HelperKey,
     helpers: &'a Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
 }
@@ -65,6 +67,7 @@ pub(crate) fn execute_persistent_command(
     workspace: &WorkspaceMetadata,
     cwd: &str,
     command: &[String],
+    client_stream: Option<&UnixStream>,
 ) -> Result<PersistentCommandOutput> {
     let runtime_pid = workspace
         .runtime_pid
@@ -84,70 +87,37 @@ pub(crate) fn execute_persistent_command(
         starttime_ticks: runtime_starttime_ticks,
     };
     let helpers = HELPERS.get_or_init(|| Mutex::new(HashMap::new()));
-    // Two passes at most: the first may find a cached helper that died (a cancel
-    // killed it, or it exited on its own), evict it, and then start a fresh one.
-    // Without the second pass a cancelled workspace stayed broken until the daemon
-    // restarted, because every later command found the same dead helper.
+    // Check the cache under its lock, then start outside it. The helper's start
+    // can take up to ENCLAVE_HELPER_START_MS, and holding the cache lock through
+    // that would serialize every workspace's first command behind one slow start.
+    // Unique socket names make concurrent starts safe: whichever helper is
+    // inserted wins, and every losing helper is killed before it can become an
+    // orphan.
     let helper = {
-        let mut guard = helpers
-            .lock()
-            .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
-        match guard.entry(key) {
-            std::collections::hash_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let helper = Arc::new(Mutex::new(start_helper(
+        let cached = cached_helper(helpers, key)?;
+        if let Some(cached) = cached {
+            if helper_is_alive(&cached)? {
+                cached
+            } else {
+                discard_cached_helper(&key, &cached, workspace);
+                install_started_helper(
                     workspace,
                     runtime_pid,
                     runtime_starttime_ticks,
-                )?));
-                entry.insert(Arc::clone(&helper));
-                helper
+                    key,
+                    helpers,
+                )?
             }
+        } else {
+            install_started_helper(
+                workspace,
+                runtime_pid,
+                runtime_starttime_ticks,
+                key,
+                helpers,
+            )?
         }
     };
-    let mut alive = helper
-        .lock()
-        .map_err(|_| anyhow::anyhow!("persistent helper lock poisoned"))?;
-    if alive.child.try_wait()?.is_some() {
-        // A helper killed by a cancel, or one that died on its own, must leave the
-        // cache here. Otherwise the next command finds the corpse and fails, and
-        // every command after it does the same: a cancelled workspace would never
-        // recover without restarting the daemon.
-        // The helper may have exited after leaving a descendant in its process
-        // group. Kill the group before dropping the cache entry so that work does
-        // not outlive the only record that can address it.
-        kill_helper_group(&mut alive);
-        drop(alive);
-        if let Ok(mut guard) = helpers.lock() {
-            guard.remove(&key);
-        }
-        let _ = fs::remove_file(crate::workspace::cancel_file_path(std::path::Path::new(
-            &workspace.workspace_path,
-        )));
-        // The dead helper is gone from the cache; start a fresh one and run the
-        // command it was meant for. Failing here would make the caller retry, and a
-        // caller that does not retry loses the command.
-        let fresh = start_helper(workspace, runtime_pid, runtime_starttime_ticks)?;
-        let fresh = Arc::new(Mutex::new(fresh));
-        {
-            let mut guard = HELPERS
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-                .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
-            guard.insert(key, Arc::clone(&fresh));
-        }
-        return run_on_helper(HelperCommand {
-            helper: fresh,
-            workspace,
-            runtime_pid,
-            runtime_starttime_ticks,
-            cwd,
-            command,
-            key,
-            helpers,
-        });
-    }
-    drop(alive);
     run_on_helper(HelperCommand {
         helper,
         workspace,
@@ -155,9 +125,65 @@ pub(crate) fn execute_persistent_command(
         runtime_starttime_ticks,
         cwd,
         command,
+        client_stream,
         key,
         helpers,
     })
+}
+
+/// Start a helper and publish it only if no live helper won the race.
+fn install_started_helper(
+    workspace: &WorkspaceMetadata,
+    runtime_pid: u32,
+    runtime_starttime_ticks: u64,
+    key: HelperKey,
+    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
+) -> Result<Arc<Mutex<PersistentHelper>>> {
+    let started = start_helper(workspace, runtime_pid, runtime_starttime_ticks)?;
+    let candidate = Arc::new(Mutex::new(started));
+    loop {
+        if let Some(current) = cached_helper(helpers, key)? {
+            // Never hold the cache lock while waiting for a helper mutex. A
+            // command holds that mutex for its whole run, so doing so would
+            // serialize every workspace's helper lookup behind it.
+            if helper_is_alive(&current)? {
+                if let Ok(mut losing) = candidate.lock() {
+                    kill_helper_group(&mut losing);
+                }
+                return Ok(current);
+            }
+            discard_cached_helper(&key, &current, workspace);
+            continue;
+        }
+        if install_if_vacant(helpers, key, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+}
+
+fn cached_helper(
+    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
+    key: HelperKey,
+) -> Result<Option<Arc<Mutex<PersistentHelper>>>> {
+    let guard = helpers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
+    Ok(guard.get(&key).cloned())
+}
+
+fn install_if_vacant(
+    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
+    key: HelperKey,
+    candidate: &Arc<Mutex<PersistentHelper>>,
+) -> Result<bool> {
+    let mut guard = helpers
+        .lock()
+        .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
+    if guard.contains_key(&key) {
+        return Ok(false);
+    }
+    guard.insert(key, Arc::clone(candidate));
+    Ok(true)
 }
 
 /// Send one command through `helper` and account for what the outcome means.
@@ -169,6 +195,7 @@ fn run_on_helper(request: HelperCommand<'_>) -> Result<PersistentCommandOutput> 
         runtime_starttime_ticks,
         cwd,
         command,
+        client_stream,
         key,
         helpers,
     } = request;
@@ -193,26 +220,79 @@ fn run_on_helper(request: HelperCommand<'_>) -> Result<PersistentCommandOutput> 
         workspace,
         cwd,
         command,
+        client_stream,
     );
     if let Ok(output) = result.as_mut() {
         output.helper_pid = Some(helper.child.id());
     }
     let _ = fs::remove_file(&busy_path);
-    let timed_out = result
-        .as_ref()
-        .err()
-        .is_some_and(|error| format!("{error:#}").contains(transport::HELPER_TIMEOUT_PREFIX));
-    if timed_out {
-        // The helper stopped answering. It is holding this workspace's command
-        // mutex, so leaving it in the cache would make every later command for
-        // the workspace queue behind a socket that will never speak again.
+    let helper_failed = result.as_ref().err().is_some_and(|error| {
+        transport::HelperTimeout::is_in(error)
+            || transport::HelperClosed::is_in(error)
+            || transport::ClientDisconnected::is_in(error)
+    });
+    if helper_failed {
+        // The helper stopped answering or closed without a result. It is holding
+        // this workspace's command mutex, so leaving it in the cache would make
+        // every later command queue behind a socket that will never speak again.
         kill_helper_group(&mut helper);
     }
     drop(helper);
-    if timed_out {
+    if helper_failed {
         evict_helper(key, helpers, &helper_handle);
     }
+    if result
+        .as_ref()
+        .err()
+        .is_some_and(transport::ClientDisconnected::is_in)
+    {
+        return Err(crate::error::coded(
+            crate::error::ErrorCode::Conflict,
+            format!(
+                "client disconnected; cancelled the command in workspace {} in sandbox {}",
+                workspace.id, workspace.sandbox_id
+            ),
+        ));
+    }
     result
+}
+
+fn helper_is_alive(helper: &Arc<Mutex<PersistentHelper>>) -> Result<bool> {
+    let mut helper = helper
+        .lock()
+        .map_err(|_| anyhow::anyhow!("persistent helper lock poisoned"))?;
+    Ok(helper.child.try_wait()?.is_none())
+}
+
+/// Remove one dead helper, but only if it is still the cache entry for `key`.
+fn discard_cached_helper(
+    key: &HelperKey,
+    expected: &Arc<Mutex<PersistentHelper>>,
+    workspace: &WorkspaceMetadata,
+) {
+    let Some(helpers) = HELPERS.get() else {
+        return;
+    };
+    let removed = helpers.lock().is_ok_and(|mut guard| {
+        if guard
+            .get(key)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            guard.remove(key);
+            true
+        } else {
+            false
+        }
+    });
+    if !removed {
+        return;
+    }
+    if let Ok(mut helper) = expected.lock() {
+        kill_helper_group(&mut helper);
+    }
+    let _ = fs::remove_file(crate::workspace::cancel_file_path(std::path::Path::new(
+        &workspace.workspace_path,
+    )));
 }
 
 pub(crate) fn invalidate(pid: u32, starttime_ticks: u64) {

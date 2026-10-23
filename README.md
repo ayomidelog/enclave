@@ -116,6 +116,10 @@ start that used to succeed. The failure names the variable that raises it; the w
 table is in [Runtime details](docs/runtime-details.md). [CHANGELOG.md](CHANGELOG.md)
 lists the rest of what changed.
 
+2.4.1 is a drop-in patch release for command cancellation and helper recovery. It
+does not change the registry schema, daemon protocol, configuration, or lifecycle
+policy.
+
 2.4.0 adds optional workspace activity and lifecycle fields. The registry schema is
 unchanged, and no idle-stop, retention, CPU, or process policy changes unless the
 daemon or workspace configures one, so upgrading does not alter lifecycle behavior

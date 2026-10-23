@@ -21,11 +21,12 @@ fn a_descendant_holding_stdout_does_not_hang_the_drain() {
             drop(stdout_writer);
             drop(stderr_writer);
             let started = std::time::Instant::now();
-            let (code, stdout, _stderr) =
+            let (code, stdout, _stderr, drain) =
                 drain_command_pipes(stdout_reader, stderr_reader, child).expect("drain");
             let elapsed = started.elapsed();
             assert_eq!(code, 0);
             assert_eq!(String::from_utf8_lossy(&stdout).trim(), "before exit");
+            assert!(drain.timed_out, "the descendant still held the pipe open");
             assert!(
                 elapsed < std::time::Duration::from_secs(2),
                 "drain waited {elapsed:?} for an EOF a descendant was holding open"
