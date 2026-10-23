@@ -147,6 +147,8 @@ fn one_workspace_cannot_fill_the_exec_queue() {
 
     let first = queue.next().expect("first request");
     assert_eq!(first.workspace_key.as_deref(), Some("busy"));
+    // A second command for `busy` waits behind the first instead of parking a
+    // worker on the workspace's single-command helper.
     let second = queue.next().expect("second request");
     assert_eq!(second.workspace_key.as_deref(), Some("other"));
     queue.finish(first.workspace_key.as_deref());
@@ -189,4 +191,78 @@ fn a_worker_keeps_serving_after_a_panicking_request() {
     std::panic::set_hook(previous);
     assert!(matches!(first, RequestOutcome::Panicked(_)));
     assert_eq!(second, RequestOutcome::Finished);
+}
+
+#[test]
+fn one_workspace_admits_one_exec_job_at_a_time() {
+    // The persistent helper runs one command per workspace. Admitting two only
+    // parks the second worker on the helper mutex while another workspace waits.
+    let queue = ExecQueue::new(super::EXEC_PER_WORKSPACE);
+    let (first, _first_peer) = UnixStream::pair().unwrap();
+    let (second, _second_peer) = UnixStream::pair().unwrap();
+    for stream in [first, second] {
+        queue
+            .enqueue(
+                RequestJob {
+                    stream,
+                    workspace_key: Some("busy".to_string()),
+                },
+                8,
+            )
+            .ok()
+            .expect("queue a request");
+    }
+    let first = queue.next().expect("first request");
+    assert_eq!(first.workspace_key.as_deref(), Some("busy"));
+    queue.finish(first.workspace_key.as_deref());
+    let second = queue.next().expect("queued request");
+    assert_eq!(second.workspace_key.as_deref(), Some("busy"));
+    queue.finish(second.workspace_key.as_deref());
+}
+
+#[test]
+fn a_disconnected_client_does_not_consume_the_exec_queue() {
+    let queue = ExecQueue::new(1);
+    let (active, _active_peer) = UnixStream::pair().unwrap();
+    queue
+        .enqueue(
+            RequestJob {
+                stream: active,
+                workspace_key: Some("busy".to_string()),
+            },
+            2,
+        )
+        .ok()
+        .expect("queue the active request");
+    let active = queue.next().expect("active request");
+
+    let (abandoned, abandoned_peer) = UnixStream::pair().unwrap();
+    queue
+        .enqueue(
+            RequestJob {
+                stream: abandoned,
+                workspace_key: Some("busy".to_string()),
+            },
+            2,
+        )
+        .ok()
+        .expect("queue the abandoned request");
+    drop(abandoned_peer);
+
+    let (replacement, _replacement_peer) = UnixStream::pair().unwrap();
+    queue
+        .enqueue(
+            RequestJob {
+                stream: replacement,
+                workspace_key: Some("other".to_string()),
+            },
+            2,
+        )
+        .ok()
+        .expect("a disconnected request must not fill the queue");
+
+    queue.finish(active.workspace_key.as_deref());
+    let replacement = queue.next().expect("replacement request");
+    assert_eq!(replacement.workspace_key.as_deref(), Some("other"));
+    queue.finish(replacement.workspace_key.as_deref());
 }

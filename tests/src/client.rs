@@ -141,3 +141,39 @@ fn the_read_ceiling_covers_the_worst_response_the_daemon_can_send() {
         "the read ceiling ({MAX_RESPONSE_BYTES}) must cover the worst-case response ({worst_case})"
     );
 }
+
+#[test]
+fn foreground_exec_outlives_the_daemon_helper_deadline() {
+    let foreground = request_read_timeout("workspace.exec", &json!({"command": ["sleep", "60"]}));
+    let helper_deadline = crate::deadlines::helper_response().get();
+
+    assert!(
+        foreground >= helper_deadline + DAEMON_RESPONSE_MARGIN,
+        "the client timeout ({foreground:?}) must leave the daemon time to report its {helper_deadline:?} helper deadline"
+    );
+}
+
+#[test]
+fn background_exec_keeps_the_short_transport_timeout() {
+    let background = request_read_timeout("workspace.exec", &json!({"background": true}));
+
+    assert_eq!(background, CLIENT_IO_TIMEOUT);
+}
+
+#[test]
+fn ordinary_requests_keep_the_short_transport_timeout() {
+    assert_eq!(request_read_timeout("ping", &json!({})), CLIENT_IO_TIMEOUT);
+    assert_eq!(
+        request_read_timeout("workspace.cp", &json!({})),
+        CLIENT_IO_TIMEOUT
+    );
+}
+
+#[test]
+fn a_configured_helper_deadline_still_bounds_the_client() {
+    let deadline = crate::deadlines::helper_response();
+    let foreground = request_read_timeout("workspace.exec", &json!({}));
+
+    assert_eq!(foreground, deadline.get() + DAEMON_RESPONSE_MARGIN);
+    assert!(foreground > CLIENT_IO_TIMEOUT);
+}

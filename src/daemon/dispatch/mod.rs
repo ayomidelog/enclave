@@ -160,7 +160,9 @@ pub(crate) fn dispatch(
         Action::WorkspaceResize => {
             dispatch_workspace_resize(&request.params, config, port_publisher)
         }
-        Action::WorkspaceExec => dispatch_workspace_exec(&request.params, config, services),
+        Action::WorkspaceExec => {
+            dispatch_workspace_exec(&request.params, config, services, client_stream)
+        }
         Action::WorkspaceExecCancel => dispatch_workspace_exec_cancel(&request.params, config),
         Action::WorkspaceCommandBegin => {
             dispatch_workspace_command_begin(&request.params, config, services)

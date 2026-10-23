@@ -123,6 +123,8 @@ pub(super) fn handle_client(
         return Ok(());
     }
 
+    let request_action = request.action.clone();
+    let request_target = operation_target(&request.params);
     let _dispatch = crate::perf::Timer::new("daemon.dispatch");
     let response = match dispatch::dispatch(request, config, shutdown, services, Some(&stream)) {
         Ok(result) => Response::ok(result, operation_id),
@@ -130,7 +132,12 @@ pub(super) fn handle_client(
             // A lifecycle failure is the one place the id is worth repeating at
             // the default log level: it is how an operator finds the journal
             // record for the operation that failed.
-            tracing::error!(error = %format!("{err:#}"), "request failed");
+            tracing::error!(
+                action = %request_action,
+                target = %request_target,
+                error = %format!("{err:#}"),
+                "request failed"
+            );
             // The whole chain, not only the outermost message. A lifecycle failure
             // is usually a context wrapped around the call that actually failed
             // ("failed to initialize workspace storage <path>: ... truncate: File
@@ -220,3 +227,7 @@ fn read_request_line(stream: &UnixStream) -> Result<Option<String>> {
     }
     Ok(Some(request_raw))
 }
+
+#[cfg(test)]
+#[path = "../../tests/src/daemon/request.rs"]
+mod tests;

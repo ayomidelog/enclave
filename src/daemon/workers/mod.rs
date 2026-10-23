@@ -28,10 +28,11 @@ const EXEC_QUEUE_CAPACITY: usize = 512;
 
 /// How many exec workers one workspace may occupy at once.
 ///
-/// A workspace's commands serialize on its helper anyway, so more than a couple in
-/// flight buys nothing. Reserving the rest for other workspaces is what keeps one
-/// busy workspace from starving everyone else.
-const EXEC_PER_WORKSPACE: usize = 2;
+/// The persistent helper serializes commands for one workspace, so admitting two
+/// only parks the second worker on a mutex. One in-flight command lets the queue
+/// hold later work without consuming workers it cannot use, and reserves every
+/// other exec slot for a different workspace.
+const EXEC_PER_WORKSPACE: usize = 1;
 
 struct RequestJob {
     stream: UnixStream,
@@ -78,6 +79,7 @@ impl ExecQueue {
 
     fn enqueue(&self, job: RequestJob, capacity: usize) -> Result<(), ExecEnqueueError> {
         let mut state = self.lock();
+        discard_disconnected(&mut state);
         if state.closed {
             return Err(ExecEnqueueError::Closed);
         }
@@ -130,6 +132,7 @@ impl ExecQueue {
 
     fn finish(&self, workspace_key: Option<&str>) {
         let mut state = self.lock();
+        discard_disconnected(&mut state);
         if let Some(key) = workspace_key {
             if let Some(count) = state.in_flight.get_mut(key) {
                 *count = count.saturating_sub(1);
@@ -166,6 +169,50 @@ impl ExecQueue {
     fn lock(&self) -> std::sync::MutexGuard<'_, ExecQueueState> {
         self.state.lock().unwrap_or_else(|error| error.into_inner())
     }
+}
+
+/// Drop queued requests whose clients have gone away.
+///
+/// A queued request has not reached a worker yet, so it has no other place that
+/// notices the caller leaving. Keeping its socket would count an abandoned job
+/// against the bounded queue and could make a healthy daemon report itself full.
+fn discard_disconnected(state: &mut ExecQueueState) {
+    state.ready.retain(|job| !client_disconnected(&job.stream));
+    for pending in state.pending.values_mut() {
+        pending.retain(|stream| !client_disconnected(stream));
+    }
+    state.pending.retain(|_, pending| !pending.is_empty());
+    state.pending_count = state.pending.values().map(VecDeque::len).sum();
+}
+
+/// Whether a queued client has closed its request connection.
+fn client_disconnected(stream: &UnixStream) -> bool {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    };
+    let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if ready <= 0 {
+        return false;
+    }
+    if descriptor.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+    {
+        return true;
+    }
+    if descriptor.revents & libc::POLLIN == 0 {
+        return false;
+    }
+    let mut byte = 0_u8;
+    let read = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&mut byte as *mut u8).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    read == 0
 }
 
 pub(super) struct RequestWorkerPool {
@@ -357,9 +404,9 @@ fn spawn_workers(
                     run_request(|| handle_client(job.stream, &config, &shutdown, &services));
                 match outcome {
                     RequestOutcome::Finished => {}
-                    RequestOutcome::Failed(error) => {
-                        tracing::warn!(worker_id, class, "sandbox daemon request error: {error:#}")
-                    }
+                    // `handle_client` logs the failure with its action and target.
+                    // This boundary only keeps the worker alive.
+                    RequestOutcome::Failed(_) => {}
                     RequestOutcome::Panicked(message) => tracing::error!(
                         worker_id,
                         class,
@@ -400,13 +447,10 @@ fn spawn_exec_workers(
                 queue.finish(workspace_key.as_deref());
                 match outcome {
                     RequestOutcome::Finished => {}
-                    RequestOutcome::Failed(error) => {
-                        tracing::warn!(
-                            worker_id,
-                            class = "exec",
-                            "sandbox daemon request error: {error:#}"
-                        )
-                    }
+                    // `handle_client` has already logged the failed request with
+                    // its action and target, so repeating it here would attribute
+                    // one failure twice and still not name the workspace.
+                    RequestOutcome::Failed(_) => {}
                     RequestOutcome::Panicked(message) => tracing::error!(
                         worker_id,
                         class = "exec",

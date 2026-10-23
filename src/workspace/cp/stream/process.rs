@@ -49,7 +49,7 @@ pub(crate) fn wait_for_child_or_disconnect(
             },
             libc::pollfd {
                 fd: client_fd,
-                events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+                events: libc::POLLIN | libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR,
                 revents: 0,
             },
         ];
@@ -63,14 +63,14 @@ pub(crate) fn wait_for_child_or_disconnect(
                 unsafe { libc::close(pidfd) };
                 return Err(error).context("failed waiting for child or client disconnect");
             }
-            if descriptors[1].revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            if client_disconnected(client_stream.expect("client stream checked above")) {
                 unsafe { libc::close(pidfd) };
                 let _ = child.child.kill();
                 let _ = child.child.wait();
                 if let Some(reader) = stderr_reader.take() {
                     let _ = reader.join();
                 }
-                bail!("workspace cp client disconnected; transfer cancelled");
+                bail!("workspace request client disconnected; command cancelled");
             }
             if descriptors[0].revents & libc::POLLIN != 0 {
                 unsafe { libc::close(pidfd) };
@@ -93,7 +93,7 @@ pub(crate) fn wait_for_child_or_disconnect(
                     if let Some(reader) = stderr_reader.take() {
                         let _ = reader.join();
                     }
-                    bail!("workspace cp client disconnected; transfer cancelled")
+                    bail!("workspace request client disconnected; command cancelled")
                 }
                 thread::sleep(Duration::from_millis(50));
             }
@@ -109,15 +109,41 @@ pub(crate) fn set_pipe_capacity(fd: std::os::fd::RawFd) {
     }
 }
 
-pub(crate) fn client_is_connected(stream: &UnixStream) -> bool {
+/// Whether a client has gone away while the daemon is still working.
+///
+/// A request line and its terminating newline are consumed before dispatch, so
+/// the only readable event left on a healthy connection is end-of-file or an
+/// error. Using this on a command connection is what lets the daemon stop work
+/// its caller abandoned instead of holding a worker until a much later deadline.
+pub(crate) fn client_disconnected(stream: &UnixStream) -> bool {
     let mut descriptor = libc::pollfd {
         fd: stream.as_raw_fd(),
-        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        events: libc::POLLIN | libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR,
         revents: 0,
     };
     let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
-    if result < 0 {
+    if result <= 0 {
+        return false;
+    }
+    if descriptor.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+    {
         return true;
     }
-    descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) == 0
+    if descriptor.revents & libc::POLLIN == 0 {
+        return false;
+    }
+    let mut byte = 0_u8;
+    let read = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&mut byte as *mut u8).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    read == 0
+}
+
+pub(crate) fn client_is_connected(stream: &UnixStream) -> bool {
+    !client_disconnected(stream)
 }

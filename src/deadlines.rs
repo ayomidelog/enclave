@@ -236,19 +236,17 @@ pub(crate) fn helper_start() -> Deadline {
 
 /// How long the daemon waits for a helper to answer one command.
 ///
-/// The helper answers only after the command's own child exits, so this is also
-/// the bound on how long one command may run. It exists so a command that never
-/// exits cannot pin an exec worker forever: without it, a single `sleep infinity`
-/// held a worker and a workspace mutex until the process died, and enough of them
-/// filled the pool. The default is far above any real command and above the
-/// client's own timeout, so it only fires for a command nobody is still waiting
-/// for; a command that is still wanted finishes first.
+/// The helper answers only after the command's own child exits. The primary bound
+/// on abandoned work is the client connection: a command is cancelled as soon as
+/// its caller disconnects. This deadline remains the backstop for a client that
+/// stays connected but whose helper has stopped responding, so a wedged helper
+/// cannot pin an exec worker forever.
 pub(crate) fn helper_response() -> Deadline {
     Deadline::resolve(
         "helper_response",
         "ENCLAVE_HELPER_RESPONSE_TIMEOUT_SECS",
         Unit::Seconds,
-        Duration::from_secs(30 * 60),
+        Duration::from_secs(60 * 60),
         Duration::from_secs(24 * 60 * 60),
     )
 }

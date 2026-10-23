@@ -76,34 +76,66 @@ fn wait_for_group_descendants() {
     }
 }
 
+/// What a foreground descendant cleanup found and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DescendantCleanup {
+    pub(crate) found: usize,
+    pub(crate) escalated: bool,
+    pub(crate) remaining: usize,
+}
+
 /// Terminate descendants left behind by a foreground command.
 ///
 /// A foreground command is not allowed to leave background work behind: that is
 /// what the explicit `--background` mode is for. The persistent helper leads the
 /// command group, so killing the other members reaches descendants that inherited
 /// the group without touching the helper itself.
-pub(crate) fn terminate_group_descendants() {
+pub(crate) fn terminate_group_descendants() -> DescendantCleanup {
     let pgid = unsafe { libc::getpgrp() };
     let self_pid = std::process::id();
     let descendants = group_members_except_self(pgid, self_pid);
     if descendants.is_empty() {
-        return;
+        return DescendantCleanup {
+            found: 0,
+            escalated: false,
+            remaining: 0,
+        };
     }
+    let found = descendants.len();
     for pid in descendants {
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }
     }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+    // Wait for evidence that the group is empty rather than for a fixed sleep. A
+    // descendant that flushes output or exits normally is allowed the configured
+    // graceful window; only one that is still present after it is killed.
+    let deadline = std::time::Instant::now() + crate::deadlines::runtime_term_grace().get();
     while std::time::Instant::now() < deadline
         && !group_members_except_self(pgid, self_pid).is_empty()
     {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    for pid in group_members_except_self(pgid, self_pid) {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
+    let survivors = group_members_except_self(pgid, self_pid);
+    let escalated = !survivors.is_empty();
+    if escalated {
+        for pid in &survivors {
+            unsafe {
+                libc::kill(*pid as i32, libc::SIGKILL);
+            }
         }
+        let kill_deadline =
+            std::time::Instant::now() + crate::deadlines::runtime_kill_grace().get();
+        while std::time::Instant::now() < kill_deadline
+            && !group_members_except_self(pgid, self_pid).is_empty()
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    DescendantCleanup {
+        found,
+        escalated,
+        remaining: group_members_except_self(pgid, self_pid).len(),
     }
 }
 

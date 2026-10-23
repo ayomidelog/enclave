@@ -92,10 +92,7 @@ fn cgroup_limits_are_applied_to_workspace_runtime() {
     // A helper that outlives its runtime would hold the workspace cgroup and
     // its mount namespace forever, so it has to notice the runtime's death and
     // exit on its own.
-    let helper_socket = format!(
-        "/run/enclave/session-{}-{}.sock",
-        runtime.runtime_pid, runtime.runtime_starttime_ticks
-    );
+    let helper_socket = helper_socket_for(runtime.runtime_pid);
     assert!(
         persistent_helper_is_running(&helper_socket),
         "expected a live helper for {helper_socket}"
@@ -119,4 +116,19 @@ fn cgroup_limits_are_applied_to_workspace_runtime() {
     stop_sandbox(&state, &sandbox.id).expect("stop sandbox");
     destroy_sandbox(&state, &sandbox.id).expect("destroy sandbox");
     let _ = fs::remove_dir_all(state);
+}
+
+/// The live helper socket for one runtime.
+///
+/// Each helper start uses a unique socket name, so the runtime prefix is the
+/// stable part a test can discover without reaching into the helper cache.
+fn helper_socket_for(runtime_pid: u32) -> String {
+    let prefix = format!("session-{runtime_pid}-");
+    let entries = fs::read_dir("/run/enclave").expect("read helper socket directory");
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .find(|name| name.starts_with(&prefix) && name.ends_with(".sock"))
+        .map(|name| format!("/run/enclave/{name}"))
+        .unwrap_or_else(|| format!("/run/enclave/{prefix}<missing>.sock"))
 }

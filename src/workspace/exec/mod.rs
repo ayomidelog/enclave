@@ -12,6 +12,7 @@ mod args;
 mod credentials;
 mod detached;
 
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Stdio};
@@ -34,7 +35,7 @@ pub(crate) use args::workspace_file_receive_args;
 pub(crate) use detached::spawn_workspace_command_detached;
 
 /// What a caller can ask of an exec.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct WorkspaceExecOptions {
     /// Replace injected token values in the captured output.
     ///
@@ -43,6 +44,11 @@ pub struct WorkspaceExecOptions {
     pub scrub: bool,
     /// How long this command keeps its workspace alive without another request.
     pub ttl_secs: Option<u64>,
+    /// The client connection that owns this command, when it came from the daemon.
+    ///
+    /// A disconnect cancels the command. A direct library caller has no socket and
+    /// is bounded only by the helper response deadline.
+    pub client_stream: Option<UnixStream>,
 }
 
 impl Default for WorkspaceExecOptions {
@@ -50,6 +56,7 @@ impl Default for WorkspaceExecOptions {
         Self {
             scrub: true,
             ttl_secs: None,
+            client_stream: None,
         }
     }
 }
@@ -142,7 +149,12 @@ pub fn exec_workspace_command_with_options(
     )?;
 
     let output = match crate::workspace::with_workspace_storage_mounted(&workspace, || {
-        session::execute_persistent_command(&workspace, &effective_cwd, command)
+        session::execute_persistent_command(
+            &workspace,
+            &effective_cwd,
+            command,
+            options.client_stream.as_ref(),
+        )
     }) {
         Ok(output) => output,
         Err(error) => {
