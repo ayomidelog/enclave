@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.4.1 - 2026-10-23
+
 ### Fixed
 
 - Foreground `workspace exec` now keeps its client connection open for the
