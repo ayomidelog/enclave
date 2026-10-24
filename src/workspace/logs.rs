@@ -3,6 +3,7 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::fd::AsRawFd;
 use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
@@ -49,17 +50,27 @@ pub fn append_workspace_command_log(
         .open(&log_path)
         .with_context(|| format!("failed to open {}", log_path.display()))?;
 
-    writeln!(
-        log,
-        "[{}] workspace command\ncwd: {}\ncommand: {}\nexit_code: {}\nstdout:\n{}\nstderr:\n{}\n---",
-        timestamp,
-        sanitized_cwd,
-        sanitized_command,
-        exit_code,
-        stdout,
-        stderr
-    )
-    .with_context(|| format!("failed to write {}", log_path.display()))?;
+    let entry = format!(
+        "[{}] workspace command\ncwd: {}\ncommand: {}\nexit_code: {}\nstdout:\n{}\nstderr:\n{}\n---\n",
+        timestamp, sanitized_cwd, sanitized_command, exit_code, stdout, stderr
+    );
+    // Commands in one workspace can finish concurrently. Locking the log keeps a
+    // complete header and body together instead of interleaving two results.
+    loop {
+        let locked = unsafe { libc::flock(log.as_raw_fd(), libc::LOCK_EX) };
+        if locked == 0 {
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error).with_context(|| format!("failed to lock {}", log_path.display()));
+        }
+    }
+    let write_result = log
+        .write_all(entry.as_bytes())
+        .with_context(|| format!("failed to write {}", log_path.display()));
+    let _ = unsafe { libc::flock(log.as_raw_fd(), libc::LOCK_UN) };
+    write_result?;
 
     Ok(())
 }

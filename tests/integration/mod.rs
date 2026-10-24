@@ -5,6 +5,7 @@ mod cgroup_limits;
 mod cleanup_failure;
 mod cleanup_safety;
 mod concurrency;
+mod concurrent_exec;
 mod concurrent_ops;
 mod crash_recovery;
 mod destroy_contract;

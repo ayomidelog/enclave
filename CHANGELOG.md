@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- A second `workspace exec` no longer hangs until the first command exits. A
+  workspace now has a helper pool and no artificial command cap by default, so an
+  interactive command such as `htop` can coexist with a quick probe. The global
+  exec worker pool remains the daemon-wide capacity bound; operators can set
+  `ENCLAVE_EXEC_PER_WORKSPACE` to impose a smaller per-workspace share.
+- Cancellation handles are now published per command. `workspace cancel` validates
+  every active helper before signalling, stops all active command groups, and
+  cannot race a helper back into the pool for a later command. Concurrent command
+  log appends are serialized so their output cannot interleave.
+
 ## 2.4.1 - 2026-10-23
 
 ### Fixed

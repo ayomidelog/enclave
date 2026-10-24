@@ -1,13 +1,13 @@
-//! Running a command in a workspace through a helper that stays alive.
+//! Running commands in a workspace through helpers that stay alive.
 //!
-//! One helper is kept per live runtime. It holds the workspace's namespaces open
-//! and executes commands in them, so a command does not pay for opening and
-//! re-entering the namespaces on every call. The helper is keyed by the runtime's
-//! pid and start time, so a recycled pid cannot address a dead runtime's helper.
+//! A helper holds the workspace's namespaces open and executes commands in them, so
+//! a command does not pay for entering those namespaces on every call. Each runtime
+//! has a helper pool: idle helpers serve sequential work, while concurrent commands
+//! each get their own helper. Every helper remains a process-group leader so
+//! cancellation has a verified host identity to signal.
 //!
-//! The helper submodule starts the process and waits for its socket, the
-//! transport submodule sends one command over that socket, and this module owns
-//! the cache that ties the two together.
+//! The helper submodule starts a process and waits for its socket, the transport
+//! submodule sends one command over that socket, and this module owns the pools.
 
 mod helper;
 mod transport;
@@ -31,7 +31,7 @@ pub(crate) use transport::PersistentCommandOutput;
 
 pub(crate) const MAX_HELPER_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
-/// The runtime a helper serves: its pid and the start time that makes the pid
+/// The runtime a pool serves: its pid and the start time that makes the pid
 /// unambiguous across recycling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct HelperKey {
@@ -48,19 +48,51 @@ pub(super) struct PersistentHelper {
     pub(super) child: Child,
 }
 
-static HELPERS: OnceLock<Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>> = OnceLock::new();
+/// The helper pool for one runtime.
+///
+/// The daemon's exec worker pool bounds the total number of active commands. This
+/// pool reuses idle helpers for sequential work and starts another whenever a
+/// command arrives while every cached helper is busy. It does not impose a smaller
+/// per-workspace limit unless `ENCLAVE_EXEC_PER_WORKSPACE` is configured.
+struct HelperPool {
+    state: Mutex<HelperPoolState>,
+}
 
-/// The shared inputs for one command run through a cached helper.
+#[derive(Default)]
+struct HelperPoolState {
+    idle: Vec<PersistentHelper>,
+    active: Vec<HelperIdentity>,
+    starting: usize,
+    closed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HelperIdentity {
+    pid: u32,
+    starttime_ticks: u64,
+    socket: PathBuf,
+}
+
+impl PersistentHelper {
+    fn identity(&self) -> HelperIdentity {
+        HelperIdentity {
+            pid: self.child.id(),
+            starttime_ticks: self.starttime_ticks,
+            socket: self.socket.clone(),
+        }
+    }
+}
+
+static HELPERS: OnceLock<Mutex<HashMap<HelperKey, Arc<HelperPool>>>> = OnceLock::new();
+
+/// The shared inputs for one command run through a helper.
 struct HelperCommand<'a> {
-    helper: Arc<Mutex<PersistentHelper>>,
     workspace: &'a WorkspaceMetadata,
     runtime_pid: u32,
     runtime_starttime_ticks: u64,
     cwd: &'a str,
     command: &'a [String],
     client_stream: Option<&'a UnixStream>,
-    key: HelperKey,
-    helpers: &'a Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
 }
 
 pub(crate) fn execute_persistent_command(
@@ -86,133 +118,211 @@ pub(crate) fn execute_persistent_command(
         pid: runtime_pid,
         starttime_ticks: runtime_starttime_ticks,
     };
-    let helpers = HELPERS.get_or_init(|| Mutex::new(HashMap::new()));
-    // Check the cache under its lock, then start outside it. The helper's start
-    // can take up to ENCLAVE_HELPER_START_MS, and holding the cache lock through
-    // that would serialize every workspace's first command behind one slow start.
-    // Unique socket names make concurrent starts safe: whichever helper is
-    // inserted wins, and every losing helper is killed before it can become an
-    // orphan.
-    let helper = {
-        let cached = cached_helper(helpers, key)?;
-        if let Some(cached) = cached {
-            if helper_is_alive(&cached)? {
-                cached
-            } else {
-                discard_cached_helper(&key, &cached, workspace);
-                install_started_helper(
-                    workspace,
-                    runtime_pid,
-                    runtime_starttime_ticks,
-                    key,
-                    helpers,
-                )?
-            }
-        } else {
-            install_started_helper(
-                workspace,
-                runtime_pid,
-                runtime_starttime_ticks,
-                key,
-                helpers,
-            )?
-        }
-    };
-    run_on_helper(HelperCommand {
-        helper,
+    let pool = helper_pool(key)?;
+    let concurrency_limit = crate::workspace::max_concurrent_commands_per_workspace();
+    let helper = pool.acquire(
         workspace,
         runtime_pid,
         runtime_starttime_ticks,
-        cwd,
-        command,
-        client_stream,
-        key,
-        helpers,
-    })
+        concurrency_limit,
+    )?;
+    run_on_helper(
+        &pool,
+        helper,
+        HelperCommand {
+            workspace,
+            runtime_pid,
+            runtime_starttime_ticks,
+            cwd,
+            command,
+            client_stream,
+        },
+    )
 }
 
-/// Start a helper and publish it only if no live helper won the race.
-fn install_started_helper(
-    workspace: &WorkspaceMetadata,
-    runtime_pid: u32,
-    runtime_starttime_ticks: u64,
-    key: HelperKey,
-    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
-) -> Result<Arc<Mutex<PersistentHelper>>> {
-    let started = start_helper(workspace, runtime_pid, runtime_starttime_ticks)?;
-    let candidate = Arc::new(Mutex::new(started));
-    loop {
-        if let Some(current) = cached_helper(helpers, key)? {
-            // Never hold the cache lock while waiting for a helper mutex. A
-            // command holds that mutex for its whole run, so doing so would
-            // serialize every workspace's helper lookup behind it.
-            if helper_is_alive(&current)? {
-                if let Ok(mut losing) = candidate.lock() {
-                    kill_helper_group(&mut losing);
-                }
-                return Ok(current);
-            }
-            discard_cached_helper(&key, &current, workspace);
-            continue;
-        }
-        if install_if_vacant(helpers, key, &candidate)? {
-            return Ok(candidate);
-        }
-    }
-}
-
-fn cached_helper(
-    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
-    key: HelperKey,
-) -> Result<Option<Arc<Mutex<PersistentHelper>>>> {
-    let guard = helpers
-        .lock()
-        .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
-    Ok(guard.get(&key).cloned())
-}
-
-fn install_if_vacant(
-    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
-    key: HelperKey,
-    candidate: &Arc<Mutex<PersistentHelper>>,
-) -> Result<bool> {
+fn helper_pool(key: HelperKey) -> Result<Arc<HelperPool>> {
+    let helpers = HELPERS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = helpers
         .lock()
         .map_err(|_| anyhow::anyhow!("persistent helper cache lock poisoned"))?;
-    if guard.contains_key(&key) {
-        return Ok(false);
-    }
-    guard.insert(key, Arc::clone(candidate));
-    Ok(true)
+    Ok(Arc::clone(guard.entry(key).or_insert_with(|| {
+        Arc::new(HelperPool {
+            state: Mutex::new(HelperPoolState::default()),
+        })
+    })))
 }
 
-/// Send one command through `helper` and account for what the outcome means.
-fn run_on_helper(request: HelperCommand<'_>) -> Result<PersistentCommandOutput> {
+impl HelperPool {
+    /// Reserve a slot, preferring an already-running helper.
+    ///
+    /// A direct caller over an explicitly configured workspace limit is rejected
+    /// rather than parked here. Daemon requests are bounded by `ExecQueue` before
+    /// they reach this layer, so waiting here would only turn an admission bug into
+    /// a stuck request. Without a configured limit, the daemon's exec worker pool
+    /// is the capacity bound and this method never waits.
+    fn acquire(
+        &self,
+        workspace: &WorkspaceMetadata,
+        runtime_pid: u32,
+        runtime_starttime_ticks: u64,
+        limit: Option<usize>,
+    ) -> Result<PersistentHelper> {
+        let mut state = self.lock()?;
+        if state.closed {
+            return Err(stop_conflict(workspace));
+        }
+        while let Some(mut helper) = state.idle.pop() {
+            if helper_is_alive(&mut helper) {
+                state.active.push(helper.identity());
+                return Ok(helper);
+            }
+            drop(state);
+            kill_helper_group(&mut helper);
+            state = self.lock()?;
+            if state.closed {
+                return Err(stop_conflict(workspace));
+            }
+        }
+        if let Some(limit) =
+            limit.filter(|limit| state.active.len().saturating_add(state.starting) >= *limit)
+        {
+            return Err(crate::error::coded(
+                crate::error::ErrorCode::Conflict,
+                format!(
+                    "workspace '{}' already has {} commands running; wait for one to finish or cancel them",
+                    workspace.id, limit
+                ),
+            ));
+        }
+        state.starting += 1;
+        drop(state);
+
+        let started = start_helper(workspace, runtime_pid, runtime_starttime_ticks);
+        let mut state = self.lock()?;
+        state.starting = state.starting.saturating_sub(1);
+        match started {
+            Ok(mut helper) => {
+                if state.closed {
+                    drop(state);
+                    kill_helper_group(&mut helper);
+                    return Err(stop_conflict(workspace));
+                }
+                state.active.push(helper.identity());
+                Ok(helper)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Return a healthy helper to the idle set, or kill one that cannot be reused.
+    fn release(&self, helper: PersistentHelper, reusable: bool) {
+        let mut helper = Some(helper);
+        let keep = {
+            // Recovering a poisoned guard is safe here: the state is a collection
+            // of identities and idle children, not a partially updated invariant.
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let identity = helper.as_ref().map(PersistentHelper::identity);
+            if let Some(identity) = identity {
+                state.active.retain(|active| {
+                    active.pid != identity.pid || active.starttime_ticks != identity.starttime_ticks
+                });
+            }
+            let keep = reusable
+                && !state.closed
+                && state.idle.len() < crate::workspace::IDLE_HELPER_LIMIT
+                && helper.as_mut().is_some_and(helper_is_alive);
+            if keep {
+                if let Some(helper) = helper.take() {
+                    state.idle.push(helper);
+                }
+            }
+            keep
+        };
+        if !keep {
+            if let Some(mut helper) = helper {
+                kill_helper_group(&mut helper);
+            }
+        }
+    }
+
+    fn close(&self) {
+        let (idle, active) = if let Ok(mut state) = self.state.lock() {
+            state.closed = true;
+            (
+                std::mem::take(&mut state.idle),
+                std::mem::take(&mut state.active),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        for mut helper in idle {
+            kill_helper_group(&mut helper);
+        }
+        for helper in active {
+            let _ = crate::workspace::session::signal_process_group(
+                helper.pid,
+                Some(helper.starttime_ticks),
+                helper.pid as i32,
+                libc::SIGKILL,
+            );
+            let _ = fs::remove_file(&helper.socket);
+        }
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, HelperPoolState>> {
+        self.state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("persistent helper pool lock poisoned"))
+    }
+}
+
+fn stop_conflict(workspace: &WorkspaceMetadata) -> anyhow::Error {
+    crate::error::coded(
+        crate::error::ErrorCode::Conflict,
+        format!(
+            "workspace '{}' is stopping; wait for the stop to finish before running another command",
+            workspace.id
+        ),
+    )
+}
+
+/// Send one command through a helper and account for what the outcome means.
+fn run_on_helper(
+    pool: &HelperPool,
+    mut helper: PersistentHelper,
+    request: HelperCommand<'_>,
+) -> Result<PersistentCommandOutput> {
     let HelperCommand {
-        helper: helper_handle,
         workspace,
         runtime_pid,
         runtime_starttime_ticks,
         cwd,
         command,
         client_stream,
-        key,
-        helpers,
     } = request;
-    let mut helper = helper_handle
-        .lock()
-        .map_err(|_| anyhow::anyhow!("persistent helper lock poisoned"))?;
-    // Publish this workspace as busy, with the helper's pid, before the command is
-    // sent. The helper holds this workspace's command mutex from here until the
-    // command exits, and a cancel that arrives in that window can stop it by
-    // signalling the helper - which is the only addressable handle on work running
-    // inside the workspace's pid namespace. The daemon writes this file, not the
-    // helper: the helper's mount namespace does not expose the host state directory
-    // at its host path, so a file it wrote would land somewhere the daemon cannot
-    // read.
-    let busy_path =
-        crate::workspace::cancel_file_path(std::path::Path::new(&workspace.workspace_path));
-    let _ = publish_busy_marker(&busy_path, helper.child.id(), helper.starttime_ticks);
+    let workspace_path = std::path::Path::new(&workspace.workspace_path);
+    // Publish this command's helper before the request is sent. The helper is the
+    // only addressable handle on work inside the workspace's pid namespace, and a
+    // per-command file lets a second concurrent command publish its own handle
+    // without overwriting this one. The daemon writes it because the helper's mount
+    // namespace does not expose the host state directory at its host path.
+    let marker = match crate::workspace::cancel::publish_command_marker(
+        workspace_path,
+        helper.child.id(),
+        helper.starttime_ticks,
+    ) {
+        Ok(marker) => Some(marker),
+        Err(error) => {
+            tracing::warn!(
+                "failed to publish a cancellation marker for workspace {}: {error:#}",
+                workspace.id
+            );
+            None
+        }
+    };
     let mut result = send_command(
         &mut helper,
         runtime_pid,
@@ -225,22 +335,30 @@ fn run_on_helper(request: HelperCommand<'_>) -> Result<PersistentCommandOutput> 
     if let Ok(output) = result.as_mut() {
         output.helper_pid = Some(helper.child.id());
     }
-    let _ = fs::remove_file(&busy_path);
-    let helper_failed = result.as_ref().err().is_some_and(|error| {
-        transport::HelperTimeout::is_in(error)
+    let mut helper_reusable = result.as_ref().err().is_none_or(|error| {
+        !(transport::HelperTimeout::is_in(error)
             || transport::HelperClosed::is_in(error)
-            || transport::ClientDisconnected::is_in(error)
+            || transport::ClientDisconnected::is_in(error))
     });
-    if helper_failed {
-        // The helper stopped answering or closed without a result. It is holding
-        // this workspace's command mutex, so leaving it in the cache would make
-        // every later command queue behind a socket that will never speak again.
-        kill_helper_group(&mut helper);
+    if let Some(marker) = marker {
+        match crate::workspace::cancel::finish_command_marker(&marker) {
+            Ok(true) => {}
+            Ok(false) => {
+                // Cancellation removed the marker and signalled this helper. Even if
+                // the command raced to a successful result, the helper is not safe to
+                // reuse and its process group may already be gone.
+                helper_reusable = false;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "failed to remove a cancellation marker for workspace {}: {error:#}",
+                    workspace.id
+                );
+                helper_reusable = false;
+            }
+        }
     }
-    drop(helper);
-    if helper_failed {
-        evict_helper(key, helpers, &helper_handle);
-    }
+    pool.release(helper, helper_reusable);
     if result
         .as_ref()
         .err()
@@ -257,49 +375,15 @@ fn run_on_helper(request: HelperCommand<'_>) -> Result<PersistentCommandOutput> 
     result
 }
 
-fn helper_is_alive(helper: &Arc<Mutex<PersistentHelper>>) -> Result<bool> {
-    let mut helper = helper
-        .lock()
-        .map_err(|_| anyhow::anyhow!("persistent helper lock poisoned"))?;
-    Ok(helper.child.try_wait()?.is_none())
-}
-
-/// Remove one dead helper, but only if it is still the cache entry for `key`.
-fn discard_cached_helper(
-    key: &HelperKey,
-    expected: &Arc<Mutex<PersistentHelper>>,
-    workspace: &WorkspaceMetadata,
-) {
-    let Some(helpers) = HELPERS.get() else {
-        return;
-    };
-    let removed = helpers.lock().is_ok_and(|mut guard| {
-        if guard
-            .get(key)
-            .is_some_and(|current| Arc::ptr_eq(current, expected))
-        {
-            guard.remove(key);
-            true
-        } else {
-            false
-        }
-    });
-    if !removed {
-        return;
-    }
-    if let Ok(mut helper) = expected.lock() {
-        kill_helper_group(&mut helper);
-    }
-    let _ = fs::remove_file(crate::workspace::cancel_file_path(std::path::Path::new(
-        &workspace.workspace_path,
-    )));
+fn helper_is_alive(helper: &mut PersistentHelper) -> bool {
+    helper.child.try_wait().is_ok_and(|status| status.is_none())
 }
 
 pub(crate) fn invalidate(pid: u32, starttime_ticks: u64) {
     let Some(helpers) = HELPERS.get() else {
         return;
     };
-    let removed = if let Ok(mut guard) = helpers.lock() {
+    let pool = if let Ok(mut guard) = helpers.lock() {
         guard.remove(&HelperKey {
             pid,
             starttime_ticks,
@@ -307,28 +391,9 @@ pub(crate) fn invalidate(pid: u32, starttime_ticks: u64) {
     } else {
         None
     };
-    if let Some(helper) = removed {
-        if let Ok(mut helper) = helper.lock() {
-            kill_helper_group(&mut helper);
-        }
+    if let Some(pool) = pool {
+        pool.close();
     }
-}
-
-/// Record that this workspace is running a command, and which helper owns it.
-///
-/// Written atomically so a cancel never reads a half-written id.
-fn publish_busy_marker(
-    path: &std::path::Path,
-    helper_pid: u32,
-    starttime_ticks: u64,
-) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension("tmp");
-    fs::write(&temp, format!("{helper_pid} {starttime_ticks}\n"))?;
-    fs::rename(&temp, path)?;
-    Ok(())
 }
 
 /// Kill a helper and every command descendant that shares its process group.
@@ -343,22 +408,6 @@ fn kill_helper_group(helper: &mut PersistentHelper) {
     let _ = helper.child.kill();
     let _ = helper.child.wait();
     let _ = fs::remove_file(&helper.socket);
-}
-
-/// Remove a dead helper from the cache, but only if it is still the same one.
-fn evict_helper(
-    key: HelperKey,
-    helpers: &Mutex<HashMap<HelperKey, Arc<Mutex<PersistentHelper>>>>,
-    expected: &Arc<Mutex<PersistentHelper>>,
-) {
-    if let Ok(mut guard) = helpers.lock() {
-        if guard
-            .get(&key)
-            .is_some_and(|current| Arc::ptr_eq(current, expected))
-        {
-            guard.remove(&key);
-        }
-    }
 }
 
 pub(crate) fn output_to_string(bytes: Vec<u8>) -> String {

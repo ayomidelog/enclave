@@ -7,10 +7,9 @@ use nix::unistd::{fork, ForkResult};
 ///
 /// This is the shape that froze a live host: the command exits at once but a
 /// descendant it started keeps the inherited stdout pipe open, so waiting for EOF
-/// waited until the descendant died. That pinned the helper, the workspace's
-/// command mutex, every daemon exec worker that later asked for the same workspace,
-/// and finally the whole exec queue, which then rejected requests with "queue is
-/// full".
+/// waited until the descendant died. That pinned the helper, every daemon exec
+/// worker that later asked for the same workspace, and finally the whole exec
+/// queue, which then rejected requests with "queue is full".
 #[test]
 fn a_descendant_holding_stdout_does_not_hang_the_drain() {
     let (stdout_reader, stdout_writer) = create_pipe().expect("stdout pipe");

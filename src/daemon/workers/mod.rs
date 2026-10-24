@@ -26,14 +26,6 @@ const TRANSFER_QUEUE_CAPACITY: usize = 8;
 // without limit.
 const EXEC_QUEUE_CAPACITY: usize = 512;
 
-/// How many exec workers one workspace may occupy at once.
-///
-/// The persistent helper serializes commands for one workspace, so admitting two
-/// only parks the second worker on a mutex. One in-flight command lets the queue
-/// hold later work without consuming workers it cannot use, and reserves every
-/// other exec slot for a different workspace.
-const EXEC_PER_WORKSPACE: usize = 1;
-
 struct RequestJob {
     stream: UnixStream,
     /// The workspace this request targets, when it is an exec. The queue only
@@ -43,15 +35,14 @@ struct RequestJob {
 
 /// The exec pool's queue and its per-workspace admission state.
 ///
-/// A workspace may have at most `per_workspace` jobs in flight. Jobs over that
-/// share wait in a per-workspace queue rather than entering the shared worker
-/// queue, so a burst from one workspace cannot consume every exec worker. When a
-/// job finishes, the next pending job for that workspace is admitted; other
-/// workspaces are never put behind that private backlog.
+/// A workspace may have at most `per_workspace` jobs in flight. The default is
+/// effectively unlimited, leaving the shared exec worker count as the capacity
+/// bound. An operator can configure a smaller share; jobs over it then wait in a
+/// per-workspace queue instead of entering the shared worker queue.
 struct ExecQueue {
     state: Mutex<ExecQueueState>,
     ready: Condvar,
-    per_workspace: usize,
+    per_workspace: Option<usize>,
 }
 
 #[derive(Default)]
@@ -69,7 +60,7 @@ enum ExecEnqueueError {
 }
 
 impl ExecQueue {
-    fn new(per_workspace: usize) -> Self {
+    fn new(per_workspace: Option<usize>) -> Self {
         Self {
             state: Mutex::new(ExecQueueState::default()),
             ready: Condvar::new(),
@@ -88,11 +79,12 @@ impl ExecQueue {
         }
         match job.workspace_key.as_deref() {
             Some(key)
-                if state.in_flight.get(key).copied().unwrap_or(0) >= self.per_workspace
-                    || state
-                        .pending
-                        .get(key)
-                        .is_some_and(|pending| !pending.is_empty()) =>
+                if self.per_workspace.is_some_and(|limit| {
+                    state.in_flight.get(key).copied().unwrap_or(0) >= limit
+                }) || state
+                    .pending
+                    .get(key)
+                    .is_some_and(|pending| !pending.is_empty()) =>
             {
                 state
                     .pending
@@ -140,7 +132,9 @@ impl ExecQueue {
                     state.in_flight.remove(key);
                 }
             }
-            let has_room = state.in_flight.get(key).copied().unwrap_or(0) < self.per_workspace;
+            let has_room = self
+                .per_workspace
+                .is_none_or(|limit| state.in_flight.get(key).copied().unwrap_or(0) < limit);
             if has_room {
                 if let Some(stream) = state.pending.get_mut(key).and_then(VecDeque::pop_front) {
                     state.pending_count = state.pending_count.saturating_sub(1);
@@ -243,7 +237,11 @@ impl RequestWorkerPool {
         let (transfer_sender, transfer_receiver) = mpsc::sync_channel(TRANSFER_QUEUE_CAPACITY);
         let control_receiver = Arc::new(Mutex::new(control_receiver));
         let transfer_receiver = Arc::new(Mutex::new(transfer_receiver));
-        let exec_queue = Arc::new(ExecQueue::new(EXEC_PER_WORKSPACE));
+        // A workspace has no artificial share by default. The exec worker pool is
+        // the daemon-wide capacity bound, just as host resources bound an ordinary
+        // machine. Operators can opt into a smaller per-workspace share.
+        let exec_per_workspace = crate::workspace::max_concurrent_commands_per_workspace();
+        let exec_queue = Arc::new(ExecQueue::new(exec_per_workspace));
         let mut workers = Vec::with_capacity(control_count + transfer_count + exec_count);
         workers.extend(spawn_workers(
             control_receiver,

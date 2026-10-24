@@ -115,9 +115,9 @@ pub(crate) fn drain_command_pipes(
     // free to leave a descendant behind that inherited stdout/stderr - a background
     // job, a started daemon, `nohup ... &` - and that descendant keeps the write
     // ends open long after the command exited. Waiting for EOF then waits forever,
-    // which pinned the helper, the workspace's command mutex, and through them a
-    // daemon exec worker. Every later command for that workspace queued behind it
-    // until the whole exec pool was stuck and its queue overflowed.
+    // which pinned the helper and through it a daemon exec worker. Every later
+    // command for that workspace queued behind it until the whole exec pool was
+    // stuck and its queue overflowed.
     while child_status.is_none() {
         let mut descriptors = Vec::with_capacity(2);
         if let Some(reader) = stdout_reader.as_ref() {

@@ -2,6 +2,9 @@ mod activity;
 pub mod activity_service;
 mod cancel;
 mod certificate;
+#[cfg(test)]
+#[path = "../../tests/src/workspace/concurrency.rs"]
+mod concurrency_tests;
 
 #[cfg(test)]
 #[path = "../../tests/src/workspace/cancel.rs"]
@@ -29,6 +32,47 @@ mod types;
 
 pub const DEFAULT_WORKSPACE_PATH: &str =
     "/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// The daemon-wide pool remains the hard concurrency bound. A workspace is not
+/// limited by default, so commands behave like processes on an ordinary machine:
+/// they run until the daemon's exec workers are busy. Operators can set
+/// `ENCLAVE_EXEC_PER_WORKSPACE` to a positive number to give one workspace a
+/// smaller share. `0`, `unlimited`, or an invalid value select the default.
+const MAX_CONCURRENT_COMMANDS_ENV: &str = "ENCLAVE_EXEC_PER_WORKSPACE";
+/// Keep a small warm set for sequential work. A pool that scaled with the peak
+/// number of concurrent commands would retain one namespace-holding process per
+/// command for the rest of the runtime's life.
+pub(crate) const IDLE_HELPER_LIMIT: usize = 2;
+static MAX_CONCURRENT_COMMANDS_PER_WORKSPACE: std::sync::OnceLock<Option<usize>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn max_concurrent_commands_per_workspace() -> Option<usize> {
+    *MAX_CONCURRENT_COMMANDS_PER_WORKSPACE.get_or_init(|| {
+        let configured = std::env::var(MAX_CONCURRENT_COMMANDS_ENV).ok();
+        parse_max_concurrent_commands(configured.as_deref())
+    })
+}
+
+fn parse_max_concurrent_commands(raw: Option<&str>) -> Option<usize> {
+    let value = raw?.trim();
+    if value.is_empty() || value == "0" || value.eq_ignore_ascii_case("unlimited") {
+        return None;
+    }
+    match value.parse::<usize>() {
+        Ok(limit) if limit > 0 => Some(limit),
+        _ => {
+            tracing::warn!(
+                "ignoring invalid {MAX_CONCURRENT_COMMANDS_ENV}={value:?}; expected a positive number, 0, or 'unlimited'"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn parse_max_concurrent_commands_for_test(raw: Option<&str>) -> Option<usize> {
+    parse_max_concurrent_commands(raw)
+}
 
 /// Process-wide defaults configured by the daemon before it serves requests.
 static DEFAULT_WORKSPACE_CPU_PERCENT: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
@@ -58,7 +102,8 @@ pub(crate) fn daemon_max_running_workspaces() -> Option<usize> {
 }
 
 pub use crate::network::publish::PortPublisher;
-pub(crate) use cancel::cancel_file_path;
+#[cfg(test)]
+pub(crate) use cancel::command_marker_dir;
 pub use cancel::{cancel_workspace_command, CancelOutcome};
 pub(crate) use certificate::{
     verify_workspace_cleanup, verify_workspace_destroyed, WorkspaceCleanupCertificate,

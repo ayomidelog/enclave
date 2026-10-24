@@ -128,7 +128,7 @@ fn a_request_without_a_workspace_has_no_key() {
 
 #[test]
 fn one_workspace_cannot_fill_the_exec_queue() {
-    let queue = ExecQueue::new(1);
+    let queue = ExecQueue::new(Some(1));
     let (first, _first_peer) = UnixStream::pair().unwrap();
     let (second, _second_peer) = UnixStream::pair().unwrap();
     let (third, _third_peer) = UnixStream::pair().unwrap();
@@ -147,8 +147,8 @@ fn one_workspace_cannot_fill_the_exec_queue() {
 
     let first = queue.next().expect("first request");
     assert_eq!(first.workspace_key.as_deref(), Some("busy"));
-    // A second command for `busy` waits behind the first instead of parking a
-    // worker on the workspace's single-command helper.
+    // A second command for `busy` waits behind the first when the workspace's
+    // configured share is one, rather than taking a worker another workspace needs.
     let second = queue.next().expect("second request");
     assert_eq!(second.workspace_key.as_deref(), Some("other"));
     queue.finish(first.workspace_key.as_deref());
@@ -194,13 +194,19 @@ fn a_worker_keeps_serving_after_a_panicking_request() {
 }
 
 #[test]
-fn one_workspace_admits_one_exec_job_at_a_time() {
-    // The persistent helper runs one command per workspace. Admitting two only
-    // parks the second worker on the helper mutex while another workspace waits.
-    let queue = ExecQueue::new(super::EXEC_PER_WORKSPACE);
-    let (first, _first_peer) = UnixStream::pair().unwrap();
-    let (second, _second_peer) = UnixStream::pair().unwrap();
-    for stream in [first, second] {
+fn one_workspace_admits_its_configured_share_and_queues_the_rest() {
+    // Each admitted command can run on its own helper. Work beyond that share
+    // waits in the workspace's private queue instead of taking another worker.
+    let per_workspace = 2;
+    let queue = ExecQueue::new(Some(per_workspace));
+    let mut streams = Vec::new();
+    let mut peers = Vec::new();
+    for _ in 0..=per_workspace {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        streams.push(stream);
+        peers.push(peer);
+    }
+    for stream in streams {
         queue
             .enqueue(
                 RequestJob {
@@ -212,17 +218,51 @@ fn one_workspace_admits_one_exec_job_at_a_time() {
             .ok()
             .expect("queue a request");
     }
-    let first = queue.next().expect("first request");
-    assert_eq!(first.workspace_key.as_deref(), Some("busy"));
-    queue.finish(first.workspace_key.as_deref());
-    let second = queue.next().expect("queued request");
-    assert_eq!(second.workspace_key.as_deref(), Some("busy"));
-    queue.finish(second.workspace_key.as_deref());
+    let mut admitted = Vec::new();
+    for _ in 0..per_workspace {
+        let job = queue.next().expect("admitted request");
+        assert_eq!(job.workspace_key.as_deref(), Some("busy"));
+        admitted.push(job);
+    }
+    queue.finish(admitted[0].workspace_key.as_deref());
+    let queued = queue.next().expect("queued request");
+    assert_eq!(queued.workspace_key.as_deref(), Some("busy"));
+    for job in admitted.into_iter().skip(1) {
+        queue.finish(job.workspace_key.as_deref());
+    }
+    queue.finish(queued.workspace_key.as_deref());
+    drop(peers);
+}
+
+#[test]
+fn unlimited_workspace_admission_does_not_hide_requests_behind_a_share() {
+    let queue = ExecQueue::new(None);
+    let mut peers = Vec::new();
+    for _ in 0..4 {
+        let (stream, peer) = UnixStream::pair().unwrap();
+        peers.push(peer);
+        queue
+            .enqueue(
+                RequestJob {
+                    stream,
+                    workspace_key: Some("busy".to_string()),
+                },
+                8,
+            )
+            .ok()
+            .expect("queue a request");
+    }
+    for _ in 0..4 {
+        let job = queue.next().expect("unlimited admission");
+        assert_eq!(job.workspace_key.as_deref(), Some("busy"));
+        queue.finish(job.workspace_key.as_deref());
+    }
+    drop(peers);
 }
 
 #[test]
 fn a_disconnected_client_does_not_consume_the_exec_queue() {
-    let queue = ExecQueue::new(1);
+    let queue = ExecQueue::new(Some(1));
     let (active, _active_peer) = UnixStream::pair().unwrap();
     queue
         .enqueue(

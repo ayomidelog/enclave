@@ -143,8 +143,8 @@ pub(super) fn send_command(
         .map_err(|error| helper_failure(workspace, format!("failed to finish command: {error}")))?;
     // The helper answers only after the command's own child exits, so this bound is
     // also the longest one command may run. It is generous by default and only
-    // exists so a command that never exits cannot pin this thread, and with it an
-    // exec worker and the workspace's command mutex, forever.
+    // exists so a command that never exits cannot pin this thread and its exec
+    // worker forever.
     let deadline = crate::deadlines::helper_response();
     stream.set_nonblocking(true).map_err(|error| {
         helper_failure(

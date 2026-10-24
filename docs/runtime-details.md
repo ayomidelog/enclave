@@ -183,7 +183,8 @@ rather than after the deadline.
 | `ENCLAVE_CLEANUP_WORKERS` | available parallelism, capped at 4 | Concurrency for a batch workspace teardown. |
 | `ENCLAVE_CONTROL_WORKERS` | 6 | Daemon workers serving lifecycle and read requests. |
 | `ENCLAVE_TRANSFER_WORKERS` | 2 | Daemon workers serving transfers. |
-| `ENCLAVE_EXEC_WORKERS` | 16 | Daemon workers serving caller-supplied commands. A workspace may occupy at most one of these at once; excess requests wait in its own queue because the persistent helper serializes commands for one workspace. |
+| `ENCLAVE_EXEC_WORKERS` | 16 | Daemon workers serving caller-supplied commands. This is the daemon-wide command capacity bound. |
+| `ENCLAVE_EXEC_PER_WORKSPACE` | unlimited | Optional positive cap on concurrent commands in one workspace. `0` or `unlimited` keeps the daemon-wide-only policy; requests over a configured cap wait in that workspace's queue. |
 | `ENCLAVE_SHUTDOWN_GRACE_SECS` | 30 | How long shutdown waits for running lifecycle operations before reporting them incomplete. Accepted in the range 1 to 600. |
 | `ENCLAVE_HOST_COMMAND_TIMEOUT_SECS` | 30 | Deadline for a host command that does not set its own. Accepted in the range 1 to 3600. |
 | `ENCLAVE_SESSION_READY_MS` | 5000 | How long a launched runtime gets to publish its pid and ready files. Accepted in the range 1 to 120000. |
@@ -202,6 +203,9 @@ daemon restart, and `daemon.health` reports the whole table with each value's
 default, ceiling, and whether an operator set it. `enclave daemon status` prints
 the overrides, which is what makes a start that failed on a short deadline
 distinguishable from a start that failed on its own.
+
+`ENCLAVE_EXEC_PER_WORKSPACE` is an admission policy rather than a lifecycle wait,
+so it is read when the daemon starts and is not part of the deadline table.
 
 The default that matters most on a loaded host is `ENCLAVE_SESSION_READY_MS`. A
 batch start runs several workspaces at once and each one's setup is CPU bound, so

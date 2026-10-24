@@ -246,7 +246,7 @@ enclave workspace stats   <workspace>
 | `wipe` | Destroy all workspaces across all sandboxes. Requires confirmation and an already-running daemon unless `--start-daemon` is supplied. |
 | `enter` | Enter a running workspace interactively (namespace handoff). The session's output is not captured, so it is not scrubbed of injected token values. |
 | `exec` | Execute a one-shot command inside a workspace. The daemon captures the output and replaces every injected token value with `[REDACTED]`, so a command that prints a credential does not put it in your terminal, your log, or your shell history. `--no-scrub` prints the output exactly as written and warns that it may contain a credential; it also restores the direct streaming path, which is what you want for a command that reads stdin or writes a lot of output. `--background` returns immediately and keeps a durable job; `--ttl-secs N` limits its lifetime, and `--keep-running` pins the workspace while it runs. |
-| `cancel` | Stop the command this workspace is running now by signalling the verified persistent-helper process group. It also reaches descendants that inherited the group. Exits successfully when no command was running, and reports whether anything was actually stopped. |
+| `cancel` | Stop every command this workspace is running now by signalling each verified persistent-helper process group. It also reaches descendants that inherited those groups. Exits successfully when no command was running, and reports whether anything was actually stopped. |
 | `jobs` | List durable foreground and background job records for a workspace. Each record carries the job id, command, mode, start and finish time, PID/start-time identity, process group, status, exit code, TTL, and keep-running policy. |
 | `keep` | Change only the lifecycle fields named on the command line. `--keep-running` pins the workspace against idle stop and destroy-after retention deletion, `--no-keep-running` removes the pin, and the idle/destroy window flags update their window without changing the pin. At least one is required. |
 | `run` | Run a command inside a workspace (alias for exec). |
@@ -256,8 +256,11 @@ enclave workspace stats   <workspace>
 | `logs` | Show workspace session logs. `--follow` continuously streams appended log output. |
 | `stats` | Show workspace resource metrics including CPU, memory usage and limit, network I/O, block I/O, `process_count` (processes in the workspace PID namespace), and `task_count` (cgroup tasks, including threads). Without cgroup v2, `task_count` reports the PID-namespace process count as its fallback value. |
 
-`workspace exec` creates a job for every command. A foreground job holds a command
-lease for the whole request, so the idle sweeper cannot stop its workspace. A
+`workspace exec` creates a job for every command. Commands in one workspace can run
+concurrently, each on its own persistent helper, up to the daemon-wide exec worker
+capacity. `ENCLAVE_EXEC_PER_WORKSPACE` can impose a smaller per-workspace limit;
+requests over that limit wait in the workspace's queue. A foreground job holds a
+command lease for the whole request, so the idle sweeper cannot stop its workspace. A
 background job is returned immediately and remains tracked after the CLI exits:
 use `--background`, and optionally `--ttl-secs N` to stop it after a deadline or
 `--keep-running` to keep the workspace alive while it runs.
@@ -271,8 +274,9 @@ also the leader of its own process group, which is what the TTL reaper signals.
 
 A foreground command terminates descendants that remain in the helper's process
 group when the direct child exits. Use `--background` to keep work after the
-request returns. `workspace cancel` is the recovery path for a foreground command
-that is still running; it verifies the helper identity before sending `SIGKILL`.
+request returns. `workspace cancel` is the recovery path for foreground commands
+that are still running; it verifies every helper identity before sending `SIGKILL`
+to each active group.
 
 `enclave ps --processes` adds one row per process in each workspace, including
 its PID, PPID, PGID, age, CPU sample, RSS, thread count, detached state, job id, and
