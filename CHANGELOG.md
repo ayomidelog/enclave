@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.4.2 - 2026-10-24
+
 ### Fixed
 
 - A second `workspace exec` no longer hangs until the first command exits. A
